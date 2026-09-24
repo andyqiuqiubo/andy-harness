@@ -1,0 +1,17 @@
+{
+  "id": "provider_doubao",
+  "name": "Doubao Provider",
+  "version": "0.1.0",
+  "type": "provider",
+  "entry": "plugins.provider_doubao.main:DoubaoProviderPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["network", "secrets.read"],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "api_key": { "type": "string", "secret": true },
+      "base_url": { "type": "string", "default": "https://ark.cn-beijing.volces.com/api/v3" }
+    }
+  },
+  "description": "Doubao 大模型接入（火山方舟，model 填接入点/模型 ID）"
+}

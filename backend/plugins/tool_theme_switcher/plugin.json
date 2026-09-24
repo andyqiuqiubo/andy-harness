@@ -1,0 +1,10 @@
+{
+  "id": "tool_theme_switcher",
+  "name": "Theme Switcher Tool",
+  "version": "0.1.0",
+  "type": "tool",
+  "entry": "plugins.tool_theme_switcher.main:ThemeSwitcherPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": [],
+  "description": ""
+}

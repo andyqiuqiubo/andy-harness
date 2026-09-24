@@ -1,0 +1,19 @@
+{
+  "id": "context_manager",
+  "name": "Context Manager",
+  "version": "0.1.0",
+  "type": "service",
+  "entry": "plugins.context_manager.main:ContextManagerPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["storage"],
+  "core": true,
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "strategy": { "type": "string", "default": "sliding_window" },
+      "max_messages": { "type": "integer", "default": 20 },
+      "system_prompt": { "type": "string", "default": "" }
+    }
+  },
+  "description": "上下文管理服务插件（策略可插拔、token 预算分配、上下文快照）"
+}

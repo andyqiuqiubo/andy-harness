@@ -1,0 +1,10 @@
+{
+  "id": "tool_web_fetch",
+  "name": "Web Fetch Tool",
+  "version": "0.1.0",
+  "type": "tool",
+  "entry": "plugins.tool_web_fetch.main:WebFetchPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["network"],
+  "description": "抓取指定网页的正文内容，常与 web_search 配合使用以获取更详细信息"
+}

@@ -1,0 +1,27 @@
+{
+  "id": "hello-ui-plugin",
+  "name": "Hello UI Plugin",
+  "version": "0.1.0",
+  "type": "ui",
+  "entry": "main:HelloUIPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "contributes": {
+    "views": [
+      {
+        "id": "hello",
+        "route": "/hello",
+        "title": "Hello",
+        "component": "components/HelloView.vue"
+      }
+    ],
+    "menu_items": [
+      {
+        "id": "hello-menu",
+        "parent": "sidebar",
+        "label": "Hello",
+        "icon": "wave",
+        "view_id": "hello"
+      }
+    ]
+  }
+}

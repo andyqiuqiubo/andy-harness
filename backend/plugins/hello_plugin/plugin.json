@@ -1,0 +1,10 @@
+{
+  "id": "hello_plugin",
+  "name": "Hello Plugin",
+  "version": "0.1.0",
+  "type": "service",
+  "entry": "plugins.hello_plugin.main:HelloPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": [],
+  "description": "示例插件：注册一个服务 + 发布/订阅事件 + 注册一个 hook"
+}

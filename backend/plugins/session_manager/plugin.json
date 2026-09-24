@@ -1,0 +1,11 @@
+{
+  "id": "session_manager",
+  "name": "Session Manager",
+  "version": "0.1.0",
+  "type": "service",
+  "entry": "plugins.session_manager.main:SessionManagerPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["storage"],
+  "core": true,
+  "description": "会话管理服务插件（CRUD、重命名、归档、消息追加）"
+}

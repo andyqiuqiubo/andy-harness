@@ -1,0 +1,48 @@
+repos:
+  # 后端 Python 代码规范
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^backend/
+      - id: ruff-format
+        files: ^backend/
+
+  # 后端类型检查
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.11.0
+    hooks:
+      - id: mypy
+        files: ^backend/harness/
+        additional_dependencies:
+          - fastapi
+          - pydantic
+
+  # 前端代码规范
+  - repo: https://github.com/pre-commit/mirrors-eslint
+    rev: v9.0.0
+    hooks:
+      - id: eslint
+        files: ^frontend/.*\.(ts|vue|tsx)$
+        types: [file]
+        additional_dependencies:
+          - eslint
+          - eslint-plugin-vue
+          - "@vue/eslint-config-typescript"
+
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v4.0.0
+    hooks:
+      - id: prettier
+        files: ^frontend/.*\.(ts|vue|css|json|html)$
+
+  # 通用
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: check-merge-conflict

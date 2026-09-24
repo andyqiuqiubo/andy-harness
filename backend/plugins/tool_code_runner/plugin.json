@@ -1,0 +1,17 @@
+{
+  "id": "tool_code_runner",
+  "name": "Code Runner Tool",
+  "version": "0.1.0",
+  "type": "tool",
+  "entry": "plugins.tool_code_runner.main:CodeRunnerPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["storage"],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "timeout": { "type": "integer", "default": 30 },
+      "max_output": { "type": "integer", "default": 10000 }
+    }
+  },
+  "description": "代码执行工具插件，执行 Python/Shell 代码，返回 stdout/stderr/exit_code"
+}

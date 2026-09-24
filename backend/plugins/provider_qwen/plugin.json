@@ -1,0 +1,17 @@
+{
+  "id": "provider_qwen",
+  "name": "Qwen Provider",
+  "version": "0.1.0",
+  "type": "provider",
+  "entry": "plugins.provider_qwen.main:QwenProviderPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["network", "secrets.read"],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "api_key": { "type": "string", "secret": true },
+      "base_url": { "type": "string", "default": "https://dashscope.aliyuncs.com/compatible-mode/v1" }
+    }
+  },
+  "description": "Qwen 大模型接入（qwen-max / qwen-plus / qwen-turbo 等）"
+}
