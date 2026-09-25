@@ -33,6 +33,8 @@ const editForm = ref({
   models: '',
   api_key: '',
 })
+const editSaving = ref(false)
+const editTestError = ref('')
 
 // S26: Session settings bound to settings store
 const sessionSettings = computed({
@@ -43,6 +45,14 @@ const sessionSettings = computed({
 // S27: Plugin config state
 const selectedPluginForConfig = ref<string | null>(null)
 const pluginConfigForm = ref<Record<string, unknown>>({})
+const configLoading = ref(false)
+
+// 当前选中的插件对象（用于 Modal 渲染 config_schema）
+const selectedPlugin = computed(() =>
+  selectedPluginForConfig.value
+    ? pluginStore.plugins.find((p) => p.id === selectedPluginForConfig.value) ?? null
+    : null,
+)
 
 // S26: Save session settings
 function handleSaveSessionSettings() {
@@ -84,7 +94,7 @@ async function handleDeleteProvider(id: string) {
 async function handleTestProvider(id: string) {
   testStatus.value[id] = { loading: true, result: null }
   try {
-    const res = await apiClient.post<{ connected: boolean }>(`/providers/${id}/test`)
+    const res = await apiClient.post<{ connected: boolean; error?: string }>(`/providers/${id}/test`)
     testStatus.value[id] = { loading: false, result: res.connected }
   } catch {
     testStatus.value[id] = { loading: false, result: false }
@@ -96,6 +106,7 @@ function startEditProvider(id: string) {
   const p = providerStore.providers.find((p) => p.id === id)
   if (!p) return
   editingProvider.value = id
+  editTestError.value = ''
   editForm.value = {
     name: p.name,
     base_url: p.base_url,
@@ -104,23 +115,78 @@ function startEditProvider(id: string) {
   }
 }
 
-// H10: Save provider edit
+// 启用：保存配置 → 自动测试连接 → 成功则启用并关闭，失败则显示错误
 async function handleSaveProvider(id: string) {
+  editSaving.value = true
+  editTestError.value = ''
   try {
+    // 1. 保存配置
     await providerStore.updateProvider(id, {
       name: editForm.value.name,
       base_url: editForm.value.base_url,
       models: editForm.value.models ? editForm.value.models.split(',').map((m) => m.trim()) : [],
       ...(editForm.value.api_key ? { api_key: editForm.value.api_key } : {}),
     })
+
+    // 2. 自动测试连接
+    let connected = false
+    let testDetail = ''
+    try {
+      const res = await apiClient.post<{ connected: boolean; error?: string }>(`/providers/${id}/test`)
+      connected = res.connected
+      if (!connected && res.error) testDetail = res.error
+    } catch (e) {
+      testDetail = String(e)
+    }
+
+    if (!connected) {
+      editTestError.value = testDetail || t.value('providers.editTestFail')
+      // 测试失败：确保停用状态
+      const p = providerStore.providers.find((p) => p.id === id)
+      if (p && p.enabled) {
+        await providerStore.toggleProviderEnabled(id)
+      }
+      return
+    }
+
+    // 3. 测试成功：启用并关闭弹窗
+    const p = providerStore.providers.find((p) => p.id === id)
+    if (p && !p.enabled) {
+      await providerStore.toggleProviderEnabled(id)
+    }
     editingProvider.value = null
   } catch (e) {
-    alert('保存失败: ' + e)
+    editTestError.value = '保存失败: ' + e
+  } finally {
+    editSaving.value = false
   }
 }
 
 // H10: Toggle provider enabled/disabled
+// 启用前必须先通过连接测试；停用直接生效
 async function handleToggleProvider(id: string) {
+  const p = providerStore.providers.find((p) => p.id === id)
+  if (!p) return
+
+  if (!p.enabled) {
+    // 启用：先测试连接
+    testStatus.value[id] = { loading: true, result: null }
+    let connected = false
+    let errMsg = ''
+    try {
+      const res = await apiClient.post<{ connected: boolean; error?: string }>(`/providers/${id}/test`)
+      connected = res.connected
+      if (!connected && res.error) errMsg = res.error
+    } catch (e) {
+      errMsg = String(e)
+    }
+    testStatus.value[id] = { loading: false, result: connected }
+    if (!connected) {
+      alert((t.value('providers.editTestFail')) + (errMsg ? ': ' + errMsg : ''))
+      return
+    }
+  }
+
   try {
     await providerStore.toggleProviderEnabled(id)
   } catch (e) {
@@ -152,19 +218,27 @@ async function handleDeactivatePlugin(id: string) {
 // S27: Load plugin config schema for rendering
 async function handleLoadPluginConfig(plugin: PluginInfo) {
   selectedPluginForConfig.value = plugin.id
+  configLoading.value = true
   const res = await pluginStore.fetchPluginConfig(plugin.id)
   if (res?.config) {
     pluginConfigForm.value = { ...res.config }
   } else {
     pluginConfigForm.value = {}
   }
+  configLoading.value = false
+}
+
+// S27: Cancel — close config modal without saving
+function handleCancelPluginConfig() {
+  selectedPluginForConfig.value = null
+  pluginConfigForm.value = {}
 }
 
 // S27: Save plugin config
 async function handleSavePluginConfig(id: string) {
   try {
     await pluginStore.savePluginConfig(id, pluginConfigForm.value)
-    alert(t.value('plugins.saveConfig') + ' ✓')
+    selectedPluginForConfig.value = null
   } catch (e) {
     alert('保存配置失败: ' + e)
   }
@@ -309,7 +383,7 @@ onMounted(() => {
               <div class="provider-info">
                 <div class="provider-name">
                   {{ p.name }}
-                  <!-- M18: has_api_key indicator -->
+                  <!-- 密钥状态 -->
                   <span v-if="p.has_api_key" class="badge-pill badge-ok">
                     <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
                     {{ t('providers.hasApiKey') }}
@@ -318,8 +392,8 @@ onMounted(() => {
                     <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
                     {{ t('providers.noApiKey') }}
                   </span>
-                  <!-- H10: enabled/disabled status -->
-                  <span :class="['badge-pill', p.enabled ? 'badge-enabled' : 'badge-disabled']">
+                  <!-- 启用/停用状态：仅有密钥时才显示 -->
+                  <span v-if="p.has_api_key" :class="['badge-pill', p.enabled ? 'badge-enabled' : 'badge-disabled']">
                     {{ p.enabled ? t('providers.enabled') : t('providers.disabled') }}
                   </span>
                 </div>
@@ -332,7 +406,7 @@ onMounted(() => {
                 <button
                   class="btn-ghost"
                   @click="handleTestProvider(p.id)"
-                  :disabled="testStatus[p.id]?.loading"
+                  :disabled="!p.has_api_key || testStatus[p.id]?.loading"
                 >
                   <svg v-if="testStatus[p.id]?.loading" class="icon spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6" /><line x1="12" y1="18" x2="12" y2="22" /><line x1="4.93" y1="4.93" x2="7.76" y2="7.76" /><line x1="16.24" y1="16.24" x2="19.07" y2="19.07" /><line x1="2" y1="12" x2="6" y2="12" /><line x1="18" y1="12" x2="22" y2="12" /><line x1="4.93" y1="19.07" x2="7.76" y2="16.24" /><line x1="16.24" y1="7.76" x2="19.07" y2="4.93" /></svg>
                   <svg v-else class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>
@@ -346,17 +420,27 @@ onMounted(() => {
                   <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                   {{ t('providers.testFail') }}
                 </span>
-                <!-- H10: Edit button -->
+                <!-- 编辑按钮：始终可点击 -->
                 <button class="btn-ghost" @click="startEditProvider(p.id)">
                   <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
                   {{ t('providers.edit') }}
                 </button>
-                <!-- H10: Enable/Disable toggle -->
-                <button class="btn-ghost" @click="handleToggleProvider(p.id)">
+                <!-- 启用/停用按钮：仅有密钥时可点击 -->
+                <button
+                  class="btn-ghost"
+                  @click="handleToggleProvider(p.id)"
+                  :disabled="!p.has_api_key"
+                >
                   <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0" /><line x1="12" y1="2" x2="12" y2="12" /></svg>
                   {{ p.enabled ? t('providers.disable') : t('providers.enable') }}
                 </button>
-                <button class="btn-ghost btn-danger" @click="handleDeleteProvider(p.id)">
+                <!-- 删除按钮：仅自定义 provider 可删除；有密钥且启用时置灰 -->
+                <button
+                  v-if="p.id.startsWith('custom_')"
+                  class="btn-ghost btn-danger"
+                  @click="handleDeleteProvider(p.id)"
+                  :disabled="p.has_api_key && p.enabled"
+                >
                   <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
                   {{ t('providers.delete') }}
                 </button>
@@ -384,8 +468,14 @@ onMounted(() => {
                 </div>
               </div>
               <div class="edit-actions">
-                <button class="btn-primary" @click="handleSaveProvider(p.id)">{{ t('providers.edit') }}</button>
-                <button class="btn-ghost" @click="editingProvider = null">{{ t('providers.cancel') }}</button>
+                <button class="btn-primary" @click="handleSaveProvider(p.id)" :disabled="editSaving">
+                  {{ editSaving ? t('providers.testing') : t('providers.enable') }}
+                </button>
+                <button class="btn-ghost" @click="editingProvider = null" :disabled="editSaving">{{ t('providers.cancel') }}</button>
+              </div>
+              <div v-if="editTestError" class="edit-test-error">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
+                <span>{{ editTestError }}</span>
               </div>
             </div>
           </div>
@@ -500,22 +590,6 @@ onMounted(() => {
                 </button>
               </div>
             </div>
-
-            <Transition name="fade-slide">
-              <div v-if="selectedPluginForConfig === p.id" class="plugin-config-form">
-                <h4 class="config-title">{{ t('plugins.config') }}</h4>
-                <div class="form-grid">
-                  <div v-for="prop in getConfigSchemaProperties(p)" :key="prop.key" class="form-row">
-                    <label class="form-label">{{ prop.key }}{{ prop.description ? ` (${prop.description})` : '' }}</label>
-                    <input v-if="prop.type === 'string'" v-model="pluginConfigForm[prop.key as string]" class="form-input" :placeholder="String(prop.default ?? '')" />
-                    <input v-else-if="prop.type === 'number'" type="number" class="form-input" v-model.number="pluginConfigForm[prop.key as string]" :placeholder="String(prop.default ?? '')" />
-                    <input v-else-if="prop.type === 'boolean'" type="checkbox" v-model="pluginConfigForm[prop.key as string]" />
-                    <input v-else v-model="pluginConfigForm[prop.key as string]" class="form-input" :placeholder="String(prop.default ?? '')" />
-                  </div>
-                </div>
-                <button class="btn-primary" @click="handleSavePluginConfig(p.id)">{{ t('plugins.saveConfig') }}</button>
-              </div>
-            </Transition>
           </div>
           <div v-if="pluginStore.plugins.length === 0" class="empty-hint">{{ t('plugins.empty') }}</div>
         </div>
@@ -558,6 +632,41 @@ onMounted(() => {
         </div>
       </section>
     </div>
+
+    <!-- ═══════════════ 插件配置弹窗 ═══════════════ -->
+    <Transition name="modal-fade">
+      <div v-if="selectedPluginForConfig && selectedPlugin" class="modal-overlay" @click.self="handleCancelPluginConfig">
+        <div class="modal-dialog">
+          <div class="modal-header">
+            <h3 class="modal-title">{{ t('plugins.config') }} — {{ selectedPlugin.name }}</h3>
+            <button class="modal-close" @click="handleCancelPluginConfig">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            </button>
+          </div>
+          <div class="modal-body">
+            <div v-if="configLoading" class="modal-loading">{{ t('plugins.config') }}…</div>
+            <template v-else>
+              <div v-if="getConfigSchemaProperties(selectedPlugin).length === 0" class="empty-hint" style="border:none;padding:var(--space-md) 0;">
+                该插件无可配置项
+              </div>
+              <div v-else class="form-grid">
+                <div v-for="prop in getConfigSchemaProperties(selectedPlugin)" :key="prop.key" class="form-row">
+                  <label class="form-label">{{ prop.key }}{{ prop.description ? ` (${prop.description})` : '' }}</label>
+                  <input v-if="prop.type === 'string'" v-model="pluginConfigForm[prop.key as string]" class="form-input" :placeholder="String(prop.default ?? '')" />
+                  <input v-else-if="prop.type === 'number'" type="number" class="form-input" v-model.number="pluginConfigForm[prop.key as string]" :placeholder="String(prop.default ?? '')" />
+                  <input v-else-if="prop.type === 'boolean'" type="checkbox" v-model="pluginConfigForm[prop.key as string]" />
+                  <input v-else v-model="pluginConfigForm[prop.key as string]" class="form-input" :placeholder="String(prop.default ?? '')" />
+                </div>
+              </div>
+            </template>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-ghost" @click="handleCancelPluginConfig">{{ t('plugins.cancelConfig') }}</button>
+            <button class="btn-primary" @click="handleSavePluginConfig(selectedPlugin.id)" :disabled="configLoading">{{ t('plugins.saveConfig') }}</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -1005,6 +1114,19 @@ onMounted(() => {
   gap: var(--space-sm);
 }
 
+.edit-test-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-top: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  background: var(--color-danger-light);
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+}
+
 /* ── Session Settings ──────────────────────────────────── */
 .session-card {
   padding: var(--space-lg);
@@ -1163,6 +1285,110 @@ onMounted(() => {
   font-weight: 600;
   margin-bottom: var(--space-md);
   color: var(--color-text);
+}
+
+/* ── Modal Dialog ──────────────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: var(--space-lg);
+}
+
+.modal-dialog {
+  background: var(--bg-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  width: 100%;
+  max-width: 560px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-lg);
+  border-bottom: 1px solid var(--border-light);
+}
+
+.modal-title {
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  color: var(--color-text);
+  margin: 0;
+}
+
+.modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: var(--transition-base);
+}
+
+.modal-close:hover {
+  background: var(--bg-hover);
+  color: var(--color-text);
+}
+
+.modal-close .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.modal-body {
+  padding: var(--space-lg);
+  overflow-y: auto;
+  flex: 1;
+}
+
+.modal-loading {
+  text-align: center;
+  padding: var(--space-lg);
+  color: var(--color-text-secondary);
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+  padding: var(--space-lg);
+  border-top: 1px solid var(--border-light);
+}
+
+/* Modal transition */
+.modal-fade-enter-active,
+.modal-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.modal-fade-enter-active .modal-dialog,
+.modal-fade-leave-active .modal-dialog {
+  transition: transform 0.2s ease;
+}
+
+.modal-fade-enter-from,
+.modal-fade-leave-to {
+  opacity: 0;
+}
+
+.modal-fade-enter-from .modal-dialog,
+.modal-fade-leave-to .modal-dialog {
+  transform: scale(0.95) translateY(10px);
 }
 
 /* ── General Settings ──────────────────────────────────── */

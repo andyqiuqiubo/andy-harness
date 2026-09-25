@@ -106,9 +106,23 @@ onUnmounted(() => {
       <!-- Header -->
       <header class="chat-header">
         <div class="header-title">
-          <h2>{{ chatStore.currentSession?.title || 'andy-harness' }}</h2>
+          <span class="brand-title">andy-harness</span>
+          <span class="title-separator">|</span>
+          <h2>{{ chatStore.currentSession?.title || '新会话' }}</h2>
         </div>
         <div class="header-controls">
+          <button
+            :class="['mock-toggle', { active: chatStore.mockMode }]"
+            @click="chatStore.mockMode = !chatStore.mockMode"
+            :title="chatStore.mockMode ? '模拟模式已开启' : '点击开启模拟模式（无需 API Key）'"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+              <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+              <line x1="12" y1="22.08" x2="12" y2="12" />
+            </svg>
+            <span>{{ chatStore.mockMode ? '模拟中' : '模拟' }}</span>
+          </button>
           <div class="select-wrapper">
             <select v-model="selectedProvider" class="provider-select">
               <option v-for="p in providerStore.providers" :key="p.id" :value="p.id">
@@ -285,6 +299,26 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.brand-title {
+  font-size: var(--font-size-md);
+  font-weight: 700;
+  color: var(--color-primary);
+  white-space: nowrap;
+  letter-spacing: -0.02em;
+}
+
+.title-separator {
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
+}
+
 .header-title h2 {
   font-size: var(--font-size-md);
   font-weight: 600;
@@ -298,6 +332,34 @@ onUnmounted(() => {
   display: flex;
   gap: var(--space-sm);
   align-items: center;
+}
+
+.mock-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: var(--bg-surface);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: var(--transition-base);
+  white-space: nowrap;
+}
+
+.mock-toggle:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.mock-toggle.active {
+  background: var(--color-primary-light);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  font-weight: 600;
 }
 
 .select-wrapper {

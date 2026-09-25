@@ -26,6 +26,8 @@ def setup_model_routes(registry: ServiceRegistry) -> None:
 
         models: list[dict[str, Any]] = []
         for provider_info in pr.list_providers():
+            if not provider_info.get("enabled", True):
+                continue
             for model_name in provider_info.get("models", []):
                 models.append(
                     {

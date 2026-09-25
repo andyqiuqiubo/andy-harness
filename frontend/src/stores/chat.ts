@@ -15,6 +15,8 @@ export const useChatStore = defineStore('chat', () => {
   const isStreaming = ref(false)
   const contextSnapshot = ref<Record<string, unknown> | null>(null)
   const error = ref<string | null>(null)
+  const mockMode = ref(false)
+  let mockTimer: ReturnType<typeof setTimeout> | null = null
 
   const currentSession = computed(() =>
     sessions.value.find((s) => s.id === currentSessionId.value)
@@ -154,6 +156,61 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // 生成模拟回复文本
+  function _generateMockReply(userContent: string): string {
+    const replies = [
+      `收到你的提问：「${userContent}」\n\n这是**模拟模式**下的回复。当前未配置 API Key，因此使用本地模拟代替真实模型。\n\n## 模拟模式说明\n\n- 此回复为前端本地生成，非真实模型输出\n- 流式效果模拟了真实模型的逐 token 输出\n- 关闭模拟模式后将恢复正常的 WebSocket 调用\n\n如果你需要真实对话，请在设置页面配置对应 Provider 的 API Key。`,
+      `你说了：「${userContent}」\n\n我是 **andy-harness** 的模拟回复引擎。由于当前未配置 API Key，无法调用真实模型。\n\n### 你可以：\n1. 在 **设置 → 插件管理** 中配置 Provider 的 api_key\n2. 继续使用模拟模式进行界面测试\n3. 关闭模拟模式后尝试真实对话\n\n> 模拟模式仅用于开发和测试，不会产生真实费用。`,
+      `好的，我收到了你的消息：「${userContent}」\n\n这是模拟回复。当前处于 **模拟模式**，无需 API Key 即可体验 andy-harness 的对话界面。\n\n---\n\n模拟模式下的回复是预设的，不会根据上下文做复杂推理。要获得真实的 AI 回复，请配置 API Key 后关闭模拟模式。`,
+    ]
+    return replies[Math.floor(Math.random() * replies.length)]
+  }
+
+  // 模拟流式回复
+  function _runMockStream(userContent: string) {
+    const fullReply = _generateMockReply(userContent)
+    const tokens = fullReply.split(/(\s+)/) // 按空白拆分，保留空格
+    let idx = 0
+
+    // 模拟思维链
+    const reasoning = '让我分析一下用户的问题，生成一个合适的模拟回复…'
+    const reasoningTokens = reasoning.split('')
+    let rIdx = 0
+
+    // 先流式输出思维链
+    mockTimer = setTimeout(function emitReasoning() {
+      if (rIdx >= reasoningTokens.length) {
+        reasoningDone.value = true
+        // 开始输出正文
+        mockTimer = setTimeout(function emitToken() {
+          if (idx >= tokens.length) {
+            // 完成
+            messages.value.push({
+              id: Date.now().toString(),
+              session_id: currentSessionId.value || '',
+              role: 'assistant',
+              content: streamingContent.value,
+              tokens: 0,
+              created_at: new Date().toISOString(),
+            })
+            streamingContent.value = ''
+            streamingReasoning.value = ''
+            reasoningDone.value = false
+            isStreaming.value = false
+            return
+          }
+          streamingContent.value += tokens[idx]
+          idx++
+          mockTimer = setTimeout(emitToken, 30 + Math.random() * 40)
+        }, 300)
+        return
+      }
+      streamingReasoning.value += reasoningTokens[rIdx]
+      rIdx++
+      mockTimer = setTimeout(emitReasoning, 20 + Math.random() * 30)
+    }, 500)
+  }
+
   function sendMessage(content: string, providerId: string, model?: string) {
     if (!currentSessionId.value) return
     isStreaming.value = true
@@ -172,6 +229,11 @@ export const useChatStore = defineStore('chat', () => {
       created_at: new Date().toISOString(),
     })
 
+    if (mockMode.value) {
+      _runMockStream(content)
+      return
+    }
+
     // S26: Include temperature and system_prompt from session settings
     const settingsStore = useSettingsStore()
     const settings = settingsStore.sessionSettings
@@ -187,8 +249,15 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function stopStreaming() {
+    // 模拟模式：清除定时器
+    if (mockTimer) {
+      clearTimeout(mockTimer)
+      mockTimer = null
+    }
     // S24: Send stop control message to server before stopping locally
-    apiClient.ws.send({ type: 'stop', session_id: currentSessionId.value })
+    if (!mockMode.value) {
+      apiClient.ws.send({ type: 'stop', session_id: currentSessionId.value })
+    }
     isStreaming.value = false
     if (streamingContent.value || streamingReasoning.value) {
       messages.value.push({
@@ -227,6 +296,7 @@ export const useChatStore = defineStore('chat', () => {
     isStreaming,
     contextSnapshot,
     error,
+    mockMode,
     currentSession,
     loadSessions,
     createSession,

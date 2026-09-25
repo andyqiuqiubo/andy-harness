@@ -46,6 +46,8 @@ class ProviderTokenCounter(TokenCounter):
 
         if registry:
             for provider_info in registry.list_providers():
+                if not provider_info.get("enabled", True):
+                    continue
                 models = provider_info.get("models", [])
                 if model in models:
                     try:

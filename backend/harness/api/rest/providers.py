@@ -31,6 +31,7 @@ class ProviderUpdate(BaseModel):
     api_key: str | None = None
     models: list[str] | None = None
     extra_params: dict[str, Any] | None = None
+    enabled: bool | None = None
 
 
 def _get_provider_registry(registry: ServiceRegistry) -> Any:
@@ -62,17 +63,7 @@ def setup_provider_routes(registry: ServiceRegistry) -> None:
             raise APIError(
                 "PROVIDER_NOT_FOUND", f"Provider 不存在: {provider_id}", 404
             )
-        config = pr.get_provider_config(provider_id) or {}
-        return {
-            "id": provider_id,
-            "name": config.get("name", provider_id),
-            "base_url": config.get("base_url", ""),
-            "models": config.get("models", []),
-            "has_api_key": bool(
-                config.get("api_key") or config.get("api_key_encrypted")
-            ),
-            "extra_params": config.get("extra_params", {}),
-        }
+        return cast("dict[str, Any]", pr.get_provider_info(provider_id))
 
     @router.post("", summary="创建自定义 provider")
     async def create_provider(req: ProviderCreate) -> dict[str, Any]:
@@ -99,6 +90,7 @@ def setup_provider_routes(registry: ServiceRegistry) -> None:
             "api_key_encrypted": encrypted_key,
             "base_url": req.base_url,
             "models": req.models or [],
+            "enabled": True,
         }
         if req.extra_params:
             config["extra_params"] = req.extra_params
@@ -112,12 +104,7 @@ def setup_provider_routes(registry: ServiceRegistry) -> None:
         except Exception:
             pr.register_provider(provider_id, CustomProvider, config)
 
-        return {
-            "id": provider_id,
-            "name": req.name,
-            "base_url": req.base_url,
-            "has_api_key": True,
-        }
+        return cast("dict[str, Any]", pr.get_provider_info(provider_id))
 
     @router.patch("/{provider_id}", summary="更新 provider")
     async def update_provider(
@@ -147,6 +134,8 @@ def setup_provider_routes(registry: ServiceRegistry) -> None:
             updated_config["models"] = req.models
         if req.extra_params is not None:
             updated_config["extra_params"] = req.extra_params
+        if req.enabled is not None:
+            updated_config["enabled"] = req.enabled
         if req.api_key is not None:
             encryptor = APIKeyEncryptor()
             updated_config["api_key_encrypted"] = encryptor.encrypt(req.api_key)
@@ -161,11 +150,7 @@ def setup_provider_routes(registry: ServiceRegistry) -> None:
         except Exception:
             pass
 
-        return {
-            "id": provider_id,
-            "name": updated_config.get("name", provider_id),
-            "has_api_key": bool(updated_config.get("api_key_encrypted")),
-        }
+        return cast("dict[str, Any]", pr.get_provider_info(provider_id))
 
     @router.delete("/{provider_id}", summary="删除 provider")
     async def delete_provider(provider_id: str) -> dict[str, str]:
@@ -174,6 +159,14 @@ def setup_provider_routes(registry: ServiceRegistry) -> None:
         pr = _get_provider_registry(registry)
         if not pr.has_provider(provider_id):
             raise APIError("PROVIDER_NOT_FOUND", f"Provider 不存在: {provider_id}", 404)
+
+        # 仅允许删除自定义 provider；内置 provider 由插件管理，只能停用
+        if not provider_id.startswith("custom_"):
+            raise APIError(
+                "PROVIDER_DELETE_FORBIDDEN",
+                "内置 Provider 不可删除，只能停用",
+                400,
+            )
 
         try:
             db = registry.get(Database)
@@ -188,6 +181,13 @@ def setup_provider_routes(registry: ServiceRegistry) -> None:
         pr = _get_provider_registry(registry)
         if not pr.has_provider(provider_id):
             raise APIError("PROVIDER_NOT_FOUND", f"Provider 不存在: {provider_id}", 404)
-        provider = pr.get_provider(provider_id)
-        ok = await provider.health_check()
+        # 测试连接允许已停用的 provider（启用前的自动测试场景）
+        try:
+            provider = pr.get_provider(provider_id, include_disabled=True)
+        except Exception as e:
+            return {"connected": False, "provider": provider_id, "error": str(e)}
+        try:
+            ok = await provider.health_check()
+        except Exception as e:
+            return {"connected": False, "provider": provider_id, "error": str(e)}
         return {"connected": ok, "provider": provider_id}

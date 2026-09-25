@@ -1,0 +1,10 @@
+{
+  "id": "tool_jev_choice",
+  "name": "Jev Choice Tool",
+  "version": "0.1.0",
+  "type": "tool",
+  "entry": "plugins.tool_jev_choice.main:JevChoicePlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["network"],
+  "description": "Jev 选择型判断工具：从固定选项中选最合适的一个，返回选中项、各选项概率和置信度"
+}

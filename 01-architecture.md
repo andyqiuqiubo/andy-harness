@@ -62,7 +62,7 @@
 |---|---|---|---|
 | `provider` | `ModelProviderPlugin` | 大模型接入 | provider-deepseek / provider-qwen / provider-doubao |
 | `tool` | `ToolPlugin` | Agent 可调用工具 | tool-code-runner / tool-web-search / tool-web-fetch / tool-theme-switcher / tool-ip-lookup |
-| `service` | `ServicePlugin` | 后台常驻服务（activate/deactivate） | session-manager / context-manager / sandbox-manager |
+| `service` | `ServicePlugin` | 后台常驻服务（activate/deactivate） | session-manager / context-manager / sandbox-manager / jev-manager |
 | `hook` | `HookPlugin` | 生命周期拦截器 | 内容审计、日志埋点 |
 | `channel` | `ChannelPlugin` | 外部接入渠道 | CLI（内置 channel） / 飞书 / Telegram（后期） |
 | `ui`（前端） | `UIPlugin` | 前端面板/路由/设置项扩展 | hello-plugin |
@@ -257,7 +257,8 @@ ReAct 风格循环：
 - **统一能力**：`chat(stream)` / `list_models()` / `count_tokens()` / `health_check()`（GET /models 端点验证，不消耗 token）。
 - **TokenCounter**：使用 tiktoken 估算（类级缓存编码器），`ProviderTokenCounter` 组合式委托到正确 provider。
 - **API Key 管理**：Fernet 加密入库，`ProviderRegistry` 支持 `api_key`（明文）和 `api_key_encrypted`（密文）两种来源，运行时自动解密。环境变量 `DEEPSEEK_API_KEY` 作为回退。
-- **ProviderRegistry**：统一管理内置与自定义 provider，通过 `get_provider(id)` 获取实例（不感知配置来源差异）。实例缓存，配置更新时清除缓存。
+- **ProviderRegistry**：统一管理内置与自定义 provider，通过 `get_provider(id)` 获取实例（不感知配置来源差异）。实例缓存，配置更新时清除缓存。`get_provider` 默认拒绝已停用的 provider，测试连接场景可用 `include_disabled=True` 豁免。
+- **Provider 启用/停用状态**：`list_providers()` 返回 `enabled` 字段；`ProviderUpdate` 支持更新 `enabled`；停用后 provider 的模型从 `/api/models` 隐藏、Token 计数跳过、WS 聊天拒绝调用。内置 provider 的密钥和启用状态通过 `_config_overrides` 机制持久化到数据库，重启后自动合并。
 
 ### 4.3 会话管理（session-manager，service 插件）
 
@@ -296,7 +297,24 @@ ReAct 风格循环：
 - 插件列表、启停、配置读写、权限说明。
 - **安装接口** `POST /api/plugins/install`：用户在 UI 填写 plugin_id/name/entry/description/plugin_code，后端自动创建插件目录和文件，加载并激活插件，无需任何项目代码改动。
 - **卸载接口** `DELETE /api/plugins/{plugin_id}`：删除插件文件并注销。
+- **配置接口** `GET|PATCH /api/plugins/{plugin_id}/config`：读取和更新插件配置，按 `config_schema` 自动渲染表单。
 - **核心插件保护**：`core: true` 插件的停用/卸载按钮灰显并提示不可操作，API 层也拒绝此类请求。
+
+### 4.8 Jev 结构化决策（jev-manager，service 插件）
+
+集成 TypeSafe AI Jev 结构化决策模型，支持三种原语：
+
+| 原语 | 类型 | 输入 | 输出 |
+|---|---|---|---|
+| Choice | 选择型 | question + options[] | selected + probabilities + confidence |
+| Score | 评分型 | question + scale[] | score + probabilities + confidence |
+| Noul | 是非型 | proposition | probability (0~1) |
+
+- **JevManager** 封装 `/jev/decide` API，三种原语可混合并行提问，独立计算、同时返回。
+- **服务注册**：激活时将 `JevManager` 实例注册到 `ServiceRegistry`，工具插件通过 `services.get(JevManager)` 调用。
+- **配置**：`api_key`（必填，secret）+ `base_url`（默认 `https://api.typesafe.ai/v1`），通过设置页面插件管理配置。
+- **优雅降级**：未配置 API Key 时插件仍可激活（记录警告），调用 Jev 工具时返回友好错误提示。
+- **环境变量**：`JEV_API_KEY` 作为回退。
 
 ---
 
@@ -376,7 +394,7 @@ andy-harness/
 │   │   └── infra/           # L5：SQLite / 加密 / Repository
 │   ├── plugins/             # 扩展插件（自动扫描加载）
 │   │   ├── provider_deepseek/  provider_qwen/  provider_doubao/
-│   │   ├── session_manager/  context_manager/
+│   │   ├── session_manager/  context_manager/  jev_manager/
 │   │   ├── tool_code_runner/  tool_web_search/  tool_web_fetch/
 │   │   ├── tool_theme_switcher/  tool_ip_lookup/
 │   │   └── hello_plugin/
@@ -401,7 +419,7 @@ andy-harness/
 
 ## 8. API 概览
 
-- REST：`/api/sessions`、`/api/sessions/{id}/messages`、`/api/providers`（含 `PATCH /{id}` 更新配置、`POST /{id}/test` 测试连接）、`/api/models`、`/api/settings`、`/api/plugins`（含 `POST /install` 安装、`DELETE /{id}` 卸载、`POST /{id}/activate`、`POST /{id}/deactivate`、`GET|PATCH /{id}/config`）
+- REST：`/api/sessions`、`/api/sessions/{id}/messages`、`/api/providers`（含 `PATCH /{id}` 更新配置和启用状态、`POST /{id}/test` 测试连接，返回 `enabled` 字段和具体错误信息）、`/api/models`（仅返回已启用 provider 的模型）、`/api/settings`、`/api/plugins`（含 `POST /install` 安装、`DELETE /{id}` 卸载、`POST /{id}/activate`、`POST /{id}/deactivate`、`GET|PATCH /{id}/config`）
 - WS：`/ws/chat` —— 帧类型见下表
 - 统一错误格式：`{code, message, detail, trace_id}`
 
@@ -438,6 +456,8 @@ andy-harness/
 6. **自动会话标题**：首次提问后 AI 自动生成简短总结标题。
 7. **微交互**：涟漪效果、右键菜单、长按等。
 8. **会话管理**：新建/重命名/归档/删除/清空全部。
+9. **Jev 结构化决策**：集成 TypeSafe AI Jev 模型，支持 Choice/Score/Noul 三种原语，AI 可自动调用进行结构化判断。
+10. **Provider 状态管理**：启用/停用状态联动，启用前自动测试连接，停用后模型和工具自动隔离。
 
 ---
 

@@ -9,6 +9,28 @@
 
 ## [Unreleased]
 
+### 新增
+
+#### Jev 结构化决策
+- Jev Manager 服务插件（jev_manager）：封装 TypeSafe AI Jev API，支持三种原语
+  - Choice（选择型）：从固定选项中选一个，返回概率分布和置信度
+  - Score（评分型）：在自定义等级上打分，返回概率分布和置信度
+  - Noul（是非型）：判断命题是否成立，返回 0~1 概率值
+- 三种原语可混合并行提问，独立计算、同时返回
+- 插件配置 schema（api_key + base_url），支持设置页面配置
+- 环境变量 JEV_API_KEY 回退支持
+- 未配置 API Key 时插件仍可激活，调用工具时返回友好错误提示
+
+#### Provider 状态管理增强
+- Provider 列表返回 `enabled` 字段，前端可实时显示启用/停用状态
+- ProviderUpdate 接口新增 `enabled` 字段，支持通过 API 启用/停用 Provider
+- Provider 启用前自动测试连接，连接失败则不启用并显示错误原因
+- 停用 Provider 后：模型从模型选择器隐藏、Token 计数跳过、聊天不可调用
+- 内置 Provider 修改的密钥和启用状态持久化到数据库，重启后保留
+- 内置 Provider 不可删除（仅可停用），自定义 Provider 可删除
+- 测试连接接口返回具体错误信息，便于前端展示失败原因
+- ProviderRegistry 新增 `_config_overrides` 机制：内置 Provider 插件激活时自动合并数据库中的密钥和启用状态覆盖项
+
 ### 待完成
 - 插件从 zip/git 安装
 - 会话分支与导出（Markdown/JSON）

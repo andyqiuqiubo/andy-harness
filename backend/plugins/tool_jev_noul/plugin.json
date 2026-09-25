@@ -1,0 +1,10 @@
+{
+  "id": "tool_jev_noul",
+  "name": "Jev Noul Tool",
+  "version": "0.1.0",
+  "type": "tool",
+  "entry": "plugins.tool_jev_noul.main:JevNoulPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["network"],
+  "description": "Jev 是非型判断工具：判断命题是否成立，返回 0~1 概率值"
+}

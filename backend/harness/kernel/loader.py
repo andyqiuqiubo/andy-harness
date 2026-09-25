@@ -292,7 +292,7 @@ class PluginLoader:
     def list_plugins(self) -> list[dict[str, Any]]:
         """列出所有已加载插件的状态。"""
         result: list[dict[str, Any]] = []
-        for plugin_id, (_plugin, manifest, _ctx) in self._loaded.items():
+        for plugin_id, (_plugin, manifest, ctx) in self._loaded.items():
             result.append(
                 {
                     "id": plugin_id,
@@ -301,9 +301,30 @@ class PluginLoader:
                     "type": manifest.type,
                     "activated": plugin_id in self._activated,
                     "core": manifest.core,
+                    "permissions": manifest.permissions,
+                    "config_schema": manifest.config_schema,
+                    "config": ctx.config.as_dict(),
                 }
             )
         return result
+
+    def get_plugin_config(self, plugin_id: str) -> dict[str, Any]:
+        """获取插件的配置 schema 和当前配置值。"""
+        if plugin_id not in self._loaded:
+            raise PluginNotLoadedError(plugin_id)
+        _plugin, manifest, ctx = self._loaded[plugin_id]
+        return {
+            "config_schema": manifest.config_schema,
+            "config": ctx.config.as_dict(),
+        }
+
+    def set_plugin_config(self, plugin_id: str, config: dict[str, Any]) -> None:
+        """更新插件配置。"""
+        if plugin_id not in self._loaded:
+            raise PluginNotLoadedError(plugin_id)
+        _plugin, manifest, ctx = self._loaded[plugin_id]
+        for key, value in config.items():
+            ctx.config.set(key, value)
 
     # ── 一键加载 ──────────────────────────────────────
 

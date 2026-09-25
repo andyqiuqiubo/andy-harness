@@ -183,8 +183,10 @@
 
 **任务清单**
 - [x] 设置页：provider 列表（启停/编辑/删除）、新增自定义模型表单 + 「测试连接」按钮
+- [x] **Provider 状态管理**：未配置密钥时测试和启用按钮置灰；编辑后点击启用自动测试连接，成功则启用并关闭，失败则显示错误原因；停用后模型和工具自动隔离；内置 Provider 不可删除
 - [x] 会话级设置：模型、温度、系统提示词覆盖（通过 WS 消息传递到 AgentLoop）
 - [x] 插件页：列表、启停开关、配置表单（按 config_schema 自动渲染）、权限说明
+- [x] **插件配置接口** `GET|PATCH /api/plugins/{id}/config`：读取和更新插件配置
 - [x] **插件安装表单**：填写 plugin_id/name/entry/description/plugin_code 即可安装
 - [x] **插件卸载按钮**
 - [x] 核心插件保护：`core: true` 插件的停用/卸载按钮灰显并提示不可操作
@@ -271,6 +273,7 @@ P0 脚手架 ✅
 | `provider_doubao` | provider | 豆包大模型 |
 | `session_manager` | service (core) | 会话 CRUD、消息持久化、tool_call_id |
 | `context_manager` | service (core) | 上下文装配、压缩策略、孤立消息清理、快照 |
+| `jev_manager` | service | TypeSafe AI Jev 结构化决策模型（Choice/Score/Noul 三种原语） |
 | `tool_code_runner` | tool | Python/Shell 代码执行（沙箱） |
 | `tool_web_search` | tool | 百度搜索引擎搜索 |
 | `tool_web_fetch` | tool | 网页正文内容抓取 |

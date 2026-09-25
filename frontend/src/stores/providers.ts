@@ -26,10 +26,9 @@ export const useProviderStore = defineStore('providers', () => {
   }
 
   async function updateProvider(id: string, updates: Partial<Provider>) {
-    const updated = await apiClient.patch<Provider>(`/providers/${id}`, updates)
-    const idx = providers.value.findIndex((p) => p.id === id)
-    if (idx >= 0) providers.value[idx] = updated
-    return updated
+    await apiClient.patch<Provider>(`/providers/${id}`, updates)
+    // 更新后重新加载，确保 enabled / has_api_key 等状态同步
+    await loadProviders()
   }
 
   async function toggleProviderEnabled(id: string) {

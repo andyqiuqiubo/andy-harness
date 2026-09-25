@@ -87,6 +87,25 @@ class TestProviderRegistry:
         ids = [p["id"] for p in providers]
         assert "test" in ids
         assert "custom" in ids
+        # 默认启用
+        assert all(p["enabled"] is True for p in providers)
+        # 返回完整字段
+        assert all("has_api_key" in p and "base_url" in p for p in providers)
+
+    def test_disabled_provider_raises_error(self) -> None:
+        """已停用的 provider 不可获取实例（除非 include_disabled）。"""
+        registry = ProviderRegistry()
+        registry.register_provider(
+            "test", TestProviderImpl,
+            {"api_key": "sk-test", "enabled": False},
+        )
+
+        with pytest.raises(ProviderConfigError, match="已停用"):
+            registry.get_provider("test")
+
+        # include_disabled=True 时允许获取（用于连接测试）
+        provider = registry.get_provider("test", include_disabled=True)
+        assert provider.api_key == "sk-test"
 
     def test_update_config_clears_cache(self) -> None:
         """更新配置后清除实例缓存。"""

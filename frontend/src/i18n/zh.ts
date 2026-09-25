@@ -28,12 +28,13 @@ export default {
   'providers.delete': '删除',
   'providers.edit': '编辑',
   'providers.enable': '启用',
-  'providers.disable': '禁用',
+  'providers.disable': '停用',
   'providers.empty': '暂无 Provider，点击「+ 新增」添加自定义模型',
   'providers.enabled': '已启用',
-  'providers.disabled': '已禁用',
+  'providers.disabled': '已停用',
   'providers.hasApiKey': '🔑 已配置',
   'providers.noApiKey': '⚠ 未配置密钥',
+  'providers.editTestFail': '连接失败',
 
   // Session settings
   'session.title': '会话级设置',
@@ -49,6 +50,7 @@ export default {
   'plugins.empty': '暂无已加载的插件',
   'plugins.config': '插件配置',
   'plugins.saveConfig': '保存配置',
+  'plugins.cancelConfig': '取消',
 
   // General
   'general.title': '通用设置',

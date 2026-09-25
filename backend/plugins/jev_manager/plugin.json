@@ -1,0 +1,17 @@
+{
+  "id": "jev_manager",
+  "name": "Jev Manager",
+  "version": "0.1.0",
+  "type": "service",
+  "entry": "plugins.jev_manager.main:JevManagerPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["network"],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "api_key": { "type": "string", "secret": true, "description": "Jev API Key" },
+      "base_url": { "type": "string", "default": "https://api.typesafe.ai/v1", "description": "Jev API 基础 URL" }
+    }
+  },
+  "description": "TypeSafe AI Jev 结构化决策模型服务，支持 Choice/Score/Noul 三种原语"
+}

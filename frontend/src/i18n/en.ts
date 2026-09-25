@@ -34,6 +34,7 @@ export default {
   'providers.disabled': 'Disabled',
   'providers.hasApiKey': '🔑 Configured',
   'providers.noApiKey': '⚠ No API Key',
+  'providers.editTestFail': 'Connection Failed',
 
   // Session settings
   'session.title': 'Session Settings',
@@ -49,6 +50,7 @@ export default {
   'plugins.empty': 'No plugins loaded',
   'plugins.config': 'Plugin Configuration',
   'plugins.saveConfig': 'Save Config',
+  'plugins.cancelConfig': 'Cancel',
 
   // General
   'general.title': 'General Settings',

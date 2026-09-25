@@ -42,6 +42,12 @@ class InstallPluginRequest(BaseModel):
     plugin_code: str  # Python 源码
 
 
+class UpdateConfigRequest(BaseModel):
+    """更新插件配置请求。"""
+
+    config: dict[str, Any]
+
+
 def setup_plugin_routes(registry: ServiceRegistry) -> None:
     """注册插件路由。"""
 
@@ -168,3 +174,22 @@ def setup_plugin_routes(registry: ServiceRegistry) -> None:
             shutil.rmtree(plugin_dir, ignore_errors=True)
 
         return {"status": "uninstalled", "plugin_id": plugin_id}
+
+    @router.get("/{plugin_id}/config", summary="获取插件配置")
+    async def get_plugin_config(plugin_id: str) -> dict[str, Any]:
+        """获取插件的配置 schema 和当前配置值。"""
+        loader = _get_loader(registry)
+        if not loader.get_plugin(plugin_id):
+            raise APIError("PLUGIN_NOT_FOUND", f"插件不存在: {plugin_id}", 404)
+        return loader.get_plugin_config(plugin_id)
+
+    @router.patch("/{plugin_id}/config", summary="更新插件配置")
+    async def update_plugin_config(
+        plugin_id: str, req: UpdateConfigRequest
+    ) -> dict[str, Any]:
+        """更新插件配置。"""
+        loader = _get_loader(registry)
+        if not loader.get_plugin(plugin_id):
+            raise APIError("PLUGIN_NOT_FOUND", f"插件不存在: {plugin_id}", 404)
+        loader.set_plugin_config(plugin_id, req.config)
+        return {"status": "updated", "plugin_id": plugin_id}
