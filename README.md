@@ -31,9 +31,9 @@
 
 ## 演示视频
 
-<video src="https://github.com/andyqiuqiubo/andy-harness/raw/main/videos/20260925_132012.mp4" controls width="100%"></video>
+![andy-harness 演示](videos/demo.gif)
 
-> 展示对话界面、Provider 状态管理、插件配置、Jev 结构化决策等功能。
+> 演示对话界面、Provider 状态管理、插件配置弹窗、Jev 结构化决策等功能（41 秒）。[观看完整 MP4 视频](https://github.com/andyqiuqiubo/andy-harness/blob/main/videos/20260925_132012.mp4)（更清晰，GitHub 在线播放）
 
 ---
 
