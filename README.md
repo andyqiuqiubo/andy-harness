@@ -31,7 +31,9 @@
 
 ## 演示视频
 
-[下载演示视频](videos/20260925_131406.wmv) — 展示对话界面、Provider 状态管理、插件配置、Jev 结构化决策等功能（WMV 格式，16.5MB）
+https://github.com/andyqiuqiubo/andy-harness/raw/main/videos/20260925_132012.mp4
+
+> 展示对话界面、Provider 状态管理、插件配置、Jev 结构化决策等功能。
 
 ---
 
