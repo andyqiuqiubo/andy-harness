@@ -1,0 +1,37 @@
+@echo off
+title andy-harness stopper
+
+echo ==========================================
+echo   andy-harness stop all services
+echo ==========================================
+echo.
+
+set FOUND=0
+
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8000" ^| findstr "LISTENING"') do (
+    set FOUND=1
+    echo Stopping backend  [PID %%a, port 8000] ...
+    taskkill /PID %%a /F >nul 2>&1
+)
+
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":5173" ^| findstr "LISTENING"') do (
+    set FOUND=1
+    echo Stopping frontend [PID %%a, port 5173] ...
+    taskkill /PID %%a /F >nul 2>&1
+)
+
+if %FOUND%==0 (
+    echo No running andy-harness service found.
+) else (
+    echo.
+    echo All services stopped.
+)
+
+echo.
+echo Closing service windows ...
+taskkill /FI "WINDOWTITLE eq andy-harness-backend*" /F /T >nul 2>&1
+taskkill /FI "WINDOWTITLE eq andy-harness-frontend*" /F /T >nul 2>&1
+echo Done. All windows closed.
+
+echo.
+pause

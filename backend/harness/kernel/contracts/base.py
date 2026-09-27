@@ -35,6 +35,8 @@ class PluginManifest:
     config_schema: dict[str, Any] | None = None
     core: bool = False  # 核心插件不可停用
     description: str = ""
+    # 插件来源：system（系统内置）/ marketplace（从插件市场安装）
+    source: str = "system"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PluginManifest:
@@ -50,6 +52,7 @@ class PluginManifest:
             config_schema=data.get("config_schema"),
             core=data.get("core", False),
             description=data.get("description", ""),
+            source=data.get("source", "system"),
         )
 
     def to_dict(self) -> dict[str, Any]:

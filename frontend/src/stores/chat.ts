@@ -66,8 +66,12 @@ export const useChatStore = defineStore('chat', () => {
     }
     if (currentSessionId.value === sessionId) {
       const nextActive = sessions.value.find((s) => !s.archived)
-      currentSessionId.value = nextActive ? nextActive.id : null
-      messages.value = []
+      if (nextActive) {
+        await selectSession(nextActive.id)
+      } else {
+        currentSessionId.value = null
+        messages.value = []
+      }
     }
   }
 
@@ -280,8 +284,12 @@ export const useChatStore = defineStore('chat', () => {
     sessions.value = sessions.value.filter((s) => s.id !== sessionId)
     if (currentSessionId.value === sessionId) {
       const nextActive = sessions.value.find((s) => !s.archived)
-      currentSessionId.value = nextActive ? nextActive.id : null
-      messages.value = []
+      if (nextActive) {
+        await selectSession(nextActive.id)
+      } else {
+        currentSessionId.value = null
+        messages.value = []
+      }
     }
   }
 

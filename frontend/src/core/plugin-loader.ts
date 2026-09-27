@@ -10,6 +10,7 @@ export interface LoadedPlugin {
   manifest: UIPluginManifest
   active: boolean
   component?: unknown
+  overlayComponent?: unknown
   menuItems: PluginMenuItem[]
 }
 
@@ -46,6 +47,7 @@ export class PluginLoader {
     const pluginDir = manifestPath.substring(0, manifestPath.lastIndexOf('/'))
 
     let component: unknown = undefined
+    let overlayComponent: unknown = undefined
 
     if (manifest.contributes?.views) {
       for (const view of manifest.contributes.views) {
@@ -60,12 +62,26 @@ export class PluginLoader {
       }
     }
 
+    if (manifest.contributes?.overlays) {
+      for (const overlay of manifest.contributes.overlays) {
+        const componentPath = `${pluginDir}/${overlay.component}`
+        const loader = componentGlobs[componentPath]
+        if (loader) {
+          const module = await (loader as () => Promise<unknown>)()
+          overlayComponent = (module as { default: unknown }).default
+        } else {
+          console.warn(`[PluginLoader] Overlay component not found: ${componentPath}`)
+        }
+      }
+    }
+
     const menuItems = manifest.contributes?.menu_items ?? []
 
     const loaded: LoadedPlugin = {
       manifest,
       active: false,
       component,
+      overlayComponent,
       menuItems,
     }
     this.loadedPlugins.set(manifest.id, loaded)

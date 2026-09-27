@@ -1,0 +1,17 @@
+{
+  "id": "pet-ui-plugin",
+  "name": "元气宠物 Virtual Pet",
+  "version": "0.1.0",
+  "type": "ui",
+  "entry": "main:PetUIPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "backend_plugin_id": "pet_plugin",
+  "contributes": {
+    "overlays": [
+      {
+        "id": "pet-overlay",
+        "component": "components/PetOverlay.vue"
+      }
+    ]
+  }
+}

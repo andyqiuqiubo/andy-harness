@@ -131,7 +131,7 @@ onMounted(() => {
           <span v-if="session.archived" class="archived-badge">{{ t('sessions.archived') }}</span>
         </span>
         <div class="session-actions">
-          <button class="action-btn" @click.stop="handleRename(session.id)" :title="t('sessions.rename')">✏</button>
+          <button class="action-btn" @click.stop="handleRename(session.id)" :title="t('sessions.rename')">✏️</button>
           <button class="action-btn" @click.stop="handleArchive(session.id)" :title="t('sessions.archive')">📦</button>
           <button class="action-btn action-delete" @click.stop="handleDelete(session.id)" :title="t('sessions.delete')">✕</button>
         </div>
@@ -153,7 +153,7 @@ onMounted(() => {
         @click.stop
       >
         <button class="ctx-item" @click="handleRename(contextMenu.sessionId); contextMenu.visible = false">
-          <span class="ctx-icon">✏</span> {{ t('sessions.rename') }}
+          <span class="ctx-icon">✏️</span> {{ t('sessions.rename') }}
         </button>
         <button class="ctx-item" @click="handleArchive(contextMenu.sessionId)">
           <span class="ctx-icon">📦</span> {{ t('sessions.archive') }}

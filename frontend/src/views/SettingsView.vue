@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useProviderStore } from '../stores/providers'
-import { usePluginStore, type PluginInfo, type InstallPluginRequest } from '../stores/plugins'
+import { usePluginStore, type PluginInfo, type MarketplacePlugin } from '../stores/plugins'
 import { useSettingsStore, THEME_LIST, type Theme } from '../stores/settings'
 import { useLanguage } from '../composables/useLanguage'
 import { apiClient } from '../api/client'
@@ -256,15 +256,33 @@ function getConfigSchemaProperties(plugin: PluginInfo): { key: string; type: str
   }))
 }
 
-// 插件安装表单
-const showInstallForm = ref(false)
-const installForm = ref({
-  plugin_id: '',
-  name: '',
-  entry: '',
-  description: '',
-  plugin_code: '',
-})
+// 插件市场
+const showMarketplace = ref(false)
+const marketplaceLoading = ref(false)
+const marketplaceInstalling = ref<string | null>(null)
+// 说明弹窗：当前查看说明的市场插件
+const marketplaceDescribeTarget = ref<MarketplacePlugin | null>(null)
+
+async function handleToggleMarketplace() {
+  showMarketplace.value = !showMarketplace.value
+  if (showMarketplace.value) {
+    marketplaceLoading.value = true
+    await pluginStore.fetchMarketplace()
+    marketplaceLoading.value = false
+  }
+}
+
+async function handleMarketplaceInstall(mp: MarketplacePlugin) {
+  if (!confirm(`确定从插件市场安装「${mp.name}」吗？`)) return
+  marketplaceInstalling.value = mp.plugin_id
+  try {
+    await pluginStore.installMarketplacePlugin(mp.plugin_id)
+  } catch (e) {
+    alert('安装失败: ' + e)
+  } finally {
+    marketplaceInstalling.value = null
+  }
+}
 
 // 卸载插件
 async function handleUninstallPlugin(id: string) {
@@ -273,29 +291,6 @@ async function handleUninstallPlugin(id: string) {
     await pluginStore.uninstallPlugin(id)
   } catch (e) {
     alert('卸载失败: ' + e)
-  }
-}
-
-// 安装插件
-async function handleInstallPlugin() {
-  if (!installForm.value.plugin_id || !installForm.value.name || !installForm.value.entry || !installForm.value.plugin_code) {
-    alert('请填写所有必填字段')
-    return
-  }
-  try {
-    const req: InstallPluginRequest = {
-      plugin_id: installForm.value.plugin_id,
-      name: installForm.value.name,
-      entry: installForm.value.entry,
-      description: installForm.value.description,
-      plugin_code: installForm.value.plugin_code,
-      type: 'tool',
-    }
-    await pluginStore.installPlugin(req)
-    showInstallForm.value = false
-    installForm.value = { plugin_id: '', name: '', entry: '', description: '', plugin_code: '' }
-  } catch (e) {
-    alert('安装失败: ' + e)
   }
 }
 
@@ -517,41 +512,51 @@ onMounted(() => {
       <section v-if="activeTab === 'plugins'" class="tab-content">
         <div class="section-header">
           <h2 class="section-title">{{ t('plugins.title') }}</h2>
-          <button class="btn-primary" @click="showInstallForm = !showInstallForm">
+          <button class="btn-primary" @click="handleToggleMarketplace">
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
             </svg>
-            {{ showInstallForm ? '取消' : '安装插件' }}
+            {{ showMarketplace ? '收起' : '从插件市场安装插件' }}
           </button>
         </div>
 
-        <!-- 安装插件表单 -->
+        <!-- 插件市场 -->
         <Transition name="fade-slide">
-          <div v-if="showInstallForm" class="add-form card">
-            <h3 class="form-card-title">安装新插件</h3>
-            <div class="form-grid">
-              <div class="form-row">
-                <label class="form-label">插件 ID *</label>
-                <input v-model="installForm.plugin_id" class="form-input" placeholder="tool_my_tool" />
-              </div>
-              <div class="form-row">
-                <label class="form-label">插件名称 *</label>
-                <input v-model="installForm.name" class="form-input" placeholder="My Tool" />
-              </div>
-              <div class="form-row">
-                <label class="form-label">入口 (module:Class) *</label>
-                <input v-model="installForm.entry" class="form-input" placeholder="plugins.tool_my_tool.main:MyToolPlugin" />
-              </div>
-              <div class="form-row">
-                <label class="form-label">描述</label>
-                <input v-model="installForm.description" class="form-input" placeholder="一个自定义工具插件" />
+          <div v-if="showMarketplace" class="marketplace-panel card">
+            <h3 class="form-card-title">插件市场</h3>
+            <div v-if="marketplaceLoading" class="modal-loading">加载中…</div>
+            <div v-else-if="pluginStore.marketplace.length === 0" class="empty-hint" style="border:none;padding:var(--space-md) 0;">
+              插件市场暂无可用插件
+            </div>
+            <div v-else class="marketplace-list">
+              <div v-for="mp in pluginStore.marketplace" :key="mp.plugin_id" class="marketplace-card">
+                <div class="marketplace-info">
+                  <div class="marketplace-name">
+                    {{ mp.name }}
+                    <span v-if="mp.installed" class="badge-pill badge-ok">已安装</span>
+                  </div>
+                  <div class="marketplace-meta">
+                    <span class="badge-pill badge-version">v{{ mp.version }}</span>
+                    <span class="badge-pill badge-type">{{ mp.type }}</span>
+                  </div>
+                  <div class="marketplace-desc">{{ mp.description }}</div>
+                </div>
+                <div class="marketplace-actions">
+                  <button class="btn-ghost" @click="marketplaceDescribeTarget = mp">
+                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>
+                    说明
+                  </button>
+                  <button
+                    v-if="!mp.installed"
+                    class="btn-primary"
+                    @click="handleMarketplaceInstall(mp)"
+                    :disabled="marketplaceInstalling === mp.plugin_id"
+                  >
+                    {{ marketplaceInstalling === mp.plugin_id ? '安装中…' : '安装' }}
+                  </button>
+                </div>
               </div>
             </div>
-            <div class="form-row">
-              <label class="form-label">插件 Python 源码 *</label>
-              <textarea v-model="installForm.plugin_code" class="form-input code-textarea" rows="12" placeholder="from harness.kernel.contracts.tool import ToolPlugin&#10;..."></textarea>
-            </div>
-            <button class="btn-primary" @click="handleInstallPlugin">安装</button>
           </div>
         </Transition>
 
@@ -585,7 +590,7 @@ onMounted(() => {
                 <button class="btn-ghost" @click="handleLoadPluginConfig(p)" title="配置">
                   <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
                 </button>
-                <button v-if="!p.core" class="btn-ghost btn-uninstall" @click="handleUninstallPlugin(p.id)" title="卸载插件">
+                <button v-if="p.source === 'marketplace'" class="btn-ghost btn-uninstall" @click="handleUninstallPlugin(p.id)" title="卸载插件">
                   <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
                 </button>
               </div>
@@ -663,6 +668,34 @@ onMounted(() => {
           <div class="modal-footer">
             <button class="btn-ghost" @click="handleCancelPluginConfig">{{ t('plugins.cancelConfig') }}</button>
             <button class="btn-primary" @click="handleSavePluginConfig(selectedPlugin.id)" :disabled="configLoading">{{ t('plugins.saveConfig') }}</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- ═══════════════ 插件市场说明弹窗 ═══════════════ -->
+    <Transition name="modal-fade">
+      <div v-if="marketplaceDescribeTarget" class="modal-overlay" @click.self="marketplaceDescribeTarget = null">
+        <div class="modal-dialog">
+          <div class="modal-header">
+            <h3 class="modal-title">{{ marketplaceDescribeTarget.name }} <span class="badge-pill badge-version">v{{ marketplaceDescribeTarget.version }}</span></h3>
+            <button class="modal-close" @click="marketplaceDescribeTarget = null">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            </button>
+          </div>
+          <div class="modal-body">
+            <p class="marketplace-desc" style="margin-bottom:var(--space-md);">{{ marketplaceDescribeTarget.description }}</p>
+            <div class="marketplace-long-desc">{{ marketplaceDescribeTarget.long_description }}</div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-ghost" @click="marketplaceDescribeTarget = null">关闭</button>
+            <button
+              v-if="!marketplaceDescribeTarget.installed"
+              class="btn-primary"
+              @click="handleMarketplaceInstall(marketplaceDescribeTarget)"
+            >
+              安装
+            </button>
           </div>
         </div>
       </div>
@@ -1551,5 +1584,89 @@ onMounted(() => {
 .badge-disabled {
   background: var(--bg-disabled, #e2e8f0);
   color: var(--color-text-secondary, #64748b);
+}
+
+/* ── 插件市场 ── */
+.marketplace-panel {
+  padding: var(--space-lg);
+  margin-bottom: var(--space-lg);
+}
+
+.marketplace-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.marketplace-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  transition: var(--transition-base);
+}
+
+.marketplace-card:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+
+.marketplace-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.marketplace-name {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: var(--space-xs);
+}
+
+.marketplace-meta {
+  display: flex;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-xs);
+}
+
+.marketplace-desc {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+
+.marketplace-long-desc {
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+  line-height: 1.7;
+  white-space: pre-line;
+  background: var(--bg-input);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+}
+
+.marketplace-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  .marketplace-card {
+    flex-direction: column;
+  }
+
+  .marketplace-actions {
+    width: 100%;
+  }
 }
 </style>

@@ -5,11 +5,20 @@ export interface UIPluginManifest {
   type: 'ui'
   entry: string
   core_api?: string
+  /** 对应的后端插件 id（用于联动后端插件的激活状态） */
+  backend_plugin_id?: string
   contributes?: {
     views?: PluginView[]
     settings_panels?: PluginSettingsPanel[]
     menu_items?: PluginMenuItem[]
+    /** 全局悬浮层组件（固定定位，跨页面常驻显示） */
+    overlays?: PluginOverlay[]
   }
+}
+
+export interface PluginOverlay {
+  id: string
+  component: string
 }
 
 export interface PluginView {

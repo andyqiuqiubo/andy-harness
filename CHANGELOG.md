@@ -7,7 +7,7 @@
 
 ---
 
-## [Unreleased]
+## [0.0.6] - 2026-09-27
 
 ### 新增
 
@@ -30,6 +30,28 @@
 - 内置 Provider 不可删除（仅可停用），自定义 Provider 可删除
 - 测试连接接口返回具体错误信息，便于前端展示失败原因
 - ProviderRegistry 新增 `_config_overrides` 机制：内置 Provider 插件激活时自动合并数据库中的密钥和启用状态覆盖项
+
+#### 插件市场体系
+- 内置插件市场目录 `backend/marketplace/`，服务端直装端点 `POST /api/plugins/marketplace/{plugin_id}/install`
+- `PluginManifest` 新增 `source` 字段：`system`（系统内置）/ `marketplace`（市场安装），持久化到 plugin.json
+- 插件管理页新增「从插件市场安装插件」入口：市场卡片含「说明」弹窗（long_description）与「安装」按钮，已安装自动标记
+- 卸载保护：仅 `source=marketplace` 的插件可卸载（UI 与 API 双重校验），系统/核心插件不可删除；卸载后可从市场重新安装
+
+#### 元气宠物（Virtual Pet）
+- 作为插件市场的首个插件提供，安装后在插件管理中启用即可生效（前后端插件联动）
+- 全局悬浮宠物（overlay 机制）：在任意页面自由走动，鼠标悬停随机卖萌（表情/动作/音效）
+- 养成系统：三围（饱食/心情/精力）随时间衰减，喂食/玩耍/抚摸/睡觉交互，成长阶段变化体型与颜色
+- 本地存档（localStorage，离线折算衰减），粒子特效与 WebAudio 音效
+
+#### 前后端插件联动
+- UI 插件通过 `backend_plugin_id` 映射后端插件，启用/停用双向同步，刷新后保持一致
+- 后端插件不存在（如市场插件被卸载）时自动停用对应前端 UI 插件
+- 前端插件 `contributes` 新增 `overlays`（全局悬浮层），由 PluginOverlayHost 渲染
+
+#### 会话与启动脚本
+- 修复：删除/归档会话后自动加载新选中会话的消息（右侧不再空白）
+- 重命名图标改为彩色铅笔 ✏️，与删除图标区分
+- 新增 start-all.bat / stop-all.bat：一键启动/停止前后端服务，stop 执行后自动关闭 start 打开的全部窗口
 
 ### 待完成
 - 插件从 zip/git 安装

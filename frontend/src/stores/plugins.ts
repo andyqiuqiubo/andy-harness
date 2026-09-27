@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { apiClient } from '../api/client'
+import { usePluginLoaderStore } from './plugin-loader'
 
 export interface PluginInfo {
   id: string
@@ -9,25 +10,30 @@ export interface PluginInfo {
   type: string
   activated: boolean
   core: boolean
+  /** 插件来源：system（系统内置）/ marketplace（从插件市场安装） */
+  source?: string
   permissions?: string[]
   config_schema?: Record<string, unknown>
   config?: Record<string, unknown>
 }
 
-export interface InstallPluginRequest {
+export interface MarketplacePlugin {
   plugin_id: string
   name: string
-  version?: string
-  type?: string
+  version: string
+  type: string
   entry: string
-  permissions?: string[]
-  description?: string
-  config_schema?: Record<string, unknown>
+  description: string
+  long_description: string
+  permissions: string[]
+  config_schema?: Record<string, unknown> | null
   plugin_code: string
+  installed: boolean
 }
 
 export const usePluginStore = defineStore('plugins', () => {
   const plugins = ref<PluginInfo[]>([])
+  const marketplace = ref<MarketplacePlugin[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
 
@@ -35,6 +41,8 @@ export const usePluginStore = defineStore('plugins', () => {
     loading.value = true
     try {
       plugins.value = await apiClient.get<PluginInfo[]>('/plugins')
+      // 同步前端 UI 插件的激活状态（覆盖刷新后重新激活的问题）
+      usePluginLoaderStore().syncWithBackend(plugins.value)
     } catch {
       plugins.value = []
     } finally {
@@ -48,6 +56,7 @@ export const usePluginStore = defineStore('plugins', () => {
       await apiClient.post(`/plugins/${id}/activate`)
       const p = plugins.value.find((p) => p.id === id)
       if (p) p.activated = true
+      usePluginLoaderStore().setBackendPluginActive(id, true)
     } catch (e) {
       error.value = String(e)
       throw e
@@ -60,17 +69,28 @@ export const usePluginStore = defineStore('plugins', () => {
       await apiClient.post(`/plugins/${id}/deactivate`)
       const p = plugins.value.find((p) => p.id === id)
       if (p) p.activated = false
+      usePluginLoaderStore().setBackendPluginActive(id, false)
     } catch (e) {
       error.value = String(e)
       throw e
     }
   }
 
-  async function installPlugin(req: InstallPluginRequest) {
+  async function fetchMarketplace() {
+    try {
+      marketplace.value = await apiClient.get<MarketplacePlugin[]>('/plugins/marketplace')
+    } catch {
+      marketplace.value = []
+    }
+  }
+
+  async function installMarketplacePlugin(pluginId: string) {
     error.value = null
     try {
-      await apiClient.post('/plugins/install', req)
+      await apiClient.post(`/plugins/marketplace/${pluginId}/install`)
+      // 刷新已安装列表与市场状态，联动前端 UI 插件
       await loadPlugins()
+      await fetchMarketplace()
     } catch (e) {
       error.value = String(e)
       throw e
@@ -81,7 +101,9 @@ export const usePluginStore = defineStore('plugins', () => {
     error.value = null
     try {
       await apiClient.delete(`/plugins/${id}`)
-      plugins.value = plugins.value.filter((p) => p.id !== id)
+      // 重新加载并同步，确保前端 UI 插件（如元气宠物）随之后端停用
+      await loadPlugins()
+      await fetchMarketplace()
     } catch (e) {
       error.value = String(e)
       throw e
@@ -110,12 +132,14 @@ export const usePluginStore = defineStore('plugins', () => {
 
   return {
     plugins,
+    marketplace,
     loading,
     error,
     loadPlugins,
+    fetchMarketplace,
+    installMarketplacePlugin,
     activatePlugin,
     deactivatePlugin,
-    installPlugin,
     uninstallPlugin,
     fetchPluginConfig,
     savePluginConfig,

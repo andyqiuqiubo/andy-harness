@@ -18,7 +18,11 @@ app.directive('ripple', vRipple)
 initPluginLoader(router)
 app.mount('#app')
 
-// Load and activate all UI plugins after mount
+// Load and activate all UI plugins after mount, then sync with backend plugin state
 import { usePluginLoaderStore } from './stores/plugin-loader'
+import { usePluginStore } from './stores/plugins'
 const pluginLoaderStore = usePluginLoaderStore(pinia)
-pluginLoaderStore.initPlugins()
+pluginLoaderStore.initPlugins().then(() => {
+  // 拉取后端插件状态，同步前端 UI 插件的激活/停用（停用状态在刷新后保持）
+  usePluginStore(pinia).loadPlugins()
+})

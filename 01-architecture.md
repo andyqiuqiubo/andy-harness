@@ -205,9 +205,20 @@ discover → validate → load → register → activate ⇄ deactivate → unlo
 
 - **discover**：扫描 `frontend/src/plugins/` 目录下的 `ui-plugin.json`。
 - **load**：动态 import entry 模块。
-- **register**：将 `contributes` 中的 views / menu_items 注册到前端插件注册表。
+- **register**：将 `contributes` 中的 views / menu_items / overlays 注册到前端插件注册表。
 - **activate**：路由注入（`router.addRoute()`）、菜单项挂载。
 - **deactivate**：路由移除、菜单项卸载。
+
+**与后端插件联动**：
+
+- UI 插件可通过 `backend_plugin_id` 字段声明对应的后端插件（如 `"backend_plugin_id": "pet_plugin"`）。
+- 前端 PluginLoader 启动与列表刷新时调用 `syncWithBackend()`：后端插件存在且激活 → 激活 UI 插件；后端插件不存在（如市场插件被卸载）→ 自动停用 UI 插件，刷新后状态保持一致。
+- 插件管理页对 UI 插件的启用/停用操作会同步调用后端对应插件的激活/停用接口。
+
+**overlays（全局悬浮层）**：
+
+- `contributes.overlays` 声明全局悬浮组件，如 `{ "id": "pet-overlay", "component": "components/PetOverlay.vue" }`。
+- 由根组件中的 `PluginOverlayHost` 统一渲染；宿主容器 `pointer-events: none`，插件内部自行开启交互。元气宠物即通过该机制在任意页面悬浮显示、自由走动。
 
 ---
 
@@ -296,7 +307,10 @@ ReAct 风格循环：
 
 - 插件列表、启停、配置读写、权限说明。
 - **安装接口** `POST /api/plugins/install`：用户在 UI 填写 plugin_id/name/entry/description/plugin_code，后端自动创建插件目录和文件，加载并激活插件，无需任何项目代码改动。
-- **卸载接口** `DELETE /api/plugins/{plugin_id}`：删除插件文件并注销。
+- **插件市场** `GET /api/plugins/marketplace`：列出市场目录 `backend/marketplace/*/plugin.json`（含 long_description 与已安装标记）。
+- **市场直装** `POST /api/plugins/marketplace/{plugin_id}/install`：服务端从市场目录读取元数据与 main.py，写入 plugins 目录并标记 `source: marketplace`，加载并激活。
+- **来源标记**：`plugin.json` 的 `source` 字段区分系统插件（`system`）与市场插件（`marketplace`）；插件管理 UI 仅对市场插件显示卸载按钮。
+- **卸载接口** `DELETE /api/plugins/{plugin_id}`：删除插件文件并注销；系统/核心插件不可卸载（API 层同样拒绝），市场插件卸载后可从市场重新安装。
 - **配置接口** `GET|PATCH /api/plugins/{plugin_id}/config`：读取和更新插件配置，按 `config_schema` 自动渲染表单。
 - **核心插件保护**：`core: true` 插件的停用/卸载按钮灰显并提示不可操作，API 层也拒绝此类请求。
 
@@ -458,6 +472,8 @@ andy-harness/
 8. **会话管理**：新建/重命名/归档/删除/清空全部。
 9. **Jev 结构化决策**：集成 TypeSafe AI Jev 模型，支持 Choice/Score/Noul 三种原语，AI 可自动调用进行结构化判断。
 10. **Provider 状态管理**：启用/停用状态联动，启用前自动测试连接，停用后模型和工具自动隔离。
+11. **插件市场**：内置市场一键安装插件，说明弹窗，卸载后随时重装，系统插件不可删除。
+12. **元气宠物**：全局悬浮养成宠物（overlay 机制），自由走动、悬停卖萌、三围成长系统，来自插件市场。
 
 ---
 

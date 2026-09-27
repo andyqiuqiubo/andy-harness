@@ -1,5 +1,6 @@
 <script setup lang="ts">
 // 根组件
+import PluginOverlayHost from './components/PluginOverlayHost.vue'
 </script>
 
 <template>
@@ -8,6 +9,8 @@
       <component :is="Component" />
     </transition>
   </router-view>
+  <!-- 插件全局悬浮层（常驻所有页面） -->
+  <PluginOverlayHost />
 </template>
 
 <style>

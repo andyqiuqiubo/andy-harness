@@ -301,6 +301,7 @@ class PluginLoader:
                     "type": manifest.type,
                     "activated": plugin_id in self._activated,
                     "core": manifest.core,
+                    "source": manifest.source,
                     "permissions": manifest.permissions,
                     "config_schema": manifest.config_schema,
                     "config": ctx.config.as_dict(),

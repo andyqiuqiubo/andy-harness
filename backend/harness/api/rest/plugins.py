@@ -18,6 +18,9 @@ router = APIRouter(prefix="/api/plugins", tags=["plugins"])
 # 插件目录
 _PLUGINS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "plugins"
 
+# 插件市场目录（内置可安装插件包）
+_MARKETPLACE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "marketplace"
+
 
 def _get_loader(registry: ServiceRegistry) -> PluginLoader:
     """获取 PluginLoader。"""
@@ -55,6 +58,37 @@ def setup_plugin_routes(registry: ServiceRegistry) -> None:
     async def list_plugins() -> list[dict[str, Any]]:
         loader = _get_loader(registry)
         return loader.list_plugins()
+
+    @router.get("/marketplace", summary="列出插件市场")
+    async def marketplace() -> list[dict[str, Any]]:
+        """列出插件市场中的可安装插件（含已安装标记）。"""
+        loader = _get_loader(registry)
+        installed_ids = {p["id"] for p in loader.list_plugins()}
+
+        items: list[dict[str, Any]] = []
+        if _MARKETPLACE_DIR.exists():
+            for pkg in sorted(_MARKETPLACE_DIR.glob("*/plugin.json")):
+                try:
+                    meta = json.loads(pkg.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                main_file = pkg.parent / "main.py"
+                items.append(
+                    {
+                        "plugin_id": meta.get("id", ""),
+                        "name": meta.get("name", ""),
+                        "version": meta.get("version", "0.1.0"),
+                        "type": meta.get("type", "service"),
+                        "entry": meta.get("entry", ""),
+                        "description": meta.get("description", ""),
+                        "long_description": meta.get("long_description", ""),
+                        "permissions": meta.get("permissions", []),
+                        "config_schema": meta.get("config_schema"),
+                        "plugin_code": main_file.read_text(encoding="utf-8") if main_file.exists() else "",
+                        "installed": meta.get("id") in installed_ids,
+                    }
+                )
+        return items
 
     @router.post("/{plugin_id}/activate", summary="激活插件")
     async def activate_plugin(plugin_id: str) -> dict[str, str]:
@@ -107,6 +141,7 @@ def setup_plugin_routes(registry: ServiceRegistry) -> None:
             "core_api": ">=0.1.0 <1.0.0",
             "permissions": req.permissions,
             "description": req.description,
+            "source": "marketplace",
         }
         if req.config_schema:
             manifest["config_schema"] = req.config_schema
@@ -138,23 +173,132 @@ def setup_plugin_routes(registry: ServiceRegistry) -> None:
             "name": req.name,
         }
 
+    @router.post(
+        "/marketplace/{plugin_id}/install", summary="从插件市场安装插件"
+    )
+    async def install_marketplace_plugin(plugin_id: str) -> dict[str, Any]:
+        """从插件市场目录安装插件（服务端直装，写入 source=marketplace）。"""
+        loader = _get_loader(registry)
+
+        # 检查是否已安装
+        if loader.get_plugin(plugin_id):
+            raise APIError(
+                "PLUGIN_ALREADY_EXISTS",
+                f"插件已存在: {plugin_id}，请先卸载",
+                409,
+            )
+
+        # 读取市场包元数据
+        pkg_dir = _MARKETPLACE_DIR / plugin_id
+        meta_path = pkg_dir / "plugin.json"
+        if not pkg_dir.exists() or not meta_path.exists():
+            raise APIError(
+                "MARKETPLACE_NOT_FOUND",
+                f"插件市场中不存在: {plugin_id}",
+                404,
+            )
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            raise APIError(
+                "MARKETPLACE_INVALID",
+                f"插件市场包元数据无效: {plugin_id}",
+                500,
+            )
+
+        main_file = pkg_dir / "main.py"
+        if not main_file.exists():
+            raise APIError(
+                "MARKETPLACE_INVALID",
+                f"插件市场包缺少 main.py: {plugin_id}",
+                500,
+            )
+
+        # 创建插件目录
+        plugin_dir = _PLUGINS_DIR / plugin_id
+        if plugin_dir.exists():
+            raise APIError(
+                "PLUGIN_DIR_EXISTS",
+                f"插件目录已存在: {plugin_dir}",
+                409,
+            )
+
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+
+        # 写入 __init__.py
+        (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+
+        # 写入 plugin.json（来源标记为 marketplace）
+        manifest = {
+            "id": meta.get("id", plugin_id),
+            "name": meta.get("name", plugin_id),
+            "version": meta.get("version", "0.1.0"),
+            "type": meta.get("type", "service"),
+            "entry": meta.get("entry", ""),
+            "core_api": meta.get("core_api", ">=0.1.0 <1.0.0"),
+            "permissions": meta.get("permissions", []),
+            "description": meta.get("description", ""),
+            "source": "marketplace",
+        }
+        if meta.get("config_schema"):
+            manifest["config_schema"] = meta["config_schema"]
+
+        (plugin_dir / "plugin.json").write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+        # 写入 main.py
+        (plugin_dir / "main.py").write_text(
+            main_file.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+
+        # 加载并激活
+        try:
+            from harness.kernel.contracts.base import PluginManifest
+
+            manifest_obj = PluginManifest.from_dict(manifest)
+            loader.load(manifest_obj, _PLUGINS_DIR)
+            await loader.activate(plugin_id)
+        except Exception as e:
+            # 加载失败，清理目录
+            import shutil
+
+            shutil.rmtree(plugin_dir, ignore_errors=True)
+            raise APIError(
+                "PLUGIN_INSTALL_FAILED", f"插件加载失败: {e}", 500
+            ) from e
+
+        return {
+            "status": "installed",
+            "plugin_id": plugin_id,
+            "name": manifest["name"],
+        }
+
     @router.delete("/{plugin_id}", summary="卸载插件")
     async def uninstall_plugin(plugin_id: str) -> dict[str, str]:
-        """卸载插件（停用 + 删除文件）。"""
+        """卸载插件（停用 + 删除文件），仅允许市场来源插件。"""
         loader = _get_loader(registry)
 
         plugin = loader.get_plugin(plugin_id)
         if not plugin:
             raise APIError("PLUGIN_NOT_FOUND", f"插件不存在: {plugin_id}", 404)
 
-        # 检查是否为核心插件
-        for info in loader.list_plugins():
-            if info["id"] == plugin_id and info.get("core"):
-                raise APIError(
-                    "PLUGIN_CORE_UNINSTALLABLE",
-                    "核心插件不可卸载",
-                    400,
-                )
+        # 仅市场来源插件可卸载；核心/系统插件保护
+        info = next(
+            (p for p in loader.list_plugins() if p["id"] == plugin_id), None
+        )
+        if info and info.get("core"):
+            raise APIError(
+                "PLUGIN_CORE_UNINSTALLABLE",
+                "核心插件不可卸载",
+                400,
+            )
+        if not info or info.get("source") != "marketplace":
+            raise APIError(
+                "PLUGIN_SYSTEM_UNINSTALLABLE",
+                "系统插件不可卸载（仅插件市场安装的插件可卸载）",
+                400,
+            )
 
         # 停用
         if loader.is_activated(plugin_id):

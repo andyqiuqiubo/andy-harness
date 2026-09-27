@@ -5,6 +5,7 @@
   "type": "ui",
   "entry": "main:HelloUIPlugin",
   "core_api": ">=0.1.0 <1.0.0",
+  "backend_plugin_id": "hello_plugin",
   "contributes": {
     "views": [
       {
