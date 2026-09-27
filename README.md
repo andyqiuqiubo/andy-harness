@@ -1,6 +1,6 @@
 # andy-harness
 
-> 插件化 Agent Harness（智能体底座）开源项目：提供对话 GUI、多模型接入（DeepSeek / Qwen / Doubao / 自定义）、会话管理、上下文管理、沙箱管理与系统设置。所有功能以插件形式构建，模块间完全解耦，面向开发者学习与二次开发。
+> 插件化 Agent Harness（智能体底座）开源项目：提供对话 GUI、多模型接入（DeepSeek / Qwen / Doubao / 自定义）、会话管理、上下文管理、沙箱管理与系统设置。所有功能以插件形式构建，模块间完全解耦，面向开发者学习与二次开发。敬请下载使用！
 
 [![CI](https://github.com/andyqiuqiubo/andy-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/andyqiuqiubo/andy-harness/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
