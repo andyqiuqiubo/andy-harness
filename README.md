@@ -2,11 +2,18 @@
 
 > 插件化 Agent Harness（智能体底座）开源项目：提供对话 GUI、多模型接入（DeepSeek / Qwen / Doubao / 自定义）、会话管理、上下文管理、沙箱管理与系统设置。所有功能以插件形式构建，模块间完全解耦，面向开发者学习与二次开发。
 
-[![CI](https://github.com/your-org/andy-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/andy-harness/actions/workflows/ci.yml)
+[![CI](https://github.com/andyqiuqiubo/andy-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/andyqiuqiubo/andy-harness/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 [![Vue 3](https://img.shields.io/badge/Vue-3.5-green.svg)](https://vuejs.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688.svg)](https://fastapi.tiangolo.com/)
+
+---
+
+## 项目状态
+
+- 本仓库由作者在 **Windows 10** 个人 PC 下创建与开发，**尚未在 macOS / Linux 等其他操作系统上验证**，跨平台运行存在未知风险。
+- 目前仅对 **DeepSeek `deepseek-v4.1-flash`** 模型做了深度调试与联调；Qwen / Doubao 等其它模型尚未充分验证，实际使用时可能遇到预期外的问题。
 
 ---
 
@@ -50,17 +57,27 @@
 - Node.js 22+
 - pnpm 10+
 - uv（Python 包管理器）
+- **GNU Make**（Windows 上 Git for Windows 不自带 `make`；缺了它 `make install/backend/frontend` 会报 `command not found`。Windows 可用 Chocolatey `choco install make`，或改用下面的「不使用 make」方式）
 
 ### 安装
 
 ```bash
 # 克隆仓库
-git clone https://github.com/your-org/andy-harness.git
+git clone https://github.com/andyqiuqiubo/andy-harness.git
 cd andy-harness
 
 # 一键安装前后端依赖
 make install
 ```
+
+以上命令等价于：
+
+```bash
+cd backend && uv sync --extra dev
+cd frontend && pnpm install
+```
+
+> Windows 下若不想装 `make`，可先按上面两条命令装好依赖，再双击 `start-all.bat` 一键拉起前后端（`start-all.bat` 不会自动安装依赖，它只会复用已存在的 `backend/.venv` 与 `frontend/node_modules`）。
 
 ### 配置 API Key
 
@@ -96,6 +113,63 @@ docker-compose up -d
 ```
 
 访问 http://localhost:5173 即可使用。
+
+---
+
+## ⚠️ 下载后常见问题（排错）
+
+> 下面是「照着 README 走却仍然踩坑」的高频问题，建议先读一遍再动手。
+
+### 1. 没装依赖就启动 → 报「系统找不到指定的路径」/ 模块缺失
+仓库**不包含** `backend/.venv` 和 `frontend/node_modules`（都被 `.gitignore` 排除）。无论用 `make install` 还是双击 `start-all.bat`，都必须先装依赖：
+
+```bash
+cd backend && uv sync --extra dev      # 生成 .venv 并安装后端依赖
+cd frontend && pnpm install            # 生成 node_modules
+```
+
+直接双击 `start-all.bat` 而没装依赖，Windows 会弹出一个黑色窗口并瞬间报「系统找不到指定的路径」——这不是代码 bug，就是依赖没装。
+
+### 2. Windows 上 `make install` 报 `command not found: make`
+Git for Windows 自带的 bash **不带 make**。两种解法：
+
+- 安装 make：Chocolatey 执行 `choco install make`（或用 MinGW 的 `mingw-get install make`）；
+- 不装 make，直接用上面第 1 条的等价命令（见「快速开始 → 安装」）。
+
+### 3. 必须用 pnpm，不要 `npm install`
+仓库用 `pnpm-lock.yaml` 锁定依赖版本。用 `npm install` 会重新解析依赖，可能与锁文件不一致甚至失败。请先安装 pnpm 10+：
+
+```bash
+npm i -g pnpm
+```
+
+之后用 `pnpm install`。国内网络可加镜像加速：`pnpm install --registry=https://registry.npmmirror.com`。
+
+### 4. 前端打不开？只能用 `http://localhost:5173`
+Vite 默认把开发服务器绑定到 `localhost`（解析为 IPv6 `[::1]`）。直接访问 `http://127.0.0.1:5173` 会**连不上**。浏览器地址栏请使用 **`http://localhost:5173`**。`start-all.bat` 末尾自动打开的也是这个地址。
+
+### 5. 能启动但没法对话？需要先配 Provider 的 API Key
+不配 Key 也能启动（后端日志只会有 `Jev Manager 已激活，但未配置 API Key` 的警告），但发消息会失败。配置方式二选一：
+
+- 启动后在页面设置：http://localhost:5173/settings → Providers → 编辑对应 Provider → 填入 Key 并启用；
+- 或把 Key 写进 `docs/key.txt`，格式为 `ds:sk-xxxx`（DeepSeek）；Qwen / Doubao 同理用 `qwen:` / `doubao:` 前缀。
+
+> **Jev 结构化决策**需要**单独的** `jev_manager` API Key（设置 → 插件管理 → Jev Manager），与 Provider Key 不是同一个。未配置时调用 Jev 工具只会返回友好错误提示，不影响普通对话。
+
+### 6. 端口被占用（8000 / 5173）
+若目标端口已被占用，`start-all.bat` 会提示 `Port 8000 is already in use` / `Port 5173 is already in use` 并退出。先双击 `stop-all.bat` 关闭旧实例，或手动结束占用进程后再启动。
+
+### 7. Python 用哪个版本？
+后端要求 Python 3.11+。`uv sync` 会自动下载并管理合适的 Python（无需你手动安装），只要本机有可用的 3.11+ 或允许 uv 联网下载即可。
+
+### 8. 国内网络下载慢 / 超时
+- **Python 依赖**：`uv sync` 可指定国内镜像提速：
+
+  ```bash
+  UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple uv sync --extra dev
+  ```
+
+- **前端依赖**：用 npmmirror 镜像 `pnpm install --registry=https://registry.npmmirror.com`。
 
 ---
 
