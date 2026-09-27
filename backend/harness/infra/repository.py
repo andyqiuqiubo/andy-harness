@@ -244,6 +244,14 @@ class MessageRepository:
         )
         return [self._row_to_message(r) for r in rows]
 
+    def count_by_session(self, session_id: str) -> int:
+        """统计会话的消息条数。"""
+        row = self._db.query_one(
+            "SELECT COUNT(*) AS cnt FROM messages WHERE session_id = ?",
+            (session_id,),
+        )
+        return int(row["cnt"]) if row else 0
+
     def get(self, message_id: str) -> Message | None:
         """获取单条消息。"""
         row = self._db.query_one(

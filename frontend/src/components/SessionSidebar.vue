@@ -11,6 +11,18 @@ const { t } = useLanguage()
 // M16: Show archived toggle
 const showArchived = ref(false)
 
+// 提示框（3 秒自动消失）
+const toastVisible = ref(false)
+let toastTimer: ReturnType<typeof setTimeout> | null = null
+
+function showToast() {
+  toastVisible.value = true
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => {
+    toastVisible.value = false
+  }, 3000)
+}
+
 // 右键上下文菜单
 const contextMenu = ref<{ visible: boolean; x: number; y: number; sessionId: string }>({
   visible: false, x: 0, y: 0, sessionId: '',
@@ -25,6 +37,18 @@ const visibleSessions = computed(() => {
 const pluginMenuItems = computed(() => pluginLoaderStore.menuItems)
 
 async function handleNewSession() {
+  // 先实时刷新会话列表：缓存中的 message_count 在问答成功后不会自动更新，
+  // 若不刷新会把"已有对话的会话"误判为空会话，导致错误提示
+  await chatStore.loadSessions()
+  // 已存在空会话（无任何消息）时：不新建，跳转到该会话并提示
+  const emptySession = chatStore.sessions.find(
+    (s) => !s.archived && s.message_count === 0
+  )
+  if (emptySession) {
+    await chatStore.selectSession(emptySession.id)
+    showToast()
+    return
+  }
   await chatStore.createSession('New Session')
 }
 
@@ -163,6 +187,15 @@ onMounted(() => {
           <span class="ctx-icon">✕</span> {{ t('sessions.delete') }}
         </button>
       </div>
+    </teleport>
+
+    <!-- 3 秒提示框 -->
+    <teleport to="body">
+      <transition name="toast-fade">
+        <div v-if="toastVisible" class="session-toast">
+          {{ t('sessions.existingEmpty') }}
+        </div>
+      </transition>
     </teleport>
 
     <!-- Plugin nav section -->
@@ -551,5 +584,33 @@ onMounted(() => {
   height: 1px;
   background: var(--border-color);
   margin: 4px 0;
+}
+
+/* ── 3 秒提示框 ── */
+.session-toast {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10001;
+  padding: 10px 18px;
+  background: var(--color-primary);
+  color: var(--color-text-inverse);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  border-radius: var(--radius-full);
+  box-shadow: var(--shadow-lg);
+  white-space: nowrap;
+}
+
+.toast-fade-enter-active,
+.toast-fade-leave-active {
+  transition: opacity var(--transition-base), transform var(--transition-base);
+}
+
+.toast-fade-enter-from,
+.toast-fade-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-8px);
 }
 </style>

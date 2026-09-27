@@ -302,6 +302,29 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
                     except asyncio.CancelledError:
                         pass
 
+                # 发送最终上下文快照：
+                # AgentLoop 已持久化用户消息与 assistant 回复，
+                # 重建上下文得到包含完整问答的准确快照，
+                # 覆盖开头预构建的 0/4096 快照。
+                try:
+                    from harness.modules.context_manager.service import (
+                        ContextService,
+                    )
+
+                    context_service = services.get(ContextService)
+                    context_service.build(
+                        msg.session_id,
+                        budget=msg.budget,
+                        model=msg.model or "gpt-4o",
+                    )
+                    final_snapshot = context_service.get_snapshot(msg.session_id)
+                    if final_snapshot:
+                        await websocket.send_json(
+                            {"type": "context_snapshot", "data": final_snapshot}
+                        )
+                except Exception:
+                    pass  # 上下文服务可能未注册
+
                 # 发送错误或完成
                 if result.error:
                     await _send_error("AGENT_LOOP_ERROR", result.error)
@@ -319,6 +342,7 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
                                 "iterations": result.iterations,
                                 "latency_ms": result.latency_ms,
                                 "short_circuited": result.short_circuited,
+                                "usage": result.usage,
                                 "trace_id": trace_id,
                             },
                         }

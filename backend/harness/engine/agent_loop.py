@@ -70,6 +70,7 @@ class AgentLoopResult:
     latency_ms: int = 0
     error: str | None = None
     short_circuited: bool = False
+    usage: dict[str, Any] | None = None
 
 
 class AgentLoop:
@@ -173,9 +174,11 @@ class AgentLoop:
                 current_messages = context_msgs
 
                 # 2. 调用模型（带重试）
-                response_content, response_tool_calls = await self._call_model(
+                response_content, response_tool_calls, call_usage = await self._call_model(
                     provider, current_messages, used_model, session_id
                 )
+                # 累积所有模型调用的 token 用量（工具迭代可能调用多次）
+                result.usage = self._merge_usage(result.usage, call_usage)
 
                 if self._stopped:
                     result.short_circuited = True
@@ -216,6 +219,10 @@ class AgentLoop:
                     session_id,
                     role="assistant",
                     content=result.content,
+                    tokens=(
+                        result.usage.get("total_tokens", 0)
+                        if result.usage else 0
+                    ),
                 )
 
         except Exception as e:
@@ -301,17 +308,51 @@ class AgentLoop:
 
         return messages
 
+    @staticmethod
+    def _merge_usage(
+        total: dict[str, Any] | None, new: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """合并两次模型调用的 usage（工具迭代时需累加）。"""
+        if not new:
+            return total
+        if total is None:
+            total = {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "prompt_tokens_details": {},
+            }
+        total["prompt_tokens"] = total.get("prompt_tokens", 0) + new.get(
+            "prompt_tokens", 0
+        )
+        total["completion_tokens"] = total.get("completion_tokens", 0) + new.get(
+            "completion_tokens", 0
+        )
+        total["total_tokens"] = total.get("total_tokens", 0) + new.get(
+            "total_tokens", 0
+        )
+        new_details = new.get("prompt_tokens_details") or {}
+        total_details: dict[str, Any] = total.setdefault("prompt_tokens_details", {})
+        for key in (
+            "cached_tokens",
+            "prompt_cache_hit_tokens",
+            "prompt_cache_miss_tokens",
+        ):
+            if key in new_details:
+                total_details[key] = total_details.get(key, 0) + new_details[key]
+        return total
+
     async def _call_model(
         self,
         provider: Any,
         messages: list[dict[str, Any]],
         model: str,
         session_id: str = "",
-    ) -> tuple[str, list[dict[str, Any]]]:
+    ) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None]:
         """调用模型并解析响应（带重试）。
 
         Returns:
-            (content, tool_calls)
+            (content, tool_calls, usage)
         """
         # 准备请求
         tool_defs = self._tool_registry.get_tool_definitions()
@@ -345,6 +386,7 @@ class AgentLoop:
         for attempt in range(self._config.max_retries):
             try:
                 content_parts: list[str] = []
+                usage: dict[str, Any] | None = None
                 # 流式 tool_calls 分片累积：DeepSeek/OpenAI API 会将一个
                 # tool_call 的 arguments 拆成多个 SSE 块发送，必须按 index
                 # 合并 name 和 arguments 片段，否则参数永远不完整。
@@ -377,6 +419,9 @@ class AgentLoop:
                                 acc["function"]["name"] += fn["name"]
                             if fn.get("arguments"):
                                 acc["function"]["arguments"] += fn["arguments"]
+                    # 最后一个流式块携带 usage（token 用量统计）
+                    if "usage" in chunk and chunk["usage"]:
+                        usage = chunk["usage"]
 
                 content = "".join(content_parts)
                 all_tool_calls = [
@@ -400,7 +445,7 @@ class AgentLoop:
                     content = post_result.data.response or content
                     all_tool_calls = post_result.data.tool_calls or all_tool_calls
 
-                return content, all_tool_calls
+                return content, all_tool_calls, usage
 
             except Exception as e:
                 last_error = e
@@ -594,6 +639,7 @@ class AgentLoop:
         content: str,
         tool_calls: list[dict[str, Any]] | None = None,
         tool_call_id: str | None = None,
+        tokens: int = 0,
     ) -> None:
         """持久化消息（含 pre_message_persist 钩子）。"""
         from harness.modules.session_manager.service import SessionService
@@ -604,6 +650,7 @@ class AgentLoop:
             content=content,
             tool_calls=tool_calls or [],
             tool_call_id=tool_call_id,
+            tokens=tokens,
         )
 
         # pre_message_persist 钩子

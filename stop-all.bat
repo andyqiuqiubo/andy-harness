@@ -8,6 +8,14 @@ echo.
 
 set FOUND=0
 
+echo Closing service windows ...
+taskkill /FI "WINDOWTITLE eq andy-harness-backend*" /F /T >nul 2>&1
+if not errorlevel 1 set FOUND=1
+taskkill /FI "WINDOWTITLE eq andy-harness-frontend*" /F /T >nul 2>&1
+if not errorlevel 1 set FOUND=1
+
+echo.
+echo Cleaning up by port ...
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8000" ^| findstr "LISTENING"') do (
     set FOUND=1
     echo Stopping backend  [PID %%a, port 8000] ...
@@ -28,9 +36,6 @@ if %FOUND%==0 (
 )
 
 echo.
-echo Closing service windows ...
-taskkill /FI "WINDOWTITLE eq andy-harness-backend*" /F /T >nul 2>&1
-taskkill /FI "WINDOWTITLE eq andy-harness-frontend*" /F /T >nul 2>&1
 echo Done. All windows closed.
 
 echo.

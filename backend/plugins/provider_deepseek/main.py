@@ -49,6 +49,9 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         # DeepSeek 特有：思维链内容
         if "reasoning_content" in delta and delta["reasoning_content"]:
             result["reasoning_content"] = delta["reasoning_content"]
+        # 最后一个块携带 usage（token 用量统计），无新增内容也需透传
+        if "usage" in data and data.get("usage"):
+            result["usage"] = data["usage"]
 
         return result if result else None
 

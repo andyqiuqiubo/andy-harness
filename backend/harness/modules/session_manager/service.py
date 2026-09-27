@@ -41,6 +41,7 @@ class SessionService(Protocol):
     ) -> Message: ...
     def list_messages(self, session_id: str) -> list[Message]: ...
     def get_message(self, message_id: str) -> Message | None: ...
+    def count_messages(self, session_id: str) -> int: ...
 
 
 class SessionServiceImpl:
@@ -105,3 +106,7 @@ class SessionServiceImpl:
     def get_message(self, message_id: str) -> Message | None:
         """获取单条消息。"""
         return self._message_repo.get(message_id)
+
+    def count_messages(self, session_id: str) -> int:
+        """统计会话的消息条数。"""
+        return self._message_repo.count_by_session(session_id)

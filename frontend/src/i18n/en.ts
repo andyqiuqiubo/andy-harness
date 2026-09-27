@@ -77,6 +77,7 @@ export default {
   'sessions.showArchived': 'Show Archived',
   'sessions.hideArchived': 'Hide Archived',
   'sessions.archived': 'Archived',
+  'sessions.existingEmpty': 'A new session already exists, please ask a question.',
   'sessions.delete': 'Delete',
   'sessions.deleteAll': 'Delete All Sessions',
   'sessions.confirmDelete': 'Delete this session? This cannot be undone.',

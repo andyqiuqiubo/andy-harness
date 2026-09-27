@@ -20,6 +20,8 @@ const inputText = ref('')
 const selectedModel = ref(settingsStore.sessionSettings.model || 'deepseek-v4-flash')
 const selectedProvider = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
+// 是否位于消息列表底部（用户上滑时停止自动滚动）
+const isAtBottom = ref(true)
 
 // 初始化 provider 选择：优先 deepseek
 watch(() => providerStore.providers, (providers) => {
@@ -46,8 +48,44 @@ function scrollToBottom() {
   nextTick(() => {
     if (messagesContainer.value) {
       messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+      isAtBottom.value = true
     }
   })
+}
+
+// 滚动监听：判断是否停在底部（用户上滑后停止自动滚动）
+function onMessagesScroll() {
+  const el = messagesContainer.value
+  if (!el) return
+  const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+  isAtBottom.value = distance < 50
+}
+
+// 向下按钮：流式中直接滚到最新文字；非流式逐条跳到下一条提问
+function handleScrollDown() {
+  if (chatStore.isStreaming) {
+    scrollToBottom()
+    return
+  }
+  const el = messagesContainer.value
+  if (!el) return
+  const containerRect = el.getBoundingClientRect()
+  // 视口参考线：容器顶部往下 15% 处
+  const refY = containerRect.top + containerRect.height * 0.15
+  const userRows = Array.from(el.querySelectorAll<HTMLElement>('.message-row.user'))
+  let next: HTMLElement | null = null
+  for (const row of userRows) {
+    if (row.getBoundingClientRect().top > refY) {
+      next = row
+      break
+    }
+  }
+  if (next) {
+    next.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  } else {
+    // 已到最后的提问之后，直接回到底部
+    scrollToBottom()
+  }
 }
 
 // 发送消息
@@ -63,8 +101,16 @@ function handleStop() {
   chatStore.stopStreaming()
 }
 
-// 监听消息变化自动滚动
+// 监听消息变化自动滚动（仅当用户停在底部时；上滑查看历史则停止跟随）
 watch(() => [chatStore.messages.length, chatStore.streamingContent, chatStore.streamingReasoning, chatStore.toolEvents.length], () => {
+  if (isAtBottom.value) scrollToBottom()
+})
+
+// 切换会话时回到底部
+watch(() => chatStore.currentSessionId, async () => {
+  isAtBottom.value = true
+  await nextTick()
+  onMessagesScroll()
   scrollToBottom()
 })
 
@@ -148,7 +194,7 @@ onUnmounted(() => {
       </header>
 
       <!-- Messages -->
-      <div ref="messagesContainer" class="messages-container">
+      <div ref="messagesContainer" class="messages-container" @scroll="onMessagesScroll">
         <div class="messages-inner">
           <MessageItem v-for="msg in chatStore.messages" :key="msg.id" :message="msg" />
 
@@ -213,19 +259,6 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <!-- 上下文快照 -->
-          <div v-if="chatStore.contextSnapshot" class="context-snapshot">
-            <details>
-              <summary class="snapshot-summary">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                  <path d="M3 3v18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                  <path d="M7 14l4-4 4 4 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                <span>上下文快照 (tokens: {{ chatStore.contextSnapshot.token_count }}/{{ chatStore.contextSnapshot.budget }})</span>
-              </summary>
-            </details>
-          </div>
-
           <!-- 错误提示 -->
           <div v-if="chatStore.error" class="error-banner">
             <svg class="error-icon" width="20" height="20" viewBox="0 0 24 24" fill="none">
@@ -236,6 +269,18 @@ onUnmounted(() => {
           </div>
         </div>
       </div>
+
+      <!-- 向下按钮：上滑查看历史时出现（固定在聊天区内，不随内容滚动） -->
+      <button
+        v-if="!isAtBottom"
+        class="scroll-down-btn"
+        @click="handleScrollDown"
+        :title="chatStore.isStreaming ? '回到最新回复' : '跳到下一条提问'"
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 5v14M5 12l7 7 7-7" />
+        </svg>
+      </button>
 
       <!-- Input area -->
       <div class="input-area">
@@ -285,6 +330,7 @@ onUnmounted(() => {
   flex-direction: column;
   background: var(--bg-main);
   min-width: 0;
+  position: relative;
 }
 
 /* ── Header ── */
@@ -471,6 +517,35 @@ onUnmounted(() => {
   flex: 1;
   overflow-y: auto;
   padding: var(--space-lg) var(--space-md);
+  position: relative;
+}
+
+/* 向下按钮：定位在聊天区内（相对 chat-main），浮于输入区上方，不随内容滚动 */
+.scroll-down-btn {
+  position: absolute;
+  right: 20px;
+  bottom: 110px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-primary);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  z-index: 10;
+  transition: transform var(--transition-base);
+}
+
+.scroll-down-btn:hover {
+  transform: scale(1.1);
+}
+
+.scroll-down-btn:active {
+  transform: scale(0.95);
 }
 
 .messages-inner {
@@ -695,41 +770,6 @@ details[open] .tool-chevron {
 .tool-error .tool-result-code {
   background: var(--color-error-bg);
   color: var(--color-danger);
-}
-
-/* ── Context snapshot ── */
-.context-snapshot {
-  margin: var(--space-md) 0;
-  animation: slideUp var(--transition-base) ease-out;
-}
-
-.context-snapshot details {
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--bg-snapshot);
-  overflow: hidden;
-}
-
-.snapshot-summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  cursor: pointer;
-  list-style: none;
-  font-size: var(--font-size-xs);
-  color: var(--color-text-secondary);
-  user-select: none;
-  font-weight: 500;
-}
-
-.snapshot-summary::-webkit-details-marker {
-  display: none;
-}
-
-.snapshot-summary svg {
-  color: var(--color-success);
-  flex-shrink: 0;
 }
 
 /* ── Error banner ── */

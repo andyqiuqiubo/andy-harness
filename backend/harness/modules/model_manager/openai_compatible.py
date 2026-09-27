@@ -96,6 +96,9 @@ class OpenAICompatibleProvider(TokenCounter, ModelProviderPlugin):
             "messages": messages,
             "stream": stream,
         }
+        if stream:
+            # 流式响应在最后一个块携带 usage（token 用量统计）
+            body["stream_options"] = {"include_usage": True}
         # 合并额外参数：extra_params 是默认值，kwargs 优先覆盖
         body.update(self.extra_params)
         body.update(kwargs)
@@ -224,6 +227,9 @@ class OpenAICompatibleProvider(TokenCounter, ModelProviderPlugin):
             result["tool_calls"] = delta["tool_calls"]
         if "reasoning_content" in delta and delta["reasoning_content"]:
             result["reasoning_content"] = delta["reasoning_content"]
+        # 最后一个块携带 usage（token 用量统计），无新增内容也需透传
+        if "usage" in data and data.get("usage"):
+            result["usage"] = data["usage"]
 
         return result if result else None
 

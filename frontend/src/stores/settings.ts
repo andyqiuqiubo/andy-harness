@@ -37,7 +37,8 @@ function loadTheme(): Theme {
     return 'matrix'
   }
   if (stored && VALID_THEMES.includes(stored)) return stored
-  return 'matrix'
+  // 默认亮色主题
+  return 'light'
 }
 
 export const useSettingsStore = defineStore('settings', () => {

@@ -77,6 +77,7 @@ export default {
   'sessions.showArchived': '显示归档',
   'sessions.hideArchived': '隐藏归档',
   'sessions.archived': '已归档',
+  'sessions.existingEmpty': '已有新会话，请提问',
   'sessions.delete': '删除',
   'sessions.deleteAll': '清空全部会话',
   'sessions.confirmDelete': '确定删除此会话？此操作不可撤销。',

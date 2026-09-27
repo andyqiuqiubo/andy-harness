@@ -5,6 +5,7 @@ export interface Session {
   created_at: string
   updated_at: string
   archived: boolean
+  message_count?: number
 }
 
 export interface Message {
@@ -15,7 +16,19 @@ export interface Message {
   tool_calls?: ToolCall[]
   tokens: number
   latency_ms?: number
+  usage?: TokenUsage
   created_at: string
+}
+
+export interface TokenUsage {
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  prompt_tokens_details?: {
+    cached_tokens?: number
+    prompt_cache_hit_tokens?: number
+    prompt_cache_miss_tokens?: number
+  }
 }
 
 export interface ToolCall {

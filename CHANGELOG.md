@@ -7,6 +7,45 @@
 
 ---
 
+## [0.0.7] - 2026-09-27
+
+### 新增
+
+#### Token 用量展示（DeepSeek 官方 usage API）
+- 流式请求加入 `stream_options: {"include_usage": true}`，透传响应末块的 usage 用量
+- DeepSeek Provider 覆盖的解析方法补上 usage 透传（处理思维链字段时不丢失用量）
+- AgentLoop 聚合多轮模型调用的 usage（prompt / completion / total 及缓存命中明细），终答消息持久化 tokens
+- WebSocket done 帧携带 usage，前端在每条 AI 回答下方显示「本次用量」胶囊（输入 / 缓存 / 未命中 / 输出 / 合计）
+- 数据库路径支持 `HARNESS_DB_PATH` 环境变量覆盖（优先级：显式参数 > 环境变量 > 默认路径）
+- pytest 测试数据库隔离（tests/conftest.py 指向临时库），避免测试污染真实数据
+
+#### 聊天体验
+- 流式回复中上滑查看历史即停止自动滚动，聊天区固定显示「向下」按钮
+  - 流式时：点击直接回到最新文字
+  - 非流式时：每点击一次跳到下一条提问的位置
+- 切换会话时自动回到底部
+
+#### 工具调用展示修复
+- 历史消息中的 tool_calls 由 OpenAI API 原始格式（id/type/function）转换为执行结果格式（tool_name/args/result/error）返回前端，工具卡片完整展示工具名、参数与执行结果
+- `role=tool` 消息不再单独返回渲染（其执行结果已并入 assistant 消息的工具卡片），消除孤立的工具图标行
+- 空正文的 assistant 消息（纯工具调用轮次）不再渲染空白气泡
+
+#### 会话与启动脚本
+- 修复：问答成功后再次点击「新建会话」误判存在空会话的问题——点击前实时刷新会话列表，按最新 `message_count` 判断，仅真正存在空会话时跳转并提示「已有新会话，请提问」
+- start-all.bat 顺序启动：等待后端 8000 / 前端 5173 端口就绪后再打开浏览器，消除启动瞬间 Vite ws proxy ECONNREFUSED 报错
+- stop-all.bat 先按窗口标题关闭服务窗口（含进程树），再按端口清理，避免 uvicorn `--reload` 孤儿进程残留
+- 默认主题改为亮色（light）
+
+### 待完成
+- 插件从 zip/git 安装
+- 会话分支与导出（Markdown/JSON）
+- Docker 沙箱后端
+- 桌面壳（Tauri）
+- 多 Agent 协作
+- 远程 channel（飞书/Telegram）
+
+---
+
 ## [0.0.6] - 2026-09-27
 
 ### 新增

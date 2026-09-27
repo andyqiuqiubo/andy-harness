@@ -7,6 +7,7 @@ SQLite + SQLModel/SQLAlchemy。
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -81,12 +82,13 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_session ON context_snapshots(session_id
 class Database:
     """SQLite 数据库连接管理器。"""
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
-        self.db_path = db_path
+    def __init__(self, db_path: str | None = None) -> None:
+        # 支持环境变量覆盖（测试隔离用），db_path 显式传入优先级最高
+        self.db_path = db_path or os.environ.get("HARNESS_DB_PATH") or DEFAULT_DB_PATH
         self._conn: sqlite3.Connection | None = None
 
         # 确保数据目录存在
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
     @property
     def conn(self) -> sqlite3.Connection:

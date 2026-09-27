@@ -1,12 +1,40 @@
 <script setup lang="ts">
-import type { Message } from '../api/types'
+import { computed } from 'vue'
+import type { Message, TokenUsage } from '../api/types'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 
-defineProps<{ message: Message }>()
+const props = defineProps<{ message: Message }>()
+
+// 是否在消息流中可见：
+// - tool 角色消息仅用于模型 API 上下文，其结果已在 assistant 的
+//   tool_calls 卡片中展示，不单独渲染（避免孤立的工具头像行）
+// - assistant 消息既无正文也无工具调用时不渲染（避免空白气泡/空行）
+const isVisible = computed(() => {
+  const m = props.message
+  if (m.role === 'tool') return false
+  if (m.role === 'assistant' && !m.content && !(m.tool_calls && m.tool_calls.length)) {
+    return false
+  }
+  return true
+})
+
+// 输入 token 中命中缓存的量（兼容 DeepSeek / OpenAI 两种字段名）
+function usageCacheHit(u: TokenUsage | undefined): number {
+  if (!u?.prompt_tokens_details) return 0
+  const d = u.prompt_tokens_details
+  return d.prompt_cache_hit_tokens ?? d.cached_tokens ?? 0
+}
+
+// 输入 token 中未命中缓存的量
+function usageCacheMiss(u: TokenUsage | undefined): number {
+  if (!u?.prompt_tokens_details) return 0
+  const d = u.prompt_tokens_details
+  return d.prompt_cache_miss_tokens ?? (u.prompt_tokens - usageCacheHit(u))
+}
 </script>
 
 <template>
-  <div :class="['message-row', message.role]">
+  <div v-if="isVisible" :class="['message-row', message.role]">
     <!-- User messages: avatar on right, content aligned right -->
     <template v-if="message.role === 'user'">
       <div class="message-body user-body">
@@ -37,8 +65,21 @@ defineProps<{ message: Message }>()
         </svg>
       </div>
       <div class="message-body assistant-body">
-        <div class="message-bubble assistant-bubble" v-if="message.role === 'assistant' || message.role === 'system'">
-          <MarkdownRenderer v-if="message.content" :content="message.content" />
+        <!-- 仅当正文非空时渲染气泡（空正文的纯工具调用轮次只显示工具卡片） -->
+        <div
+          class="message-bubble assistant-bubble"
+          v-if="(message.role === 'assistant' || message.role === 'system') && message.content"
+        >
+          <MarkdownRenderer :content="message.content" />
+        </div>
+
+        <!-- 本次对话的 token 用量（DeepSeek 官方 usage），每条回答各自保留 -->
+        <div v-if="message.role === 'assistant' && message.usage" class="message-usage">
+          <span class="usage-label">本次用量</span>
+          <span class="usage-item">输入 {{ message.usage.prompt_tokens }}</span>
+          <span v-if="usageCacheHit(message.usage) > 0" class="usage-item usage-muted">(缓存 {{ usageCacheHit(message.usage) }} · 未命中 {{ usageCacheMiss(message.usage) }})</span>
+          <span class="usage-item">· 输出 {{ message.usage.completion_tokens }}</span>
+          <span class="usage-item usage-total">· 合计 {{ message.usage.total_tokens }} tokens</span>
         </div>
 
         <!-- Tool calls -->
@@ -131,6 +172,40 @@ defineProps<{ message: Message }>()
   line-height: 1.7;
   box-shadow: var(--shadow-sm);
   word-break: break-word;
+}
+
+/* 本次对话的 token 用量 */
+.message-usage {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  background: var(--bg-code);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-full);
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+
+.usage-label {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.usage-item {
+  white-space: nowrap;
+}
+
+.usage-total {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.usage-muted {
+  color: var(--color-text-tertiary);
 }
 
 /* System messages */

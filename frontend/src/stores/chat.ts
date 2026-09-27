@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { Session, Message, WSFrame } from '../api/types'
+import type { Session, Message, TokenUsage, WSFrame } from '../api/types'
 import { apiClient } from '../api/client'
 import { useSettingsStore } from './settings'
 
@@ -42,14 +42,23 @@ export const useChatStore = defineStore('chat', () => {
     sessions.value.unshift(session)
     currentSessionId.value = session.id
     messages.value = []
+    contextSnapshot.value = null
     return session
   }
 
   async function selectSession(sessionId: string) {
     currentSessionId.value = sessionId
-    messages.value = await apiClient.get<Message[]>(`/sessions/${sessionId}/messages`)
+    // 并行加载消息与最新上下文快照（有快照则显示，无则保持 null 隐藏）
+    const [msgs, snapshot] = await Promise.all([
+      apiClient.get<Message[]>(`/sessions/${sessionId}/messages`),
+      apiClient.get<Record<string, unknown> | null>(
+        `/sessions/${sessionId}/context-snapshot`
+      ),
+    ])
+    messages.value = msgs
     streamingContent.value = ''
     toolEvents.value = []
+    contextSnapshot.value = snapshot || null
   }
 
   async function renameSession(sessionId: string, title: string) {
@@ -71,6 +80,7 @@ export const useChatStore = defineStore('chat', () => {
       } else {
         currentSessionId.value = null
         messages.value = []
+        contextSnapshot.value = null
       }
     }
   }
@@ -125,13 +135,16 @@ export const useChatStore = defineStore('chat', () => {
         if (streamingReasoning.value) {
           reasoningDone.value = true
         }
+        // 后端返回的本次问答 token 用量（DeepSeek usage 字段）
+        const usage = (frame.data.usage as TokenUsage | undefined) || undefined
         if (streamingContent.value || streamingReasoning.value) {
           messages.value.push({
             id: Date.now().toString(),
             session_id: currentSessionId.value || '',
             role: 'assistant',
             content: streamingContent.value,
-            tokens: 0,
+            tokens: usage?.total_tokens ?? 0,
+            usage,
             created_at: new Date().toISOString(),
           })
         }
@@ -215,8 +228,14 @@ export const useChatStore = defineStore('chat', () => {
     }, 500)
   }
 
-  function sendMessage(content: string, providerId: string, model?: string) {
-    if (!currentSessionId.value) return
+  async function sendMessage(content: string, providerId: string, model?: string) {
+    // 无会话时自动创建一条新会话
+    if (!currentSessionId.value) {
+      const title = content.slice(0, 20) || 'New Session'
+      await createSession(title)
+    }
+    const sessionId = currentSessionId.value
+    if (!sessionId) return // 会话创建失败时终止
     isStreaming.value = true
     error.value = null
     streamingContent.value = ''
@@ -226,7 +245,7 @@ export const useChatStore = defineStore('chat', () => {
 
     messages.value.push({
       id: Date.now().toString(),
-      session_id: currentSessionId.value,
+      session_id: sessionId,
       role: 'user',
       content,
       tokens: 0,
@@ -243,7 +262,7 @@ export const useChatStore = defineStore('chat', () => {
     const settings = settingsStore.sessionSettings
 
     apiClient.ws.send({
-      session_id: currentSessionId.value,
+      session_id: sessionId,
       content,
       provider_id: providerId,
       model: model || settings.model || undefined,
@@ -289,6 +308,7 @@ export const useChatStore = defineStore('chat', () => {
       } else {
         currentSessionId.value = null
         messages.value = []
+        contextSnapshot.value = null
       }
     }
   }
