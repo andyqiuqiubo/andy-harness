@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { Session, Message, TokenUsage, WSFrame } from '../api/types'
+import type { Session, Message, TokenUsage, WSFrame, Attachment, ProcessStep } from '../api/types'
 import { apiClient } from '../api/client'
 import { useSettingsStore } from './settings'
 
@@ -17,6 +17,37 @@ export const useChatStore = defineStore('chat', () => {
   const error = ref<string | null>(null)
   const mockMode = ref(false)
   let mockTimer: ReturnType<typeof setTimeout> | null = null
+
+  // 执行过程步骤（思维链 / 中间说明 / 工具调用），实时累积，
+  // 供 ChatView 的「执行过程」过程框统一展示。
+  const processEvents = ref<ProcessStep[]>([])
+
+  /** 追加思维链文本（连续 delta 合并进同一条；新一轮自动开新条目）。 */
+  function _appendReasoning(delta: string) {
+    const last = processEvents.value[processEvents.value.length - 1]
+    if (last && last.kind === 'reasoning') {
+      last.text = (last.text || '') + delta
+    } else {
+      processEvents.value.push({ kind: 'reasoning', text: delta })
+    }
+  }
+
+  /**
+   * 记录一次工具调用，并把本轮已流式输出的正文「移交」进过程框：
+   * 模型在调工具前输出的阶段性说明（如"我先加载该技能"）属于执行过程，
+   * 不应留在 streamingContent 里混入最终答案。
+   */
+  function _pushToolEvent(ev: Record<string, unknown>) {
+    if (streamingContent.value) {
+      processEvents.value.push({ kind: 'text', text: streamingContent.value })
+      streamingContent.value = ''
+    }
+    processEvents.value.push({ kind: 'tool', tool: ev as ProcessStep['tool'] })
+  }
+
+  // 待发送附件（用户选好文件后，发送前暂存；发送后清空）
+  const pendingAttachments = ref<Attachment[]>([])
+  const uploading = ref(false)
 
   const currentSession = computed(() =>
     sessions.value.find((s) => s.id === currentSessionId.value)
@@ -107,8 +138,10 @@ export const useChatStore = defineStore('chat', () => {
     switch (frame.type) {
       case 'token_delta':
         if (frame.data.reasoning_content) {
-          // 思维链内容：拼接到同一个字符串
-          streamingReasoning.value += frame.data.reasoning_content as string
+          const delta = frame.data.reasoning_content as string
+          // 思维链内容：拼接到同一个字符串 + 过程框步骤
+          streamingReasoning.value += delta
+          _appendReasoning(delta)
         }
         if (frame.data.delta) {
           // 第一次收到正文 delta 时，标记思维链完成
@@ -120,6 +153,8 @@ export const useChatStore = defineStore('chat', () => {
         break
       case 'tool_event':
         toolEvents.value.push(frame.data)
+        // 过程框记录（含把本轮中间正文移交进过程）
+        _pushToolEvent(frame.data)
         // 检测 theme_switcher 工具的主题切换指令
         _handleThemeSwitch(frame.data)
         break
@@ -152,9 +187,19 @@ export const useChatStore = defineStore('chat', () => {
         streamingReasoning.value = ''
         reasoningDone.value = false
         toolEvents.value = []
+        // 过程框步骤清空：流式区块隐藏，执行过程改由（reload 后的）
+        // 历史消息归并展示，避免双份过程框
+        processEvents.value = []
         isStreaming.value = false
         // 刷新会话列表以获取后端 AI 生成的标题
         _refreshSessionTitle()
+        // 关键修复：用后端已持久化的真实消息（含真实 UUID）对账本地乐观消息。
+        // 否则刚收到的问答其 id 仍是 Date.now() 临时值，点「从此处分叉 / 删除本轮」
+        // 会把临时 id 传给后端，导致 FORK_FAILED「会话或消息不存在」。
+        // 同时让流式结束后的视图与「重新选择会话」加载的视图一致（含 tool 消息）。
+        void reloadMessages().catch(() => {
+          // 对账失败时保留乐观消息，不阻断界面
+        })
         break
     }
   }
@@ -213,6 +258,7 @@ export const useChatStore = defineStore('chat', () => {
             streamingContent.value = ''
             streamingReasoning.value = ''
             reasoningDone.value = false
+            processEvents.value = []
             isStreaming.value = false
             return
           }
@@ -222,38 +268,53 @@ export const useChatStore = defineStore('chat', () => {
         }, 300)
         return
       }
-      streamingReasoning.value += reasoningTokens[rIdx]
+      const rDelta = reasoningTokens[rIdx]
+      streamingReasoning.value += rDelta
+      _appendReasoning(rDelta)
       rIdx++
       mockTimer = setTimeout(emitReasoning, 20 + Math.random() * 30)
     }, 500)
   }
 
-  async function sendMessage(content: string, providerId: string, model?: string) {
+  async function sendMessage(
+    content: string,
+    providerId: string,
+    model?: string,
+    attachments?: Attachment[],
+  ) {
+    const atts = attachments && attachments.length ? attachments : []
     // 无会话时自动创建一条新会话
     if (!currentSessionId.value) {
-      const title = content.slice(0, 20) || 'New Session'
+      const title = content.slice(0, 20) || (atts[0] ? atts[0].filename : 'New Session')
       await createSession(title)
     }
     const sessionId = currentSessionId.value
     if (!sessionId) return // 会话创建失败时终止
+    // 既无文本也无附件时不发送
+    if (!content.trim() && atts.length === 0) return
+
     isStreaming.value = true
     error.value = null
     streamingContent.value = ''
     streamingReasoning.value = ''
     reasoningDone.value = false
     toolEvents.value = []
+    processEvents.value = []
 
     messages.value.push({
       id: Date.now().toString(),
       session_id: sessionId,
       role: 'user',
       content,
+      attachments: atts.length ? atts : undefined,
       tokens: 0,
       created_at: new Date().toISOString(),
     })
 
     if (mockMode.value) {
       _runMockStream(content)
+      // 模拟模式下也清空待发送附件（仅前端展示用，无真实模型消费）
+      pendingAttachments.value = []
       return
     }
 
@@ -268,7 +329,40 @@ export const useChatStore = defineStore('chat', () => {
       model: model || settings.model || undefined,
       temperature: settings.temperature,
       system_prompt: settings.system_prompt || undefined,
+      attachments: atts.map((a) => ({ id: a.id })),
     })
+    // 发送后清空待发送附件
+    pendingAttachments.value = []
+  }
+
+  /** 上传若干文件为待发送附件（已在后端完成类型/大小/数量校验）。 */
+  async function uploadPending(files: File[]) {
+    if (!currentSessionId.value) {
+      // 尚未建会话时，先建一条，避免 404
+      await createSession('New Session')
+    }
+    const sessionId = currentSessionId.value
+    if (!sessionId) return
+    uploading.value = true
+    try {
+      const res = await apiClient.uploadAttachments<{ attachments: Attachment[] }>(
+        sessionId,
+        files,
+      )
+      const got = res.attachments || []
+      // 合并，避免重复 id
+      const seen = new Set(pendingAttachments.value.map((a) => a.id))
+      for (const a of got) {
+        if (!seen.has(a.id)) pendingAttachments.value.push(a)
+      }
+    } finally {
+      uploading.value = false
+    }
+  }
+
+  /** 移除一条待发送附件（仅前端移除，后端已落盘，后续会话删除会一并清理）。 */
+  function removePendingAttachment(id: string) {
+    pendingAttachments.value = pendingAttachments.value.filter((a) => a.id !== id)
   }
 
   function stopStreaming() {
@@ -296,6 +390,16 @@ export const useChatStore = defineStore('chat', () => {
     streamingReasoning.value = ''
     reasoningDone.value = false
     toolEvents.value = []
+    // 与 'done' 同理：停止后过程框隐藏，由 reload 后的历史消息归并展示
+    processEvents.value = []
+    // 停止后用户消息已持久化，需用后端真实 UUID 对账，
+    // 否则对该轮「删除本轮 / 分叉」会拿到临时 id 而失败。
+    // 延迟片刻，等后端处理完 stop 指令与失败轮次清理后再拉取真实状态。
+    if (!mockMode.value) {
+      setTimeout(() => {
+        void reloadMessages().catch(() => {})
+      }, 400)
+    }
   }
 
   async function deleteSession(sessionId: string) {
@@ -371,6 +475,9 @@ export const useChatStore = defineStore('chat', () => {
     contextSnapshot,
     error,
     mockMode,
+    pendingAttachments,
+    uploading,
+    processEvents,
     currentSession,
     loadSessions,
     createSession,
@@ -385,5 +492,7 @@ export const useChatStore = defineStore('chat', () => {
     handleWSFrame,
     sendMessage,
     stopStreaming,
+    uploadPending,
+    removePendingAttachment,
   }
 })

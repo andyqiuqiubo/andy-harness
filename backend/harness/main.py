@@ -13,6 +13,8 @@ from fastapi import FastAPI
 from harness.api.errors import register_error_handlers
 from harness.api.rest.artifacts import router as artifacts_router
 from harness.api.rest.artifacts import setup_artifact_routes
+from harness.api.rest.attachments import router as attachments_router
+from harness.api.rest.attachments import setup_attachment_routes
 from harness.api.rest.mcp import router as mcp_router
 from harness.api.rest.mcp import setup_mcp_routes
 from harness.api.rest.memories import router as memories_router
@@ -157,6 +159,7 @@ setup_artifact_routes(_services)
 setup_memory_routes(_services)
 setup_trace_routes(_services)
 setup_schedule_routes(_services)
+setup_attachment_routes(_services)
 
 app.include_router(sessions_router)
 app.include_router(providers_router)
@@ -170,6 +173,7 @@ app.include_router(artifacts_router)
 app.include_router(memories_router)
 app.include_router(traces_router)
 app.include_router(schedules_router)
+app.include_router(attachments_router)
 
 # 注册 WebSocket 路由
 setup_ws_routes(_services, _hooks, _tool_registry)

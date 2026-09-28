@@ -49,6 +49,18 @@ class APIClientImpl {
     return res.json()
   }
 
+  /** 上传附件（multipart），返回后端登记后的公开元信息列表。 */
+  async uploadAttachments<T>(sessionId: string, files: File[]): Promise<T> {
+    const form = new FormData()
+    for (const f of files) form.append('files', f, f.name)
+    const res = await fetch(`${BASE_URL}/sessions/${sessionId}/attachments`, {
+      method: 'POST',
+      body: form,
+    })
+    if (!res.ok) throw new Error(await res.text())
+    return res.json()
+  }
+
   ws = {
     socket: null as WebSocket | null,
     reconnectTimer: null as ReturnType<typeof setTimeout> | null,

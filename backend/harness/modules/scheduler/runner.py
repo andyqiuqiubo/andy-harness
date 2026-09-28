@@ -277,6 +277,12 @@ class TaskRunner:
                     else:
                         outcome.status = "ok"
                     outcome.summary = (result.content or "").strip()
+                    if outcome.status == "ok" and not outcome.summary:
+                        # 正常结束却无终答（如收尾调用也未能产出文本）
+                        outcome.summary = (
+                            f"运行完成（{result.iterations} 次迭代）但未生成"
+                            "最终回答，请查看会话中的工具执行记录。"
+                        )
         except Exception as e:  # noqa: BLE001
             logger.exception("定时任务执行异常: %s", task.name)
             outcome.status = "error"

@@ -6,7 +6,7 @@ import ast
 import logging
 import operator
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from harness.kernel.context import PluginContext

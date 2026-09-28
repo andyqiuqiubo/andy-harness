@@ -11,8 +11,8 @@ import json
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
 from harness.engine.hook_types import (
@@ -142,6 +142,7 @@ class AgentLoop:
         confirm_callback: (
             Callable[[str, dict[str, Any], str, str], Awaitable[bool]] | None
         ) = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> AgentLoopResult:
         """执行一次完整的对话循环。
 
@@ -187,7 +188,10 @@ class AgentLoop:
         try:
             # 追加用户消息
             await self._persist_message(
-                session_id, role="user", content=user_message
+                session_id,
+                role="user",
+                content=user_message,
+                attachments=attachments,
             )
 
             current_messages: list[dict[str, Any]] = []
@@ -238,10 +242,49 @@ class AgentLoop:
 
                 result.tool_calls_made.extend(tool_results)
             else:
-                # 达到最大迭代数
+                # 达到最大迭代数：强制一次「无工具」收尾调用，
+                # 让模型基于已获取的信息给出最终回答。
+                # 否则会话将停在悬空的工具结果上、没有任何终答
+                # （表现为任务/对话「执行成功」却看不到结果）。
                 logger.warning(
-                    "达到最大工具迭代数: %d", self._config.max_tool_iterations
+                    "达到最大工具迭代数: %d，强制无工具收尾",
+                    self._config.max_tool_iterations,
                 )
+                if not self._stopped:
+                    context_msgs = await self._build_context(
+                        session_id, used_budget, used_model
+                    )
+                    wrapup_msgs = list(context_msgs)
+                    wrapup_msgs.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "（系统提示）已达到工具调用次数上限，"
+                                "禁止再调用任何工具。请立即基于以上已获取的"
+                                "全部信息，直接输出最终回答。"
+                            ),
+                        }
+                    )
+                    try:
+                        wrapup_content, _ignored, wrapup_usage = (
+                            await self._call_model(
+                                provider,
+                                wrapup_msgs,
+                                used_model,
+                                session_id,
+                                trace_id,
+                                allow_tools=False,
+                            )
+                        )
+                        if wrapup_usage:
+                            result.usage = self._merge_usage(
+                                result.usage, wrapup_usage
+                            )
+                        if wrapup_content:
+                            result.content = wrapup_content
+                    except Exception as e:  # noqa: BLE001
+                        # 收尾失败不视为整体失败（前 N 轮工具结果已落库）
+                        logger.warning("强制收尾调用失败: %s", e)
 
             # 持久化最终 assistant 终答消息（不带 tool_calls）
             if result.content and not result.short_circuited:
@@ -498,14 +541,21 @@ class AgentLoop:
         model: str,
         session_id: str = "",
         trace_id: str = "",
+        allow_tools: bool = True,
     ) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None]:
         """调用模型并解析响应（带重试）。
+
+        Args:
+            allow_tools: False 时不注入工具定义（用于撞迭代上限后的
+                强制收尾调用，逼模型只能输出文字终答）。
 
         Returns:
             (content, tool_calls, usage)
         """
         # 准备请求
-        tool_defs = self._tool_registry.get_tool_definitions()
+        tool_defs = (
+            self._tool_registry.get_tool_definitions() if allow_tools else []
+        )
         model_request = ModelRequest(
             messages=messages,
             model=model,
@@ -813,9 +863,8 @@ class AgentLoop:
         user/assistant 消息）。
         """
         try:
-            from harness.modules.session_manager.service import SessionService
-            from harness.infra.repository import MessageRepository
             from harness.infra.database import Database
+            from harness.modules.session_manager.service import SessionService
 
             session_service = self._services.get(SessionService)
             messages = session_service.list_messages(session_id)
@@ -823,7 +872,6 @@ class AgentLoop:
                 return
 
             db = self._services.get(Database)
-            repo = MessageRepository(db)
 
             # 从末尾往前删除残留消息
             deleted = 0
@@ -858,6 +906,7 @@ class AgentLoop:
         tool_calls: list[dict[str, Any]] | None = None,
         tool_call_id: str | None = None,
         tokens: int = 0,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> None:
         """持久化消息（含 pre_message_persist 钩子）。"""
         from harness.modules.session_manager.service import SessionService
@@ -869,6 +918,7 @@ class AgentLoop:
             tool_calls=tool_calls or [],
             tool_call_id=tool_call_id,
             tokens=tokens,
+            attachments=attachments,
         )
 
         # pre_message_persist 钩子
@@ -898,4 +948,5 @@ class AgentLoop:
             tool_call_id=record.tool_call_id,
             tokens=record.tokens,
             latency_ms=record.latency_ms,
+            attachments=record.attachments,
         )

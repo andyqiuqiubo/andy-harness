@@ -12,6 +12,7 @@ dependencies = [
     "tiktoken>=0.7.0",
     "matplotlib>=3.11.2",
     "numpy>=2.4.6",
+    "python-multipart>=0.0.20",
 ]
 
 [project.optional-dependencies]

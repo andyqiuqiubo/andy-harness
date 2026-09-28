@@ -7,6 +7,75 @@
 
 ---
 
+## [0.0.14] - 2026-09-28
+
+### 修复
+
+#### 撞工具迭代上限后无最终回答（定时任务"成功"却看不到结果）
+- **现象**：定时任务「每日大模型新闻早报」立即执行后显示成功，但会话里只有几十条
+  web_search / web_fetch 工具消息，没有任何最终报告
+- **根因**：`AgentLoop` 的 `while...else` 在撞到 `max_tool_iterations` 上限后只打了一条
+  warning 就结束，而 `result.content` 还是最后一轮（空内容）的残留值，于是「终答持久化」
+  被跳过——会话停在悬空的工具结果上。该缺陷同样影响普通聊天（任何跑满迭代数的对话都拿不到终答）
+- **修复**：撞上限后**强制一次无工具收尾调用**——追加一条"已达工具调用上限，禁止再调工具，
+  请基于已有信息直接输出最终回答"的指令消息，并以 `allow_tools=False` 调用模型（不注入
+  工具定义），确保模型只能输出文字终答；终答照常落库、usage 并入统计。收尾调用失败不视为
+  整体失败（前 N 轮工具结果已落库）
+- **配套**：定时任务 runner 在「状态 ok 但无终答」时，运行历史的 summary 改为明确说明
+  （"运行完成（N 次迭代）但未生成最终回答"），不再留空
+- 测试：新增 2 项回归（撞上限必须产出并落库终答；收尾调用失败不影响既有工具结果），
+  AgentLoop+Scheduler 28 项通过；真实端到端两次重跑新闻任务，会话分别产出 1673 / 1338 字
+  最终报告（模型还诚实标注了撞上限与文件未落盘的原因）
+
+---
+
+## [0.0.13] - 2026-09-28
+
+### 新增
+
+#### 会话文件传输（文档 + 图片）
+让对话支持携带附件：用户可在聊天输入区上传**文档**与**图片**，随消息一起发给模型。
+
+- **支持类型**
+  - 文档：txt / md / markdown / csv / json / yaml / yml / log / py / js / ts / tsx / jsx /
+    html / htm / xml / ini / toml / cfg / tex / rst / sh / bat / ps1 / env.example / gitignore
+  - 图片：png / jpg / jpeg / gif / webp / bmp
+- **数量与大小上限**（防 token 爆炸，均可由 `limits.py` 调整）
+  - 单条消息：文档 ≤ 5、图片 ≤ 4、文件总数 ≤ 8
+  - 单个文档 ≤ 200KB；单张图片 ≤ 1.5MB，且最长边自动缩放到 1280px（Pillow）以控制视觉 token
+- **多模态注入**：文档按「`[文档 文件名]\n<正文>`」内联为文本块；图片缩放后转 base64
+  data URL，按 OpenAI 视觉规范作为 `image_url` 块——`ContextService.build` 在压缩之后统一渲染，
+  无附件的消息保持纯字符串 content，不影响既有链路
+- **上传即校验**：REST 上传时逐个分类校验（类型/大小/数量），任一不合规整批拒绝（400 + 错误码
+  `ATTACHMENT_INVALID` / `ATTACHMENT_LIMIT`）；文件存于 `data/attachments/<session_id>/`，
+  公开元信息不含存储路径
+- **回传与缩略图**：`GET /api/sessions/{id}/attachments/{att_id}` 按原始 mime 回传（图片可作缩略图），
+  并校验附件归属会话（跨会话取他人附件返回 404）
+- **生命周期**：删除会话时连带清理附件物理文件与数据库行（`delete_session` 内 rmtree + `delete_by_session`）
+- **REST**：`POST /api/sessions/{id}/attachments`（multipart 多文件）、`GET /api/sessions/{id}/attachments/{att_id}`
+- **WS**：`/ws/chat` 消息体新增 `attachments` 字段（引用已上传附件 id），服务端校验归属后注入 `AgentLoop.run`
+- **前端**：聊天输入区新增「📎 附件」按钮 + 隐藏 file input；已选附件以 chip 展示（图片缩略图 / 文档图标 +
+  文件名 + 大小 + 移除按钮）；前端预校验类型与「文档/图片/总数」三类上限；允许「只发附件不带文字」；
+  用户消息气泡内渲染附件（图片缩略图可点大图、文档 chip）
+- 存储：新增 `attachments` 表；`messages` 表新增 `attachments` 列（`ALTER TABLE` 旧库自动升级）
+- 依赖：新增 `python-multipart`（FastAPI 文件上传所需），已写入 `pyproject.toml`
+
+### 修复
+- **测试污染真实数据**：`tests/conftest.py` 此前隔离了 DB / 工件 / MCP 配置，但**漏了附件目录**，
+  导致附件测试把上传文件写进真实的 `data/attachments/`（累计 39 个垃圾文件夹）。已补
+  `HARNESS_ATTACHMENTS_DIR` 隔离，并把残留垃圾可逆移动到 `data/.trash_attachments_junk/`
+
+### 验证
+- 后端测试 **357 passed**（340 → 357，新增 17 项：上传/类型/大小/数量校验、回传、跨会话越权、
+  消息持久化、`ContextService` 多模态渲染、纯文本不变、会话删除清理附件）
+- ruff：附件相关新代码 **0 新增**（顺手修掉 `context_manager` 一处既有 E501）；mypy 14 与基线持平
+- **真实端到端（deepseek-v4-flash）**：上传 73 字节文档（含唯一代号 `BANANA-42`）→ 模型准确答出
+  `BANANA-42`；上传 92 字节纯红 PNG → 模型答出「红色」，证明**文档文本注入与图片视觉多模态均真实生效**；
+  两会话用后即删，真实库无残留
+- 前端 `vue-tsc` + `vite build` 通过，新文案（移除附件 / 单次最多添加 / 附件上传失败等）已确认入包
+
+---
+
 ## [0.0.12] - 2026-09-28
 
 ### 新增

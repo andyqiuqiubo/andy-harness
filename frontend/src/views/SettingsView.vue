@@ -387,6 +387,39 @@ function scrollTabs(dir: number) {
   el.scrollBy({ left: dir * amount, behavior: 'smooth' })
 }
 
+/**
+ * 边界 tab 点击补偿滚动：
+ * - 向左箭头不可用（已滚到最左）时，点击「最右边可见 tab」→ 整行向左挪 2 个 tab（露出右侧）
+ * - 向右箭头不可用（已滚到最右）时，点击「最左边可见 tab」→ 整行向右挪 2 个 tab（露出左侧）
+ * 移动量复用 scrollTabs，与点击箭头完全一致；不影响 tab 本身的选中。
+ */
+function onTabNavClick(e: MouseEvent) {
+  const el = tabNavRef.value
+  if (!el || !tabOverflow.value) return
+  const clicked = (e.target as HTMLElement).closest('.tab-btn') as HTMLElement | null
+  if (!clicked) return
+  const buttons = Array.from(el.querySelectorAll('.tab-btn')) as HTMLElement[]
+  if (!buttons.length) return
+
+  // 用 getBoundingClientRect 判定可见性（含部分可见），不依赖 offsetParent 定位
+  const elRect = el.getBoundingClientRect()
+  const visible = buttons.filter((b) => {
+    const r = b.getBoundingClientRect()
+    return r.left < elRect.right - 1 && r.right > elRect.left + 1
+  })
+  if (!visible.length) return
+  const leftmost = visible[0]
+  const rightmost = visible[visible.length - 1]
+
+  if (!canScrollLeft.value && clicked === rightmost) {
+    // 已在最左 + 点最右可见 tab → 整行向左挪（向右滚动）2 个 tab
+    scrollTabs(1)
+  } else if (!canScrollRight.value && clicked === leftmost) {
+    // 已在最右 + 点最左可见 tab → 整行向右挪（向左滚动）2 个 tab
+    scrollTabs(-1)
+  }
+}
+
 onMounted(() => {
   updateTabScrollState()
   window.addEventListener('resize', updateTabScrollState)
@@ -1107,7 +1140,7 @@ function formatMs(n: number): string {
       >
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
       </button>
-      <div ref="tabNavRef" class="tab-nav-scroll" @scroll="updateTabScrollState">
+      <div ref="tabNavRef" class="tab-nav-scroll" @scroll="updateTabScrollState" @click="onTabNavClick">
         <button :class="['tab-btn', { active: activeTab === 'providers' }]" @click="activeTab = 'providers'">
           {{ t('settings.tab.providers') }}
         </button>

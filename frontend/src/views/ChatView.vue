@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, watch, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useProviderStore } from '../stores/providers'
 import { useTodoStore } from '../stores/todos'
@@ -11,6 +11,8 @@ import SessionSidebar from '../components/SessionSidebar.vue'
 import MessageItem from '../components/MessageItem.vue'
 import ModelSelector from '../components/ModelSelector.vue'
 import MarkdownRenderer from '../components/MarkdownRenderer.vue'
+import ProcessTrace from '../components/ProcessTrace.vue'
+import type { Message, ProcessStep } from '../api/types'
 
 const chatStore = useChatStore()
 const providerStore = useProviderStore()
@@ -24,6 +26,123 @@ const selectedProvider = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
 // 是否位于消息列表底部（用户上滑时停止自动滚动）
 const isAtBottom = ref(true)
+
+// ── 输入框自适应高度（3→7 行；超 7 行可放大到整页） ──────────
+const textareaRef = ref<HTMLTextAreaElement | null>(null)
+const isExpanded = ref(false) // 是否处于「放大到整页」状态
+const canExpand = ref(false) // 内容是否超过 7 行（决定是否显示放大按钮）
+const MIN_ROWS = 3
+const MAX_ROWS = 7
+
+/** 读取 textarea 单行高度与上下内边距（跟随主题字号，避免硬编码）。 */
+function _metrics(el: HTMLTextAreaElement): { line: number; pad: number } {
+  const cs = window.getComputedStyle(el)
+  const lh = parseFloat(cs.lineHeight)
+  const line = Number.isFinite(lh) && lh > 0 ? lh : parseFloat(cs.fontSize) * 1.6
+  const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0)
+  return { line, pad }
+}
+
+/** 放大模式下输入框可用的最大高度（视口高度减去顶栏与边距）。 */
+function _maxExpandedHeight(): number {
+  return Math.max(200, window.innerHeight - 150)
+}
+
+/** 根据内容与展开状态计算并应用 textarea 高度。 */
+function autoResize() {
+  const el = textareaRef.value
+  if (!el) return
+  const { line, pad } = _metrics(el)
+  const minH = line * MIN_ROWS + pad
+  const maxH = line * MAX_ROWS + pad
+
+  // 先置 auto 以测量真实内容高度
+  el.style.height = 'auto'
+  const contentH = el.scrollHeight
+
+  // 内容超过 7 行才显示放大按钮
+  canExpand.value = contentH > maxH + 1
+
+  // 内容缩回 7 行以内时自动退出放大态：
+  // 否则放大按钮消失后，输入框会卡在整页高度且无法缩小。
+  if (!canExpand.value && isExpanded.value) {
+    isExpanded.value = false
+  }
+
+  if (isExpanded.value) {
+    // 放大：撑到页面最大高度，内容超出则内部滚动
+    const h = _maxExpandedHeight()
+    el.style.height = h + 'px'
+    el.style.overflowY = contentH > h ? 'auto' : 'hidden'
+  } else {
+    // 常规：在 3~7 行之间自适应
+    const h = Math.min(Math.max(contentH, minH), maxH)
+    el.style.height = h + 'px'
+    el.style.overflowY = contentH > maxH ? 'auto' : 'hidden'
+  }
+}
+
+/** 切换放大 / 缩小。 */
+function toggleExpand() {
+  isExpanded.value = !isExpanded.value
+  nextTick(autoResize)
+}
+
+// 内容变化时重新计算高度
+watch(inputText, () => {
+  nextTick(autoResize)
+})
+
+// ── 历史消息归并：把一轮问答里的中间步骤（思维/说明/工具调用）
+//    合并成一个「执行过程」步骤集，渲染为答案上方的过程框（默认收缩） ──────────
+interface DisplayItem {
+  kind: 'message' | 'process'
+  message?: Message
+  steps?: ProcessStep[]
+}
+
+const displayItems = computed<DisplayItem[]>(() => {
+  const items: DisplayItem[] = []
+  let pending: ProcessStep[] = []
+  const flush = () => {
+    if (pending.length) {
+      items.push({ kind: 'process', steps: pending })
+      pending = []
+    }
+  }
+  for (const m of chatStore.messages) {
+    if (m.role === 'user' || m.role === 'system') {
+      flush()
+      items.push({ kind: 'message', message: m })
+      continue
+    }
+    if (m.role !== 'assistant') continue // tool 角色由后端 API 过滤，兜底跳过
+    const hasTools = !!(m.tool_calls && m.tool_calls.length)
+    const hasText = !!(m.content || '').trim()
+    if (hasText && !hasTools) {
+      // 最终回答：先输出累积的执行过程，再输出答案
+      flush()
+      items.push({ kind: 'message', message: m })
+    } else {
+      // 中间轮次：阶段性说明文字 + 工具调用 → 归并进执行过程
+      if (hasText) pending.push({ kind: 'text', text: m.content })
+      for (const tc of m.tool_calls || []) {
+        pending.push({
+          kind: 'tool',
+          tool: {
+            tool_name: tc.tool_name,
+            args: tc.args,
+            result: tc.result,
+            error: tc.error || undefined,
+          },
+        })
+      }
+    }
+  }
+  // 兜底：末尾残留的中间步骤（如被中断的轮次）
+  flush()
+  return items
+})
 
 // 初始化 provider 选择：优先 deepseek
 watch(() => providerStore.providers, (providers) => {
@@ -184,7 +303,10 @@ function handleScrollDown() {
 
 // 发送消息
 function handleSend() {
-  if (!inputText.value.trim() || chatStore.isStreaming) return
+  const hasText = inputText.value.trim().length > 0
+  const hasFiles = chatStore.pendingAttachments.length > 0
+  // 既无文本又无附件，或正在流式输出时，不发送
+  if ((!hasText && !hasFiles) || chatStore.isStreaming) return
   let text = inputText.value
   // 追问模式：把被追问的问答作为引用前缀一起发出（同一会话上下文已含原文）
   if (followUpQuote.value) {
@@ -193,9 +315,102 @@ function handleSend() {
     text = prefix + text
     followUpQuote.value = null
   }
-  chatStore.sendMessage(text, selectedProvider.value, selectedModel.value || undefined)
+  chatStore.sendMessage(
+    text,
+    selectedProvider.value,
+    selectedModel.value || undefined,
+    chatStore.pendingAttachments,
+  )
   inputText.value = ''
+  // 发送后收起放大状态，输入框回到 3 行起步
+  isExpanded.value = false
+  nextTick(autoResize)
   scrollToBottom()
+}
+
+// ── 附件上传 ──────────────────────────────────
+const fileInput = ref<HTMLInputElement | null>(null)
+
+const ALLOWED_EXT = [
+  'txt', 'md', 'markdown', 'csv', 'json', 'yaml', 'yml', 'log', 'py', 'js', 'ts',
+  'tsx', 'jsx', 'html', 'htm', 'xml', 'ini', 'toml', 'cfg', 'tex', 'rst', 'sh',
+  'bat', 'ps1', 'env.example', 'gitignore', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp',
+]
+const MAX_FILES = 8
+const MAX_DOCUMENTS = 5
+const MAX_IMAGES = 4
+
+function openFilePicker() {
+  fileInput.value?.click()
+}
+
+function extOf(name: string): string {
+  const m = name.toLowerCase().match(/\.([a-z0-9.]+)$/)
+  return m ? m[1] : ''
+}
+
+async function handleFileSelect(e: Event) {
+  const target = e.target as HTMLInputElement
+  const files = Array.from(target.files || [])
+  target.value = '' // 允许重复选择同一文件
+  if (!files.length) return
+  // 客户端初步过滤不支持的类型，减少无效请求
+  const accepted: File[] = []
+  const docs: File[] = []
+  const images: File[] = []
+  let rejected = 0
+  for (const f of files) {
+    if (!ALLOWED_EXT.includes(extOf(f.name))) {
+      rejected++
+      continue
+    }
+    const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(
+      extOf(f.name),
+    )
+    if (isImage) images.push(f)
+    else docs.push(f)
+    accepted.push(f)
+  }
+  if (rejected > 0) {
+    window.alert(t.value('chat.attachmentUnsupported'))
+  }
+  if (!accepted.length) return
+  // 总数上限
+  const remaining = MAX_FILES - chatStore.pendingAttachments.length
+  if (accepted.length > remaining) {
+    window.alert(
+      t.value('chat.attachmentLimit').replace('{n}', String(MAX_FILES)),
+    )
+    return
+  }
+  // 按类型各自上限
+  const pendingDocs = chatStore.pendingAttachments.filter(
+    (a: { kind: string }) => a.kind === 'document',
+  ).length
+  const pendingImages = chatStore.pendingAttachments.filter(
+    (a: { kind: string }) => a.kind === 'image',
+  ).length
+  if (docs.length > MAX_DOCUMENTS - pendingDocs) {
+    window.alert(
+      t.value('chat.attachmentDocLimit').replace('{n}', String(MAX_DOCUMENTS)),
+    )
+    return
+  }
+  if (images.length > MAX_IMAGES - pendingImages) {
+    window.alert(
+      t.value('chat.attachmentImageLimit').replace('{n}', String(MAX_IMAGES)),
+    )
+    return
+  }
+  try {
+    await chatStore.uploadPending(accepted)
+  } catch (err) {
+    window.alert(t.value('chat.attachmentUploadFail') + ': ' + err)
+  }
+}
+
+function removeAttachment(id: string) {
+  chatStore.removePendingAttachment(id)
 }
 
 // ── 问答对操作（复制 / 物理删除整轮 / 追问） ─────────────
@@ -254,7 +469,7 @@ function handleStop() {
 }
 
 // 监听消息变化自动滚动（仅当用户停在底部时；上滑查看历史则停止跟随）
-watch(() => [chatStore.messages.length, chatStore.streamingContent, chatStore.streamingReasoning, chatStore.toolEvents.length], () => {
+watch(() => [chatStore.messages.length, chatStore.streamingContent, chatStore.processEvents.length, chatStore.processEvents[chatStore.processEvents.length - 1]?.text?.length, chatStore.toolEvents.length], () => {
   if (isAtBottom.value) scrollToBottom()
 })
 
@@ -286,6 +501,9 @@ onMounted(() => {
   // 加载 providers
   providerStore.loadProviders()
   providerStore.loadModels()
+  // 初始化输入框高度，并监听窗口尺寸变化（放大模式需随视口重算）
+  nextTick(autoResize)
+  window.addEventListener('resize', autoResize)
 })
 
 onUnmounted(() => {
@@ -293,6 +511,7 @@ onUnmounted(() => {
     unregisterWS()
     unregisterWS = null
   }
+  window.removeEventListener('resize', autoResize)
   apiClient.ws.disconnect()
 })
 </script>
@@ -374,17 +593,23 @@ onUnmounted(() => {
       <!-- Messages -->
       <div ref="messagesContainer" class="messages-container" @scroll="onMessagesScroll">
         <div class="messages-inner">
-          <MessageItem
-            v-for="msg in chatStore.messages"
-            :key="msg.id"
-            :message="msg"
-            @delete-turn="handleDeleteTurn"
-            @follow-up="handleFollowUp"
-            @fork="handleForkAt"
-          />
+          <!-- 历史消息：中间步骤归并为「执行过程」过程框（默认收缩），答案正常展示 -->
+          <template v-for="(item, idx) in displayItems" :key="item.kind === 'message' ? `m-${item.message!.id}` : `p-${idx}`">
+            <MessageItem
+              v-if="item.kind === 'message'"
+              :message="item.message!"
+              @delete-turn="handleDeleteTurn"
+              @follow-up="handleFollowUp"
+              @fork="handleForkAt"
+            />
+            <div v-else class="history-process-row">
+              <ProcessTrace :steps="item.steps || []" />
+            </div>
+          </template>
 
-          <!-- 流式渲染中 -->
-          <div v-if="chatStore.streamingContent || chatStore.streamingReasoning.length || chatStore.toolEvents.length" class="streaming-message">
+          <!-- 流式渲染中：思维链 + 工具调用统一进「执行过程」框实时展示；
+               最终答案开始输出时过程框自动收缩（可点击展开回看） -->
+          <div v-if="chatStore.isStreaming && (chatStore.processEvents.length || chatStore.streamingContent)" class="streaming-message">
             <div class="message-avatar assistant-avatar">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
                 <path d="M12 2L2 7l10 5 10-5-10-5z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
@@ -392,54 +617,16 @@ onUnmounted(() => {
               </svg>
             </div>
             <div class="streaming-body">
-              <!-- 思维链：逐步展示，完成后折叠 -->
-              <details
-                v-if="chatStore.streamingReasoning.length > 0"
-                class="reasoning-block"
-                :open="!chatStore.reasoningDone"
-              >
-                <summary class="reasoning-summary">
-                  <svg class="reasoning-icon" width="14" height="14" viewBox="0 0 24 24" fill="none">
-                    <path d="M9.66 7H17a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2.66l1-2h2l1 2z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                  <span class="reasoning-label">{{ chatStore.reasoningDone ? '思维过程（点击展开）' : '思考中...' }}</span>
-                  <svg v-if="!chatStore.reasoningDone" class="reasoning-spinner" width="14" height="14" viewBox="0 0 24 24" fill="none">
-                    <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" stroke-dasharray="40" stroke-dashoffset="20" stroke-linecap="round">
-                      <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/>
-                    </circle>
-                  </svg>
-                </summary>
-                <div class="reasoning-text">{{ chatStore.streamingReasoning }}</div>
-              </details>
+              <ProcessTrace
+                v-if="chatStore.processEvents.length"
+                :steps="chatStore.processEvents"
+                live
+                :collapse-trigger="chatStore.streamingContent.length > 0"
+              />
 
-              <!-- 正文回复 -->
+              <!-- 正文回复（仅最终答案；中间说明已被移交进过程框） -->
               <div v-if="chatStore.streamingContent" class="streaming-content">
                 <MarkdownRenderer :content="chatStore.streamingContent" /><span class="streaming-cursor"></span>
-              </div>
-
-              <!-- Tool events -->
-              <div v-for="(tc, i) in chatStore.toolEvents" :key="`tool-${i}`" class="tool-card">
-                <details>
-                  <summary class="tool-summary">
-                    <svg class="tool-icon" width="16" height="16" viewBox="0 0 24 24" fill="none">
-                      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                    <span class="tool-name">{{ tc.tool_name }}</span>
-                    <svg class="tool-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none">
-                      <path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                  </summary>
-                  <div class="tool-detail">
-                    <div class="tool-result">
-                      <span class="tool-label">结果:</span>
-                      <code class="tool-result-code">{{ tc.result }}</code>
-                    </div>
-                    <div v-if="tc.error" class="tool-error">
-                      <span class="tool-label">错误:</span>
-                      <code class="tool-result-code">{{ tc.error }}</code>
-                    </div>
-                  </div>
-                </details>
               </div>
             </div>
           </div>
@@ -524,21 +711,75 @@ onUnmounted(() => {
             </svg>
           </button>
         </div>
-        <div class="input-wrapper">
+        <div :class="['input-wrapper', { 'can-expand': canExpand }]">
+          <!-- 待发送附件预览条 -->
+          <div v-if="chatStore.pendingAttachments.length" class="attach-strip">
+            <div
+              v-for="att in chatStore.pendingAttachments"
+              :key="att.id"
+              class="attach-chip"
+            >
+              <img
+                v-if="att.kind === 'image'"
+                class="attach-thumb"
+                :src="`/api/sessions/${chatStore.currentSessionId}/attachments/${att.id}`"
+                :alt="att.filename"
+              />
+              <span v-else class="attach-doc-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+                </svg>
+              </span>
+              <span class="attach-name" :title="att.filename">{{ att.filename }}</span>
+              <button class="attach-remove" :title="t('chat.attachmentRemove')" @click="removeAttachment(att.id)">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
           <textarea
+            ref="textareaRef"
             v-model="inputText"
-            class="input-textarea"
+            :class="['input-textarea', { expanded: isExpanded }]"
             :placeholder="t('chat.placeholder')"
             @keydown.enter.exact.prevent="handleSend"
             :disabled="chatStore.isStreaming"
             rows="3"
           />
+          <!-- 放大 / 缩小按钮：内容超过 7 行时出现在输入框右上角 -->
+          <button
+            v-if="canExpand"
+            class="btn-expand"
+            :title="isExpanded ? t('chat.collapseInput') : t('chat.expandInput')"
+            @click="toggleExpand"
+          >
+            <svg v-if="!isExpanded" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" />
+              <line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" />
+            </svg>
+            <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="4 14 10 14 10 20" /><polyline points="20 10 14 10 14 4" />
+              <line x1="14" y1="10" x2="21" y2="3" /><line x1="3" y1="21" x2="10" y2="14" />
+            </svg>
+          </button>
+          <button
+            class="btn-attach"
+            :title="t('chat.attachTitle')"
+            :disabled="chatStore.isStreaming"
+            @click="openFilePicker"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+            </svg>
+          </button>
           <button
             v-if="!chatStore.isStreaming"
             class="btn-send"
             v-ripple
             @click="handleSend"
-            :disabled="!inputText.trim() || !chatStore.currentSessionId"
+            :disabled="(!inputText.trim() && chatStore.pendingAttachments.length === 0) || !chatStore.currentSessionId"
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
               <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -551,6 +792,13 @@ onUnmounted(() => {
             </svg>
             <span>{{ t('chat.stop') }}</span>
           </button>
+          <input
+            ref="fileInput"
+            type="file"
+            multiple
+            class="hidden-file-input"
+            @change="handleFileSelect"
+          />
         </div>
       </div>
     </div>
@@ -821,74 +1069,11 @@ onUnmounted(() => {
   padding-top: 4px;
 }
 
-/* ── 思维链展示 ── */
-.reasoning-block {
-  margin-bottom: var(--space-sm);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--bg-form);
-  overflow: hidden;
-  transition: all var(--transition-base);
-}
-
-.reasoning-block[open] {
-  border-color: var(--color-primary-light);
-}
-
-.reasoning-summary {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  cursor: pointer;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
-  user-select: none;
-  list-style: none;
-  transition: background var(--transition-fast);
-}
-
-.reasoning-summary::-webkit-details-marker {
-  display: none;
-}
-
-.reasoning-summary:hover {
-  background: var(--bg-hover);
-}
-
-.reasoning-icon {
-  flex-shrink: 0;
-  color: var(--color-primary);
-}
-
-.reasoning-label {
-  font-weight: 500;
-}
-
-.reasoning-spinner {
-  color: var(--color-primary);
-  margin-left: auto;
-}
-
-.reasoning-text {
-  padding: 8px 12px 10px;
-  max-height: 300px;
-  overflow-y: auto;
-  font-size: var(--font-size-xs);
-  color: var(--color-text-secondary);
-  line-height: 1.7;
-  font-family: var(--font-mono);
-  border-left: 2px solid var(--color-primary-light);
-  margin: 4px 8px 4px 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  animation: reasoningFadeIn 400ms ease both;
-  opacity: 0.85;
-}
-
-@keyframes reasoningFadeIn {
-  from { opacity: 0; }
-  to { opacity: 0.85; }
+/* 历史消息中的「执行过程」行：与 assistant 消息体左对齐（留出头像位） */
+.history-process-row {
+  margin: var(--space-sm) 0;
+  margin-left: 48px;
+  max-width: calc(100% - 48px);
 }
 
 .streaming-content {
@@ -909,107 +1094,6 @@ onUnmounted(() => {
   vertical-align: text-bottom;
   animation: blink 1s step-end infinite;
   box-shadow: 0 0 8px var(--color-primary), 0 0 16px rgba(99, 102, 241, 0.3);
-}
-
-/* ── Tool cards (in streaming) ── */
-.tool-card {
-  margin: var(--space-sm) 0;
-}
-
-.tool-card details {
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--bg-tool);
-  overflow: hidden;
-  transition: border-color var(--transition-base), box-shadow var(--transition-base);
-}
-
-.tool-card details:hover {
-  border-color: var(--color-warning);
-  box-shadow: var(--shadow-sm);
-}
-
-.tool-summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  cursor: pointer;
-  list-style: none;
-  font-size: var(--font-size-sm);
-  font-weight: 500;
-  color: var(--color-text);
-  user-select: none;
-  transition: background var(--transition-base);
-}
-
-.tool-summary::-webkit-details-marker {
-  display: none;
-}
-
-.tool-summary:hover {
-  background: var(--bg-hover);
-}
-
-.tool-icon {
-  color: var(--color-warning);
-  flex-shrink: 0;
-}
-
-.tool-name {
-  flex: 1;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-}
-
-.tool-chevron {
-  color: var(--color-text-tertiary);
-  transition: transform var(--transition-base);
-}
-
-details[open] .tool-chevron {
-  transform: rotate(90deg);
-}
-
-.tool-detail {
-  padding: var(--space-sm) var(--space-md);
-  border-top: 1px solid var(--border-color);
-  font-size: var(--font-size-sm);
-}
-
-.tool-result,
-.tool-error {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-bottom: 6px;
-}
-
-.tool-label {
-  font-weight: 600;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-xs);
-}
-
-.tool-result-code {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-  background: var(--bg-code);
-  padding: 6px 10px;
-  border-radius: var(--radius-sm);
-  white-space: pre-wrap;
-  word-break: break-all;
-  color: var(--color-text);
-  line-height: 1.5;
-}
-
-.tool-error .tool-label {
-  color: var(--color-danger);
-}
-
-.tool-error .tool-result-code {
-  background: var(--color-error-bg);
-  color: var(--color-danger);
 }
 
 /* ── Error banner ── */
@@ -1367,6 +1451,7 @@ details[open] .tool-chevron {
   max-width: var(--content-max-width);
   margin: 0 auto;
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: var(--space-sm);
   background: var(--bg-input);
@@ -1375,6 +1460,99 @@ details[open] .tool-chevron {
   padding: 8px 8px 8px 16px;
   box-shadow: var(--shadow-sm);
   transition: border-color var(--transition-base), box-shadow var(--transition-base);
+  position: relative;
+}
+
+/* ── 附件预览条 ── */
+.attach-strip {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-xs);
+}
+
+.attach-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 4px 6px 4px 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.attach-thumb {
+  width: 26px;
+  height: 26px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.attach-doc-icon {
+  display: flex;
+  align-items: center;
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+
+.attach-name {
+  font-size: var(--font-size-xs);
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 150px;
+}
+
+.attach-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.attach-remove:hover {
+  background: var(--bg-hover);
+  color: var(--color-danger);
+}
+
+.hidden-file-input {
+  display: none;
+}
+
+.btn-attach {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--transition-base), color var(--transition-base);
+}
+
+.btn-attach:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--color-primary);
+}
+
+.btn-attach:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .input-wrapper:focus-within {
@@ -1392,6 +1570,51 @@ details[open] .tool-chevron {
   resize: none;
   line-height: 1.6;
   padding: 6px 0;
+  overflow-y: hidden;
+  /* 高度由 JS 动态设置（3~7 行自适应 / 放大整页），加过渡更平滑 */
+  transition: height 0.12s ease;
+  min-height: 0;
+}
+
+/* 放大状态：占据页面大部分高度，内部滚动 */
+.input-textarea.expanded {
+  overflow-y: auto;
+}
+
+/* ── 放大 / 缩小按钮（输入框右上角） ── */
+.btn-expand {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: background var(--transition-base), color var(--transition-base),
+    border-color var(--transition-base);
+}
+
+.btn-expand:hover {
+  background: var(--bg-hover);
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+/* 放大按钮可见时，为文本与附件条预留右上角空间，避免遮挡 */
+.input-wrapper.can-expand .input-textarea {
+  padding-right: 34px;
+}
+
+.input-wrapper.can-expand .attach-strip {
+  padding-right: 34px;
 }
 
 .input-textarea::placeholder {
@@ -1521,6 +1744,12 @@ details[open] .tool-chevron {
   .assistant-avatar {
     width: 30px;
     height: 30px;
+  }
+
+  /* 移动端：历史过程行与消息体对齐（头像 30px + 间距） */
+  .history-process-row {
+    margin-left: 38px;
+    max-width: calc(100% - 38px);
   }
 }
 </style>

@@ -8,10 +8,10 @@ echo.
 echo   Stops backend (port 8000) and frontend (port 5173).
 echo   All built-in capabilities (Skills / permissions / todos /
 echo   session export-import-fork / MCP client (stdio + SSE) /
-echo   message actions / output offload / long-term memory + auto
-echo   summary / run tracing / subagent / scheduled tasks) run inside
-echo   these two services; stopping them also terminates any MCP
-echo   server subprocesses spawned.
+echo   message actions / file transfer / output offload / long-term
+echo   memory + auto summary / run tracing / subagent / scheduled
+echo   tasks) run inside these two services; stopping them also
+echo   terminates any MCP server subprocesses spawned.
 echo.
 
 set FOUND=0

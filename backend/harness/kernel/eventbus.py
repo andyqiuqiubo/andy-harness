@@ -13,7 +13,7 @@ import inspect
 import logging
 import uuid
 from collections import defaultdict
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import Any
 
 logger = logging.getLogger("harness.eventbus")

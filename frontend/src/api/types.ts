@@ -13,11 +13,41 @@ export interface Message {
   session_id: string
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
+  attachments?: Attachment[]
   tool_calls?: ToolCall[]
   tokens: number
   latency_ms?: number
   usage?: TokenUsage
   created_at: string
+}
+
+/** 附件公开元信息（不含存储路径，与后端 AttachmentRepository.create 对齐）。 */
+export interface Attachment {
+  id: string
+  kind: 'document' | 'image'
+  filename: string
+  mime: string
+  size: number
+}
+
+/**
+ * 执行过程步骤（回答生成过程中的思维链 / 中间说明 / 工具调用）。
+ * - 实时：stores/chat.processEvents 由 WS token_delta / tool_event 累积
+ * - 历史：ChatView 把中间 assistant 消息（带 tool_calls）归并为该结构
+ * 工具字段与 WS tool_event 及历史消息转换后的 tool_calls 结构一致
+ * （tool_name / args / result / error）。
+ */
+export interface ProcessStep {
+  kind: 'reasoning' | 'text' | 'tool'
+  /** kind=reasoning|text 时的文本 */
+  text?: string
+  /** kind=tool 时的工具调用信息 */
+  tool?: {
+    tool_name?: string
+    args?: Record<string, unknown>
+    result?: string
+    error?: string
+  }
 }
 
 export interface TokenUsage {

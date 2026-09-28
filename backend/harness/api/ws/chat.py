@@ -45,6 +45,35 @@ class WSMessage(BaseModel):
     temperature: float = 0.7
     max_tool_iterations: int = 10
     system_prompt: str | None = None
+    attachments: list[dict[str, Any]] = []
+
+
+def _resolve_attachment_metas(
+    services: Any, session_id: str, refs: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """把客户端传来的附件引用（id 列表）校验并展开为公开元信息。
+
+    校验：附件必须存在且归属于当前 session，否则忽略（安全默认，不阻断对话）。
+    返回可直接存入消息 / 渲染多模态内容的公开元信息列表（不含存储路径）。
+    """
+    if not refs:
+        return []
+    ids = [str(r.get("id", "")) for r in refs if r.get("id")]
+    if not ids:
+        return []
+    try:
+        from harness.infra.database import Database
+        from harness.infra.repository import AttachmentRepository
+
+        db = services.get(Database)
+        repo = AttachmentRepository(db)
+        metas = repo.list_by_ids(ids)
+        # 仅保留归属当前会话的附件，且保持客户端传入顺序
+        valid = {m["id"]: m for m in metas if m.get("session_id") == session_id}
+        return [valid[i] for i in ids if i in valid]
+    except Exception as e:
+        logger.warning("解析附件元信息失败: %s", e)
+        return []
 
 
 def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
@@ -213,6 +242,17 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
                     await _send_error("INVALID_MESSAGE", "消息验证失败", str(e))
                     continue
 
+                # 校验并展开附件引用（仅归属本会话的附件才会被采纳）
+                att_metas = _resolve_attachment_metas(
+                    services, msg.session_id, msg.attachments
+                )
+                if msg.attachments and not att_metas:
+                    logger.warning(
+                        "WS 附件引用无效或不属于本会话: session=%s refs=%s",
+                        msg.session_id,
+                        msg.attachments,
+                    )
+
                 # 获取 provider
                 try:
                     from harness.modules.model_manager.provider_registry import (
@@ -376,6 +416,7 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
                         provider=provider,
                         model=msg.model,
                         budget=msg.budget,
+                        attachments=att_metas,
                         on_tool_event=_on_tool_event,
                         confirm_callback=_request_confirm,
                     )

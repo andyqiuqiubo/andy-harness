@@ -115,6 +115,15 @@ export default {
   'chat.copyQuestion': '复制提问',
   'chat.copyAnswer': '复制回答',
   'chat.copied': '已复制',
+  'chat.attachTitle': '添加附件（文档 / 图片）',
+  'chat.attachmentRemove': '移除附件',
+  'chat.attachmentUnsupported': '包含不支持的文件类型，已忽略。支持文档与图片。',
+  'chat.attachmentLimit': '单次最多添加 {n} 个文件',
+  'chat.attachmentDocLimit': '单次最多添加 {n} 个文档',
+  'chat.attachmentImageLimit': '单次最多添加 {n} 张图片',
+  'chat.attachmentUploadFail': '附件上传失败',
+  'chat.expandInput': '放大输入框',
+  'chat.collapseInput': '缩小输入框',
 
   // Sessions
   'sessions.title': '会话',

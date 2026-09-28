@@ -38,6 +38,21 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_calls_json TEXT,
     tokens INTEGER NOT NULL DEFAULT 0,
     latency_ms INTEGER,
+    attachments TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+"""
+
+_CREATE_ATTACHMENTS = """
+CREATE TABLE IF NOT EXISTS attachments (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size INTEGER NOT NULL DEFAULT 0,
+    storage_path TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
@@ -217,6 +232,7 @@ class Database:
             + _CREATE_SPANS
             + _CREATE_SCHEDULED_TASKS
             + _CREATE_SCHEDULED_RUNS
+            + _CREATE_ATTACHMENTS
             + _CREATE_INDEX_MESSAGES_SESSION
             + _CREATE_INDEX_SNAPSHOTS_SESSION
             + "CREATE INDEX IF NOT EXISTS idx_todos_session ON todos(session_id, position);"
@@ -226,8 +242,16 @@ class Database:
             + "CREATE INDEX IF NOT EXISTS idx_spans_session ON spans(session_id, created_at);"
             + "CREATE INDEX IF NOT EXISTS idx_sched_tasks_next ON scheduled_tasks(enabled, next_run_at);"
             + "CREATE INDEX IF NOT EXISTS idx_sched_runs_task ON scheduled_task_runs(task_id, started_at);"
+            + "CREATE INDEX IF NOT EXISTS idx_attachments_session ON attachments(session_id, created_at);"
         )
         self._conn.commit()
+        # 旧库升级：messages 表可能缺少 attachments 列
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(messages)")}
+        if "attachments" not in cols:
+            self._conn.execute(
+                "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'"
+            )
+            self._conn.commit()
         logger.info("数据库 schema 已初始化: %s", self.db_path)
 
     def execute(

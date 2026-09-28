@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Protocol
 
 from harness.infra.database import Database
@@ -86,7 +87,28 @@ class SessionServiceImpl:
         return self._session_repo.archive(session_id)
 
     def delete_session(self, session_id: str) -> bool:
-        """删除会话（同时删除所有消息）。"""
+        """删除会话（同时删除所有消息与附件）。"""
+        # 清理附件落盘文件
+        try:
+            import shutil
+
+            from harness.modules.attachment.limits import attachments_dir
+
+            sess_dir = Path(attachments_dir()) / session_id
+            if sess_dir.exists():
+                shutil.rmtree(sess_dir, ignore_errors=True)
+        except Exception:
+            pass
+        # 清理附件元信息
+        try:
+            from harness.infra.database import Database
+            from harness.infra.repository import AttachmentRepository
+
+            db = self._services.get(Database) if self._services else None
+            if db is not None:
+                AttachmentRepository(db).delete_by_session(session_id)
+        except Exception:
+            pass
         self._message_repo.delete_by_session(session_id)
         return self._session_repo.delete(session_id)
 
@@ -99,6 +121,7 @@ class SessionServiceImpl:
         tool_call_id: str | None = None,
         tokens: int = 0,
         latency_ms: int | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> Message:
         """追加消息到会话。"""
         message = Message(
@@ -109,6 +132,7 @@ class SessionServiceImpl:
             tool_call_id=tool_call_id,
             tokens=tokens,
             latency_ms=latency_ms,
+            attachments=attachments,
         )
         return self._message_repo.create(message)
 

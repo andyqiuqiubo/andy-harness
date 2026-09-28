@@ -133,7 +133,10 @@ class SummaryCompressionStrategy(ContextStrategy):
             dropped_contents = [
                 (m.get("content") or "")[:100] for m in remaining[:dropped_count]
             ]
-            summary_text = f"[上下文摘要] 之前有 {dropped_count} 条消息被压缩。关键内容: {' | '.join(dropped_contents[:3])}"
+            summary_text = (
+                f"[上下文摘要] 之前有 {dropped_count} 条消息被压缩。"
+                f"关键内容: {' | '.join(dropped_contents[:3])}"
+            )
             summary_msg = {
                 "role": "system",
                 "content": summary_text,
@@ -182,6 +185,40 @@ class ContextServiceImpl:
                     continue
             result.append(m)
         return result
+
+    def _render_multimodal(
+        self, messages: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """把携带 attachments 的 user 消息渲染为多模态 content。
+
+        仅当消息确实带附件时，调用 attachment 模块的 render_content_parts
+        把 content 替换为 list（文本块 + 图片/文档块）；否则保持原样。
+        """
+        from harness.infra.database import Database
+        from harness.infra.repository import AttachmentRepository
+        from harness.modules.attachment.service import render_content_parts
+
+        att_repo = None
+        try:
+            db = self._services.get(Database)
+            att_repo = AttachmentRepository(db)
+        except Exception:
+            att_repo = None
+
+        out: list[dict[str, Any]] = []
+        for msg in messages:
+            if msg.get("role") == "user" and msg.get("attachments"):
+                metas = msg["attachments"]
+                content = render_content_parts(
+                    msg.get("content") or "", metas, att_repo
+                )
+                new_msg = dict(msg)
+                new_msg["content"] = content
+                new_msg.pop("attachments", None)
+                out.append(new_msg)
+            else:
+                out.append(msg)
+        return out
 
     def __init__(
         self,
@@ -271,6 +308,9 @@ class ContextServiceImpl:
                     msg["content"] = None
             if m.tool_call_id:
                 msg["tool_call_id"] = m.tool_call_id
+            # 携带附件元信息（仅 user 消息可能带），供后续渲染为多模态内容
+            if m.attachments:
+                msg["attachments"] = m.attachments
             raw_messages.append(msg)
 
         # 验证 tool 消息的完整性：每条 tool 消息前必须有对应的带 tool_calls
@@ -339,6 +379,11 @@ class ContextServiceImpl:
 
         # 合并系统消息
         result = system_messages + compressed
+
+        # 把携带附件的 user 消息渲染为多模态 content（文本 + 图片/文档块）。
+        # 放在压缩之后，确保压缩策略只按纯文本 token 估算，且不会因
+        # content 变成 list 而报错。
+        result = self._render_multimodal(result)
 
         # 计算实际 token 数
         token_count = 0

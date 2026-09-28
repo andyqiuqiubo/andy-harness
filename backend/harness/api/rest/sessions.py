@@ -34,6 +34,7 @@ class MessageCreate(BaseModel):
     content: str
     tool_calls: list[dict[str, Any]] | None = None
     tokens: int = 0
+    attachments: list[dict[str, Any]] | None = None
 
 
 class SessionImport(BaseModel):
@@ -316,6 +317,7 @@ def setup_session_routes(registry: ServiceRegistry) -> None:
             content=req.content,
             tool_calls=req.tool_calls,
             tokens=req.tokens,
+            attachments=req.attachments,
         )
         return cast("dict[str, Any]", msg.to_dict())
 

@@ -85,6 +85,27 @@ function usageCacheMiss(u: TokenUsage | undefined): number {
           </button>
         </div>
         <div class="message-bubble user-bubble">
+          <div v-if="message.attachments && message.attachments.length" class="msg-attachments">
+            <img
+              v-for="att in message.attachments.filter(a => a.kind === 'image')"
+              :key="att.id"
+              class="msg-attach-img"
+              :src="`/api/sessions/${message.session_id}/attachments/${att.id}`"
+              :alt="att.filename"
+              :title="att.filename"
+            />
+            <div
+              v-for="att in message.attachments.filter(a => a.kind === 'document')"
+              :key="att.id"
+              class="msg-attach-doc"
+              :title="att.filename"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+              </svg>
+              <span class="msg-attach-doc-name">{{ att.filename }}</span>
+            </div>
+          </div>
           <MarkdownRenderer v-if="message.content" :content="message.content" />
         </div>
         <div class="message-avatar user-avatar">U</div>
@@ -229,6 +250,42 @@ function usageCacheMiss(u: TokenUsage | undefined): number {
   line-height: 1.6;
   box-shadow: var(--shadow-sm);
   word-break: break-word;
+}
+
+/* ── 用户消息附件 ── */
+.msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-sm);
+}
+
+.msg-attach-img {
+  max-width: 180px;
+  max-height: 180px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  border: 1px solid var(--border-color);
+}
+
+.msg-attach-doc {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-xs);
+  color: var(--color-text);
+  max-width: 220px;
+}
+
+.msg-attach-doc-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
 }
 
 /* Assistant / system / tool messages: left aligned */

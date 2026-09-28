@@ -115,6 +115,15 @@ export default {
   'chat.copyQuestion': 'Copy question',
   'chat.copyAnswer': 'Copy answer',
   'chat.copied': 'Copied',
+  'chat.attachTitle': 'Add attachment (document / image)',
+  'chat.attachmentRemove': 'Remove attachment',
+  'chat.attachmentUnsupported': 'Some files have unsupported types and were ignored. Documents and images only.',
+  'chat.attachmentLimit': 'At most {n} files per message',
+  'chat.attachmentDocLimit': 'At most {n} documents per message',
+  'chat.attachmentImageLimit': 'At most {n} images per message',
+  'chat.attachmentUploadFail': 'Attachment upload failed',
+  'chat.expandInput': 'Expand input box',
+  'chat.collapseInput': 'Collapse input box',
 
   // Sessions
   'sessions.title': 'Sessions',

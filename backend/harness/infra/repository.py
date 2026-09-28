@@ -60,6 +60,7 @@ class Message:
         tool_call_id: str | None = None,
         tokens: int = 0,
         latency_ms: int | None = None,
+        attachments: list[dict[str, Any]] | None = None,
         created_at: str | None = None,
     ) -> None:
         self.id: str = id or str(uuid.uuid4())
@@ -70,6 +71,8 @@ class Message:
         self.tool_call_id: str | None = tool_call_id
         self.tokens: int = tokens
         self.latency_ms: int | None = latency_ms
+        # 附件公开元信息（不含 storage_path）：id/kind/filename/mime/size
+        self.attachments: list[dict[str, Any]] = attachments or []
         self.created_at: str = created_at or datetime.now().isoformat()
 
     def to_dict(self) -> dict[str, Any]:
@@ -82,6 +85,7 @@ class Message:
             "tool_calls": self.tool_calls,
             "tokens": self.tokens,
             "latency_ms": self.latency_ms,
+            "attachments": self.attachments,
             "created_at": self.created_at,
         }
 
@@ -221,7 +225,8 @@ class MessageRepository:
 
         self._db.execute(
             "INSERT INTO messages (id, session_id, role, content, tool_calls_json, "
-            "tokens, latency_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "tokens, latency_ms, attachments, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 message.id,
                 message.session_id,
@@ -230,6 +235,7 @@ class MessageRepository:
                 tool_calls_json,
                 message.tokens,
                 message.latency_ms,
+                json.dumps(message.attachments or []),
                 message.created_at,
             ),
         )
@@ -307,8 +313,97 @@ class MessageRepository:
             tool_call_id=tool_call_id,
             tokens=row["tokens"],
             latency_ms=row["latency_ms"],
+            attachments=json.loads(row["attachments"]) if row["attachments"] else [],
             created_at=row["created_at"],
         )
+
+
+class AttachmentRepository:
+    """附件 Repository（上传文件元信息 + 落盘路径）。"""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    def create(
+        self,
+        att_id: str,
+        session_id: str,
+        kind: str,
+        filename: str,
+        mime: str,
+        size: int,
+        storage_path: str,
+    ) -> dict[str, Any]:
+        """写入一条附件元信息，返回对外公开的部分（不含 storage_path）。"""
+        self._db.execute(
+            "INSERT INTO attachments (id, session_id, kind, filename, mime, size, "
+            "storage_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                att_id,
+                session_id,
+                kind,
+                filename,
+                mime,
+                size,
+                storage_path,
+                datetime.now().isoformat(),
+            ),
+        )
+        return {
+            "id": att_id,
+            "kind": kind,
+            "filename": filename,
+            "mime": mime,
+            "size": size,
+        }
+
+    def get(self, att_id: str) -> dict[str, Any] | None:
+        """获取附件（含 storage_path，仅供后端内部使用）。"""
+        row = self._db.query_one(
+            "SELECT * FROM attachments WHERE id = ?", (att_id,)
+        )
+        if not row:
+            return None
+        return {
+            "id": row["id"],
+            "session_id": row["session_id"],
+            "kind": row["kind"],
+            "filename": row["filename"],
+            "mime": row["mime"],
+            "size": row["size"],
+            "storage_path": row["storage_path"],
+        }
+
+    def list_by_ids(self, att_ids: list[str]) -> list[dict[str, Any]]:
+        """批量获取（含 storage_path）。"""
+        if not att_ids:
+            return []
+        placeholders = ",".join("?" for _ in att_ids)
+        rows = self._db.query(
+            f"SELECT * FROM attachments WHERE id IN ({placeholders})",
+            tuple(att_ids),
+        )
+        by_id = {r["id"]: r for r in rows}
+        # 保持传入顺序
+        return [
+            {
+                "id": r["id"],
+                "session_id": r["session_id"],
+                "kind": r["kind"],
+                "filename": r["filename"],
+                "mime": r["mime"],
+                "size": r["size"],
+                "storage_path": r["storage_path"],
+            }
+            for r in (by_id[i] for i in att_ids if i in by_id)
+        ]
+
+    def delete_by_session(self, session_id: str) -> int:
+        """删除会话的全部附件元信息，返回删除条数。"""
+        cursor = self._db.execute(
+            "DELETE FROM attachments WHERE session_id = ?", (session_id,)
+        )
+        return cursor.rowcount
 
 
 class ContextSnapshotRepository:

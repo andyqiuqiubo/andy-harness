@@ -409,6 +409,21 @@
 **验证结果**：**V1 340 passed**（322 → 340，新增 18：调度计算 6、服务 CRUD/到期/抢占/一次性自停用 4、受限工具集与 use_skill 白名单 3、执行器 2、REST 3）；V2 新增代码 ruff **0 新增**、mypy 14 与基线持平；V3 冒烟 **47/47 通过**（新增：可选项、新建任务、立即执行、停用清空下次运行、运行历史，均含自清理）；V4 `vue-tsc` + `vite build` 通过且新文案实测入包。
 另做**真实端到端验证**：在真实实例上创建任务 → 「立即执行」→ DeepSeek 实际运行，**只调用了勾选的 `current_time` 工具**，返回正确本地时间，运行历史记录「ok / manual / 5094ms」，会话正常创建；随后清理自检任务（界面上另留了一个默认停用的示例任务「每日大模型新闻早报」，关联 `daily-llm-news` Skill）。
 
+#### 会话文件传输（文档 + 图片）（2026-09-28，第四轮）
+
+让对话支持携带附件：用户在聊天输入区上传**文档**与**图片**，随消息一起发给模型（文档内联为文本、图片按 OpenAI 视觉规范以 base64 注入）。
+
+| 项 | 结果 |
+|---|---|
+| 落地位置 | 后端：`harness/modules/attachment/limits.py`（类型/数量/大小上限）、`service.py`（分类校验、存储、Pillow 缩放、`render_content_parts` 多模态渲染）、`api/rest/attachments.py`（multipart 上传 + 回传）、`infra/repository.py`（`AttachmentRepository`）、`infra/database.py`（`attachments` 表 + `messages.attachments` 列）、`modules/context_manager/service.py`（`_render_multimodal` 在压缩后统一渲染）、`engine/agent_loop.py` + `hook_types.py`（`attachments` 贯穿持久化）、`api/ws/chat.py`（WS 消息体 `attachments` + 归属校验）、`modules/session_manager/service.py`（删会话连带清理附件）；前端：`ChatView.vue`（📎 按钮 + chip + 三类上限预校验）、`MessageItem.vue`（气泡内渲染缩略图/文档 chip）、`stores/chat.ts`（`pendingAttachments` + 上传）、`api/client.ts`（`uploadAttachment`）、i18n |
+| 支持类型 | 文档 26 种（txt/md/csv/json/yaml/log/py/js/ts/html/xml/ini/toml/sh/bat 等）；图片 6 种（png/jpg/jpeg/gif/webp/bmp） |
+| 上限 | 单条消息：文档 ≤5、图片 ≤4、总数 ≤8；单文档 ≤200KB、单图片 ≤1.5MB 且最长边缩放至 1280px（控视觉 token） |
+| 安全/健壮 | 上传逐个分类校验，任一不合规整批拒绝（`ATTACHMENT_INVALID`/`ATTACHMENT_LIMIT`）；公开元信息不含存储路径；回传校验附件归属会话（越权 404）；删会话 rmtree 物理文件 + 清 DB 行 |
+
+**验证结果**：**V1 357 passed**（340 → 357，新增 17：上传/类型/大小/数量校验、回传、跨会话越权、消息持久化、`ContextService` 多模态渲染、纯文本不变、会话删除清理）；V2 附件新代码 ruff **0 新增**（顺手修 `context_manager` 一处既有 E501）、mypy 14 持平；V4 `vue-tsc` + `vite build` 通过且新文案入包。
+**真实端到端（deepseek-v4-flash）**：上传 73 字节文档（含唯一代号 `BANANA-42`）→ 模型准确答出 `BANANA-42`（token 3651）；上传 92 字节纯红 PNG → 模型答出「红色」（token 3780），证明**文档文本注入与图片视觉多模态均真实生效**；两会话用后即删，真实库与附件目录无残留。
+> 顺带修复一处**测试污染**：`tests/conftest.py` 此前隔离了 DB/工件/MCP 配置但漏了附件目录，导致附件测试把文件写进真实 `data/attachments/`（累计 39 个垃圾文件夹）；已补 `HARNESS_ATTACHMENTS_DIR` 隔离，残留垃圾可逆移动到 `data/.trash_attachments_junk/`。新增运行时依赖 `python-multipart`（已写入 `pyproject.toml`，`start-all.bat` 增加导入自检）。
+
 ---
 
 ## 5. 实施顺序建议

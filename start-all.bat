@@ -7,9 +7,9 @@ echo ==========================================
 echo.
 echo   Capabilities: Skills system, tool-permission + human-in-the-loop,
 echo   planning/todo tracking, session export/import/fork, MCP client
-echo   (stdio + remote SSE), message actions, artifacts offload,
-echo   long-term memory (+auto summary), run tracing, subagent,
-echo   scheduled tasks (MCP/Skills/tools scoped).
+echo   (stdio + remote SSE), message actions, file transfer (docs+images),
+echo   artifacts offload, long-term memory (+auto summary), run tracing,
+echo   subagent, scheduled tasks (MCP/Skills/tools scoped).
 echo   (All features are auto-loaded plugins; the SQLite schema
 echo    upgrades itself on first launch -- no manual migration needed.)
 echo.
@@ -30,6 +30,16 @@ if not exist "%~dp0backend\.venv\Scripts\python.exe" (
 if not exist "%~dp0frontend\node_modules" (
     echo ERROR: frontend dependencies not installed.
     echo   Fix:  cd frontend ^&^& pnpm install
+    echo   Then re-run start-all.bat
+    echo.
+    pause
+    exit /b 1
+)
+rem File-transfer (multipart upload) needs python-multipart in the venv.
+"%~dp0backend\.venv\Scripts\python.exe" -c "import multipart" >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: python-multipart missing -- file upload would fail.
+    echo   Fix:  cd backend ^&^& uv sync --extra dev
     echo   Then re-run start-all.bat
     echo.
     pause

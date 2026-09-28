@@ -51,3 +51,4 @@ class MessageRecord:
     tool_call_id: str | None = None
     tokens: int = 0
     latency_ms: int | None = None
+    attachments: list[dict[str, Any]] | None = None
