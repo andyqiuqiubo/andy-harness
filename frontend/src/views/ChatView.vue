@@ -2,6 +2,7 @@
 import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useProviderStore } from '../stores/providers'
+import { useTodoStore } from '../stores/todos'
 import { apiClient, wsConnectionStatus } from '../api/client'
 import type { WSFrame } from '../api/types'
 import { useLanguage } from '../composables/useLanguage'
@@ -14,6 +15,7 @@ import MarkdownRenderer from '../components/MarkdownRenderer.vue'
 const chatStore = useChatStore()
 const providerStore = useProviderStore()
 const settingsStore = useSettingsStore()
+const todoStore = useTodoStore()
 const { t } = useLanguage()
 
 const inputText = ref('')
@@ -38,10 +40,102 @@ watch(() => providerStore.providers, (providers) => {
   }
 }, { immediate: true })
 
+// ── 人工确认（Human-in-the-loop） ──────────────────
+interface ConfirmRequest {
+  request_id: string
+  tool_name: string
+  args: Record<string, unknown>
+  risk: string
+  reason: string
+}
+
+const confirmRequest = ref<ConfirmRequest | null>(null)
+
+const RISK_LABEL: Record<string, string> = {
+  read: '只读',
+  write: '写操作',
+  dangerous: '危险（可执行代码）',
+}
+
+function riskLabel(risk: string) {
+  return RISK_LABEL[risk] ?? risk
+}
+
+function formattedArgs(args: Record<string, unknown>) {
+  try {
+    return JSON.stringify(args, null, 2)
+  } catch {
+    return String(args)
+  }
+}
+
+function replyConfirm(approved: boolean) {
+  if (!confirmRequest.value) return
+  apiClient.ws.send({
+    type: 'confirm_reply',
+    data: {
+      request_id: confirmRequest.value.request_id,
+      approved,
+    },
+  })
+  confirmRequest.value = null
+}
+
 // WS 消息处理
 function onWSMessage(data: unknown) {
-  chatStore.handleWSFrame(data as WSFrame)
+  const frame = data as WSFrame
+  // 人工确认请求不进消息流，单独弹窗处理
+  if (frame?.type === 'confirm_request') {
+    confirmRequest.value = frame.data as unknown as ConfirmRequest
+    return
+  }
+  if (frame?.type === 'confirm_timeout' && confirmRequest.value) {
+    confirmRequest.value = null
+  }
+  // AI 写完待办列表或一轮结束后刷新任务面板
+  if (frame?.type === 'tool_event' && frame.data?.tool_name === 'todo_write') {
+    refreshTodos()
+  }
+  if (frame?.type === 'done') {
+    refreshTodos()
+  }
+  chatStore.handleWSFrame(frame)
 }
+
+// ── 任务清单（Todo） ────────────────────────────────
+function refreshTodos() {
+  if (chatStore.currentSessionId) {
+    todoStore.loadTodos(chatStore.currentSessionId)
+  }
+}
+
+function clearTodos() {
+  if (chatStore.currentSessionId) {
+    todoStore.clearTodos(chatStore.currentSessionId)
+  }
+}
+
+const TODO_MARK: Record<string, string> = {
+  pending: '○',
+  in_progress: '◐',
+  completed: '●',
+}
+
+const TODO_LABEL: Record<string, string> = {
+  pending: '待开始',
+  in_progress: '进行中',
+  completed: '已完成',
+}
+
+// 切换会话时同步刷新任务清单
+watch(
+  () => chatStore.currentSessionId,
+  (id) => {
+    if (id) todoStore.loadTodos(id)
+    else todoStore.reset()
+  },
+  { immediate: true }
+)
 
 // 滚动到底部
 function scrollToBottom() {
@@ -91,9 +185,67 @@ function handleScrollDown() {
 // 发送消息
 function handleSend() {
   if (!inputText.value.trim() || chatStore.isStreaming) return
-  chatStore.sendMessage(inputText.value, selectedProvider.value, selectedModel.value || undefined)
+  let text = inputText.value
+  // 追问模式：把被追问的问答作为引用前缀一起发出（同一会话上下文已含原文）
+  if (followUpQuote.value) {
+    const q = followUpQuote.value.question.trim().slice(0, 80)
+    const prefix = q ? `> 【追问】针对上文回答（提问：「${q}」）\n\n` : '> 【追问】针对上一条回答\n\n'
+    text = prefix + text
+    followUpQuote.value = null
+  }
+  chatStore.sendMessage(text, selectedProvider.value, selectedModel.value || undefined)
   inputText.value = ''
   scrollToBottom()
+}
+
+// ── 问答对操作（复制 / 物理删除整轮 / 追问） ─────────────
+const followUpQuote = ref<{ question: string; answer: string } | null>(null)
+
+/** 删除某条提问所在的整轮问答（物理删除）。 */
+async function handleDeleteTurn(msg: { id: string }) {
+  if (chatStore.isStreaming) return
+  if (!window.confirm(t.value('chat.confirmDeleteTurn'))) return
+  try {
+    const removed = await chatStore.deleteTurn(msg.id)
+    if (followUpQuote.value) followUpQuote.value = null
+    if (removed === 0) {
+      window.alert(t.value('chat.deleteTurnEmpty'))
+    }
+  } catch (e) {
+    window.alert(t.value('chat.deleteTurnFail') + ': ' + e)
+  }
+}
+
+/** 对某条回答「追问」：记录引用并在输入框聚焦。 */
+function handleFollowUp(msg: { id: string; content?: string }) {
+  const list = chatStore.messages
+  const idx = list.findIndex((m) => m.id === msg.id)
+  let question = ''
+  for (let i = idx - 1; i >= 0; i--) {
+    if (list[i].role === 'user') {
+      question = list[i].content || ''
+      break
+    }
+  }
+  followUpQuote.value = { question, answer: msg.content || '' }
+  nextTick(() => {
+    const el = document.querySelector('.input-textarea') as HTMLTextAreaElement | null
+    el?.focus()
+  })
+}
+
+function clearFollowUp() {
+  followUpQuote.value = null
+}
+
+/** 从某条消息处「分叉」出新会话（复制到该消息为止的历史）。 */
+async function handleForkAt(msg: { id: string }) {
+  if (!chatStore.currentSessionId) return
+  try {
+    await chatStore.forkSession(chatStore.currentSessionId, msg.id)
+  } catch (e) {
+    window.alert(t.value('sessions.forkFail') + ': ' + e)
+  }
 }
 
 // 停止生成
@@ -193,10 +345,43 @@ onUnmounted(() => {
         </div>
       </header>
 
+      <!-- 任务清单（AI 用 todo_write 维护） -->
+      <div v-if="todoStore.todos.length > 0" class="todo-panel">
+        <div class="todo-header">
+          <svg class="todo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 11l3 3L22 4" />
+            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+          </svg>
+          <span class="todo-title">任务清单</span>
+          <span class="todo-progress">
+            {{ todoStore.summary.completed || 0 }} / {{ todoStore.todos.length }}
+          </span>
+          <button class="btn-ghost todo-clear" @click="clearTodos" title="清空任务清单">清空</button>
+        </div>
+        <ul class="todo-list">
+          <li
+            v-for="item in todoStore.todos"
+            :key="item.id"
+            :class="['todo-item', 'todo-' + item.status]"
+          >
+            <span class="todo-mark">{{ TODO_MARK[item.status] }}</span>
+            <span class="todo-content">{{ item.content }}</span>
+            <span class="todo-status">{{ TODO_LABEL[item.status] }}</span>
+          </li>
+        </ul>
+      </div>
+
       <!-- Messages -->
       <div ref="messagesContainer" class="messages-container" @scroll="onMessagesScroll">
         <div class="messages-inner">
-          <MessageItem v-for="msg in chatStore.messages" :key="msg.id" :message="msg" />
+          <MessageItem
+            v-for="msg in chatStore.messages"
+            :key="msg.id"
+            :message="msg"
+            @delete-turn="handleDeleteTurn"
+            @follow-up="handleFollowUp"
+            @fork="handleForkAt"
+          />
 
           <!-- 流式渲染中 -->
           <div v-if="chatStore.streamingContent || chatStore.streamingReasoning.length || chatStore.toolEvents.length" class="streaming-message">
@@ -283,7 +468,62 @@ onUnmounted(() => {
       </button>
 
       <!-- Input area -->
+      <!-- 人工确认弹窗：AI 请求执行受权限管控的工具 -->
+      <div v-if="confirmRequest" class="confirm-overlay">
+        <div class="confirm-dialog">
+          <div class="confirm-header">
+            <span :class="['confirm-icon-wrap', 'risk-' + confirmRequest.risk]">
+              <svg class="confirm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+            </span>
+            <div class="confirm-header-text">
+              <h3 class="confirm-title">AI 请求执行工具</h3>
+              <p class="confirm-subtitle">该工具受权限策略管控，需要你确认后才会执行</p>
+            </div>
+            <span :class="['risk-badge', 'risk-' + confirmRequest.risk]">
+              {{ riskLabel(confirmRequest.risk) }}
+            </span>
+          </div>
+          <div class="confirm-body">
+            <div class="confirm-field">
+              <span class="confirm-label">工具</span>
+              <code class="confirm-tool">{{ confirmRequest.tool_name }}</code>
+            </div>
+            <div v-if="confirmRequest.reason" class="confirm-field">
+              <span class="confirm-label">原因</span>
+              <span class="confirm-reason">{{ confirmRequest.reason }}</span>
+            </div>
+            <div class="confirm-field confirm-field-block">
+              <span class="confirm-label">参数</span>
+              <pre class="confirm-args">{{ formattedArgs(confirmRequest.args) }}</pre>
+            </div>
+          </div>
+          <div class="confirm-actions">
+            <button class="btn-ghost" @click="replyConfirm(false)">拒绝</button>
+            <button class="btn-primary" @click="replyConfirm(true)">允许执行</button>
+          </div>
+        </div>
+      </div>
+
       <div class="input-area">
+        <!-- 追问引用条：提示当前是在对某条回答追问 -->
+        <div v-if="followUpQuote" class="followup-strip">
+          <svg class="followup-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="9 17 4 12 9 7" /><path d="M20 18v-2a4 4 0 0 0-4-4H4" />
+          </svg>
+          <div class="followup-text">
+            <span class="followup-label">{{ t('chat.followUpLabel') }}</span>
+            <span v-if="followUpQuote.question" class="followup-q">「{{ followUpQuote.question.slice(0, 60) }}{{ followUpQuote.question.length > 60 ? '…' : '' }}」</span>
+            <span class="followup-hint">{{ t('chat.followUpHint') }}</span>
+          </div>
+          <button class="icon-btn" :title="t('chat.followUpCancel')" @click="clearFollowUp">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
         <div class="input-wrapper">
           <textarea
             v-model="inputText"
@@ -790,6 +1030,329 @@ details[open] .tool-chevron {
 .error-icon {
   color: var(--color-danger);
   flex-shrink: 0;
+}
+
+/* ── 任务清单 ── */
+.todo-panel {
+  margin: 0 var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  flex-shrink: 0;
+}
+
+.todo-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-xs);
+}
+
+.todo-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--color-text-secondary);
+}
+
+.todo-title {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.todo-progress {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+
+.todo-clear {
+  margin-left: auto;
+  font-size: var(--font-size-xs);
+  padding: 2px 8px;
+}
+
+.todo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.todo-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+  line-height: 1.6;
+}
+
+.todo-mark {
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.todo-content {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.todo-status {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+.todo-pending .todo-mark {
+  color: var(--color-text-secondary);
+}
+
+.todo-in_progress .todo-mark {
+  color: var(--color-warning, #d97706);
+}
+
+.todo-in_progress .todo-content {
+  font-weight: 600;
+}
+
+.todo-completed .todo-mark {
+  color: var(--color-success, #16a34a);
+}
+
+.todo-completed .todo-content {
+  color: var(--color-text-secondary);
+  text-decoration: line-through;
+}
+
+/* ── 人工确认弹窗 ── */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: var(--space-md);
+  animation: fadeIn var(--transition-fast) ease-out;
+}
+
+.confirm-dialog {
+  width: min(600px, 100%);
+  max-height: 82vh;
+  overflow-y: auto;
+  /* 实色背景：原来的 --bg-card / --bg-primary 两个变量都不存在，
+     会 fallback 成透明，导致文字与按钮淹没在页面里。 */
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-top: 3px solid var(--color-warning);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  padding: var(--space-lg);
+  animation: slideUp var(--transition-base) ease-out;
+}
+
+.confirm-header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+  margin-bottom: var(--space-lg);
+}
+
+.confirm-icon-wrap {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  background: var(--color-warning-light);
+  color: var(--color-warning);
+}
+
+.confirm-icon-wrap.risk-read {
+  background: var(--color-success-light);
+  color: var(--color-success);
+}
+
+.confirm-icon-wrap.risk-write {
+  background: var(--color-warning-light);
+  color: var(--color-warning);
+}
+
+.confirm-icon-wrap.risk-dangerous {
+  background: var(--color-danger-light);
+  color: var(--color-danger);
+}
+
+.confirm-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.confirm-header-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.confirm-title {
+  margin: 0;
+  font-size: var(--font-size-lg);
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.confirm-subtitle {
+  margin: 3px 0 0;
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+
+.risk-badge {
+  align-self: center;
+  flex-shrink: 0;
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+
+.risk-badge.risk-read {
+  color: var(--color-success);
+  background: var(--color-success-light);
+}
+
+.risk-badge.risk-write {
+  color: var(--color-warning);
+  background: var(--color-warning-light);
+}
+
+.risk-badge.risk-dangerous {
+  color: var(--color-danger);
+  background: var(--color-danger-light);
+}
+
+.confirm-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.confirm-field {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+
+.confirm-field-block {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-xs);
+}
+
+.confirm-label {
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
+}
+
+.confirm-tool {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-primary);
+  background: var(--bg-tag);
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+}
+
+.confirm-reason {
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+.confirm-args {
+  margin: 0;
+  padding: var(--space-md);
+  background: var(--bg-code-block);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1.65;
+  color: var(--color-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-md);
+  margin-top: var(--space-lg);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border-light);
+}
+
+/* ── 追问引用条 ── */
+.followup-strip {
+  max-width: var(--content-max-width);
+  margin: 0 auto var(--space-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--color-warning-light);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-xs);
+}
+
+.followup-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--color-warning);
+  flex-shrink: 0;
+}
+
+.followup-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.followup-label {
+  font-weight: 700;
+  color: var(--color-warning);
+}
+
+.followup-q {
+  color: var(--color-text);
+}
+
+.followup-hint {
+  color: var(--color-text-secondary);
 }
 
 /* ── Input area ── */

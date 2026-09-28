@@ -1,0 +1,11 @@
+{
+  "id": "skill_manager",
+  "name": "Skill Manager",
+  "version": "0.1.0",
+  "type": "service",
+  "entry": "plugins.skill_manager.main:SkillManagerPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["filesystem"],
+  "core": true,
+  "description": "Skill 管理服务插件：扫描 SKILL.md，提供三级渐进式披露的按需加载能力"
+}

@@ -19,6 +19,10 @@ class IpLookupTool(ToolPlugin):
         return "ip_lookup"
 
     @property
+    def risk_level(self) -> str:
+        return "read"
+
+    @property
     def description(self) -> str:
         return (
             "查询 IP 地址的地理位置和运营商信息。"

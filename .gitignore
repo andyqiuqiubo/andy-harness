@@ -44,6 +44,9 @@ frontend/.vite/
 *.swo
 *~
 
+# IDE 内部记忆目录
+.workbuddy/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -63,8 +66,18 @@ logs/
 # 沙箱工作区
 workspaces/
 
+# 工件目录（大工具输出落盘）
+workspace/
+
 # 后端数据目录
 backend/data/
+
+# 冒烟测试一次性数据库
+backend/.smoke-test.db
+
+# MCP 配置（可能含鉴权 header，不入库；示例见 mcp.example.json）
+mcp.json
+backend/mcp.json
 
 # npm 配置（可能含 token）
 .npmrc
@@ -74,6 +87,9 @@ backend/data/
 
 # 前端构建产物
 frontend/dist/
+
+# 类型检查误产出的 .js（src 为纯 TS/Vue，出现即会遮蔽 .ts 源）
+frontend/src/**/*.js
 
 # 临时文件
 *.tmp

@@ -5,6 +5,10 @@
     "types": ["vite/client"],
     "allowArbitraryExtensions": true,
 
+    /* 只做类型检查，绝不向 src/ 输出 .js（否则会与 .ts 同名，
+       Vite 解析无扩展名 import 时优先命中 .js，导致改动不生效） */
+    "noEmit": true,
+
     /* Linting */
     "noUnusedLocals": true,
     "noUnusedParameters": true,

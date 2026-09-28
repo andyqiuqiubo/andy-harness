@@ -70,6 +70,109 @@ CREATE TABLE IF NOT EXISTS providers (
 );
 """
 
+_CREATE_TODOS = """
+CREATE TABLE IF NOT EXISTS todos (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+"""
+
+_CREATE_ARTIFACTS = """
+CREATE TABLE IF NOT EXISTS artifacts (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL DEFAULT '',
+    tool_name TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    char_count INTEGER NOT NULL DEFAULT 0,
+    summary TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+_CREATE_MEMORIES = """
+CREATE TABLE IF NOT EXISTS memories (
+    id TEXT PRIMARY KEY,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'global',
+    session_id TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '',
+    embedding TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+_CREATE_SPANS = """
+CREATE TABLE IF NOT EXISTS spans (
+    id TEXT PRIMARY KEY,
+    trace_id TEXT NOT NULL,
+    parent_id TEXT,
+    session_id TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'span',
+    status TEXT NOT NULL DEFAULT 'ok',
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    input_preview TEXT NOT NULL DEFAULT '',
+    output_preview TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    meta_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+_CREATE_SCHEDULED_TASKS = """
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    schedule_type TEXT NOT NULL DEFAULT 'daily',
+    schedule_json TEXT NOT NULL DEFAULT '{}',
+    prompt TEXT NOT NULL DEFAULT '',
+    mcp_servers_json TEXT NOT NULL DEFAULT '[]',
+    skills_json TEXT NOT NULL DEFAULT '[]',
+    tools_json TEXT NOT NULL DEFAULT '[]',
+    provider_id TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    max_iterations INTEGER NOT NULL DEFAULT 8,
+    timeout_seconds INTEGER NOT NULL DEFAULT 300,
+    next_run_at TEXT,
+    last_run_at TEXT,
+    last_status TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    run_count INTEGER NOT NULL DEFAULT 0,
+    fail_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+_CREATE_SCHEDULED_RUNS = """
+CREATE TABLE IF NOT EXISTS scheduled_task_runs (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    started_at TEXT NOT NULL DEFAULT '',
+    finished_at TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'running',
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    session_id TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    trigger TEXT NOT NULL DEFAULT 'schedule'
+);
+"""
+
 _CREATE_INDEX_MESSAGES_SESSION = """
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
 """
@@ -108,8 +211,21 @@ class Database:
             + _CREATE_MESSAGES
             + _CREATE_CONTEXT_SNAPSHOTS
             + _CREATE_PROVIDERS
+            + _CREATE_TODOS
+            + _CREATE_ARTIFACTS
+            + _CREATE_MEMORIES
+            + _CREATE_SPANS
+            + _CREATE_SCHEDULED_TASKS
+            + _CREATE_SCHEDULED_RUNS
             + _CREATE_INDEX_MESSAGES_SESSION
             + _CREATE_INDEX_SNAPSHOTS_SESSION
+            + "CREATE INDEX IF NOT EXISTS idx_todos_session ON todos(session_id, position);"
+            + "CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id, created_at);"
+            + "CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope, updated_at);"
+            + "CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id, id);"
+            + "CREATE INDEX IF NOT EXISTS idx_spans_session ON spans(session_id, created_at);"
+            + "CREATE INDEX IF NOT EXISTS idx_sched_tasks_next ON scheduled_tasks(enabled, next_run_at);"
+            + "CREATE INDEX IF NOT EXISTS idx_sched_runs_task ON scheduled_task_runs(task_id, started_at);"
         )
         self._conn.commit()
         logger.info("数据库 schema 已初始化: %s", self.db_path)

@@ -25,6 +25,11 @@ class CodeRunnerTool:
         return "code_runner"
 
     @property
+    def risk_level(self) -> str:
+        """可执行任意代码，属最高风险（需人工确认）。"""
+        return "dangerous"
+
+    @property
     def description(self) -> str:
         """工具描述。"""
         return "执行 Python 或 Shell 代码。参数: code (代码内容), language (python/shell)"

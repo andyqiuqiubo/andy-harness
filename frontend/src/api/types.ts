@@ -55,6 +55,37 @@ export interface Model {
 }
 
 export interface WSFrame {
-  type: 'token_delta' | 'tool_event' | 'context_snapshot' | 'error' | 'done'
+  type:
+    | 'token_delta'
+    | 'tool_event'
+    | 'context_snapshot'
+    | 'error'
+    | 'done'
+    | 'stop_ack'
+    | 'confirm_request'
+    | 'confirm_timeout'
   data: Record<string, unknown>
+}
+
+/** 权限策略模式 */
+export type PermissionMode = 'auto' | 'confirm_dangerous' | 'confirm_write' | 'confirm_all'
+
+/** 单工具权限覆盖动作 */
+export type PermissionAction = 'auto' | 'confirm' | 'deny'
+
+export interface ToolPermission {
+  name: string
+  risk: 'read' | 'write' | 'dangerous'
+  action: 'allow' | 'confirm' | 'deny'
+  reason: string
+  owner: string
+}
+
+export interface PermissionsState {
+  available: boolean
+  mode: PermissionMode | null
+  modes: PermissionMode[]
+  actions: PermissionAction[]
+  overrides: Record<string, PermissionAction>
+  tools: ToolPermission[]
 }

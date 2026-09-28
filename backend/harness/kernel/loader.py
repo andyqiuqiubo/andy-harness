@@ -340,6 +340,16 @@ class PluginLoader:
             try:
                 raw = json.loads(path.read_text(encoding="utf-8"))
                 manifest = self.validate_manifest(raw)
+
+                # 幂等启动：同一进程内重复启动（uvicorn --reload、测试多次
+                # 进入 lifespan）时，插件已加载但可能已被停用。此时不应视为
+                # 错误，而应重新激活，使服务/工具/钩子重新注册到位。
+                if manifest.id in self._loaded:
+                    if manifest.id not in self._activated:
+                        await self.activate(manifest.id)
+                        activated.append(manifest.id)
+                    continue
+
                 self.load(manifest, plugins_dir)
                 await self.activate(manifest.id)
                 activated.append(manifest.id)

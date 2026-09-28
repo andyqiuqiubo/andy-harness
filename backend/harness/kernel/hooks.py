@@ -94,4 +94,5 @@ class HookManager:
                 )
                 return result
 
-        return HookResult(data=current_data)
+        # 把管线中累积的 metadata 一并回传给调用方
+        return HookResult(data=current_data, metadata=current_metadata)

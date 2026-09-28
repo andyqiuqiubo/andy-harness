@@ -1,0 +1,11 @@
+{
+  "id": "subagent",
+  "name": "Subagent",
+  "version": "0.1.0",
+  "type": "service",
+  "entry": "plugins.subagent.main:SubagentPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["storage"],
+  "core": true,
+  "description": "子代理委派服务：在独立上下文中运行隔离子任务，只回传摘要"
+}

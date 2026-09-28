@@ -237,9 +237,10 @@ class MessageRepository:
         return message
 
     def list_by_session(self, session_id: str) -> list[Message]:
-        """列出会话的所有消息（按时间排序）。"""
+        """列出会话的所有消息（按时间排序；rowid 兜底保证同刻稳定）。"""
         rows = self._db.query(
-            "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC",
+            "SELECT * FROM messages WHERE session_id = ? "
+            "ORDER BY created_at ASC, rowid ASC",
             (session_id,),
         )
         return [self._row_to_message(r) for r in rows]
@@ -265,6 +266,22 @@ class MessageRepository:
         """删除会话的所有消息。"""
         cursor = self._db.execute(
             "DELETE FROM messages WHERE session_id = ?", (session_id,)
+        )
+        return cursor.rowcount
+
+    def delete(self, message_id: str) -> bool:
+        """物理删除单条消息。"""
+        cursor = self._db.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+        return cursor.rowcount > 0
+
+    def delete_many(self, message_ids: list[str]) -> int:
+        """物理删除一批消息（按 id）。"""
+        if not message_ids:
+            return 0
+        placeholders = ",".join("?" for _ in message_ids)
+        cursor = self._db.execute(
+            f"DELETE FROM messages WHERE id IN ({placeholders})",
+            tuple(message_ids),
         )
         return cursor.rowcount
 

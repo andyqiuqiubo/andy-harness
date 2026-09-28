@@ -5,6 +5,14 @@ echo ==========================================
 echo   andy-harness stop all services
 echo ==========================================
 echo.
+echo   Stops backend (port 8000) and frontend (port 5173).
+echo   All built-in capabilities (Skills / permissions / todos /
+echo   session export-import-fork / MCP client (stdio + SSE) /
+echo   message actions / output offload / long-term memory + auto
+echo   summary / run tracing / subagent / scheduled tasks) run inside
+echo   these two services; stopping them also terminates any MCP
+echo   server subprocesses spawned.
+echo.
 
 set FOUND=0
 

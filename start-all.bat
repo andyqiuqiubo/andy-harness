@@ -5,6 +5,38 @@ echo ==========================================
 echo   andy-harness start all services
 echo ==========================================
 echo.
+echo   Capabilities: Skills system, tool-permission + human-in-the-loop,
+echo   planning/todo tracking, session export/import/fork, MCP client
+echo   (stdio + remote SSE), message actions, artifacts offload,
+echo   long-term memory (+auto summary), run tracing, subagent,
+echo   scheduled tasks (MCP/Skills/tools scoped).
+echo   (All features are auto-loaded plugins; the SQLite schema
+echo    upgrades itself on first launch -- no manual migration needed.)
+echo.
+echo   MCP: drop a mcp.json next to this script (key "mcpServers") or set
+echo   MCP_CONFIG_PATH to auto-connect external MCP servers. Manage them
+echo   in Settings -^> MCP tab.
+echo.
+
+echo Checking dependencies ...
+if not exist "%~dp0backend\.venv\Scripts\python.exe" (
+    echo ERROR: backend virtual environment not found.
+    echo   Fix:  cd backend ^&^& uv sync --extra dev
+    echo   Then re-run start-all.bat
+    echo.
+    pause
+    exit /b 1
+)
+if not exist "%~dp0frontend\node_modules" (
+    echo ERROR: frontend dependencies not installed.
+    echo   Fix:  cd frontend ^&^& pnpm install
+    echo   Then re-run start-all.bat
+    echo.
+    pause
+    exit /b 1
+)
+echo Dependencies OK.
+echo.
 
 echo Checking ports ...
 netstat -ano | findstr ":8000" | findstr "LISTENING" >nul 2>&1

@@ -1,0 +1,11 @@
+{
+  "id": "todo_manager",
+  "name": "Todo Manager",
+  "version": "0.1.0",
+  "type": "service",
+  "entry": "plugins.todo_manager.main:TodoManagerPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["storage"],
+  "core": true,
+  "description": "会话级任务清单（规划与进度追踪）服务插件"
+}

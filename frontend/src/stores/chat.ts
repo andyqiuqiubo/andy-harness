@@ -313,6 +313,52 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  /** 重新拉取当前会话消息（不做快照刷新）。 */
+  async function reloadMessages() {
+    if (!currentSessionId.value) return
+    messages.value = await apiClient.get<Message[]>(
+      `/sessions/${currentSessionId.value}/messages`,
+    )
+  }
+
+  /** 物理删除某条 user 消息开始的整轮问答，返回删除条数。 */
+  async function deleteTurn(messageId: string): Promise<number> {
+    if (!currentSessionId.value) return 0
+    const res = await apiClient.delete<{ removed: number }>(
+      `/sessions/${currentSessionId.value}/messages/${messageId}?with_turn=true`,
+    )
+    await reloadMessages()
+    return res?.removed ?? 0
+  }
+
+  /**
+   * 分叉会话：从 `atMessageId`（默认从头）复制历史为新会话并切换过去。
+   */
+  async function forkSession(
+    sessionId: string,
+    atMessageId?: string | null,
+    title?: string,
+  ) {
+    void title
+    const forked = await apiClient.post<Session>(`/sessions/${sessionId}/fork`, {
+      at_message_id: atMessageId ?? null,
+    })
+    sessions.value = [forked, ...sessions.value]
+    await selectSession(forked.id)
+    return forked
+  }
+
+  /** 导出的会话包导入为新会话并切换过去。 */
+  async function importSession(payload: unknown, title?: string) {
+    const session = await apiClient.post<Session>('/sessions/import', {
+      payload,
+      title,
+    })
+    sessions.value = [session, ...sessions.value]
+    await selectSession(session.id)
+    return session
+  }
+
   return {
     sessions,
     currentSessionId,
@@ -332,6 +378,10 @@ export const useChatStore = defineStore('chat', () => {
     renameSession,
     archiveSession,
     deleteSession,
+    reloadMessages,
+    deleteTurn,
+    forkSession,
+    importSession,
     handleWSFrame,
     sendMessage,
     stopStreaming,

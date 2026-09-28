@@ -11,16 +11,30 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from harness.api.errors import register_error_handlers
+from harness.api.rest.artifacts import router as artifacts_router
+from harness.api.rest.artifacts import setup_artifact_routes
+from harness.api.rest.mcp import router as mcp_router
+from harness.api.rest.mcp import setup_mcp_routes
+from harness.api.rest.memories import router as memories_router
+from harness.api.rest.memories import setup_memory_routes
 from harness.api.rest.models import router as models_router
 from harness.api.rest.models import setup_model_routes
+from harness.api.rest.permissions import router as permissions_router
+from harness.api.rest.permissions import setup_permission_routes
 from harness.api.rest.plugins import router as plugins_router
 from harness.api.rest.plugins import setup_plugin_routes
 from harness.api.rest.providers import router as providers_router
 from harness.api.rest.providers import setup_provider_routes
+from harness.api.rest.schedules import router as schedules_router
+from harness.api.rest.schedules import setup_schedule_routes
 from harness.api.rest.sessions import router as sessions_router
 from harness.api.rest.sessions import setup_session_routes
 from harness.api.rest.settings import router as settings_router
 from harness.api.rest.settings import setup_settings_routes
+from harness.api.rest.skills import router as skills_router
+from harness.api.rest.skills import setup_skill_routes
+from harness.api.rest.traces import router as traces_router
+from harness.api.rest.traces import setup_trace_routes
 from harness.api.ws.chat import router as ws_router
 from harness.api.ws.chat import setup_ws_routes
 from harness.engine.tool_registry import ToolRegistry
@@ -47,6 +61,11 @@ async def _init_components() -> None:
     """初始化核心组件。"""
     _services.register(ToolRegistry, _tool_registry, owner="kernel")
     _services.register(PluginLoader, _loader, owner="kernel")
+    # 暴露事件总线与钩子管理器（供引擎 / 定时任务复用同一份；幂等，避免重复启动时栈无限增长）
+    if not _services.has(EventBus):
+        _services.register(EventBus, _loader.events, owner="kernel")
+    if not _services.has(HookManager):
+        _services.register(HookManager, _hooks, owner="kernel")
 
     db = Database()
     _services.register(Database, db, owner="kernel")
@@ -56,7 +75,7 @@ async def _init_components() -> None:
         SessionServiceImpl,
     )
 
-    session_service = SessionServiceImpl(db)
+    session_service = SessionServiceImpl(db, services=_services)
     _services.register(SessionService, session_service, owner="session_manager")
 
     from harness.modules.context_manager.service import (
@@ -131,12 +150,26 @@ setup_provider_routes(_services)
 setup_model_routes(_services)
 setup_plugin_routes(_services)
 setup_settings_routes()
+setup_skill_routes(_services)
+setup_permission_routes(_services)
+setup_mcp_routes(_services)
+setup_artifact_routes(_services)
+setup_memory_routes(_services)
+setup_trace_routes(_services)
+setup_schedule_routes(_services)
 
 app.include_router(sessions_router)
 app.include_router(providers_router)
 app.include_router(models_router)
 app.include_router(plugins_router)
 app.include_router(settings_router)
+app.include_router(skills_router)
+app.include_router(permissions_router)
+app.include_router(mcp_router)
+app.include_router(artifacts_router)
+app.include_router(memories_router)
+app.include_router(traces_router)
+app.include_router(schedules_router)
 
 # 注册 WebSocket 路由
 setup_ws_routes(_services, _hooks, _tool_registry)

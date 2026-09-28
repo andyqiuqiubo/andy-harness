@@ -1,0 +1,10 @@
+{
+  "id": "tool_todo",
+  "name": "Todo Write Tool",
+  "version": "0.1.0",
+  "type": "tool",
+  "entry": "plugins.tool_todo.main:TodoPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["storage"],
+  "description": "创建或更新当前会话的任务清单（规划与进度追踪）"
+}

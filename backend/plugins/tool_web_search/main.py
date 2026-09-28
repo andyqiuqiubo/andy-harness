@@ -24,6 +24,10 @@ class WebSearchTool(ToolPlugin):
         return "web_search"
 
     @property
+    def risk_level(self) -> str:
+        return "read"
+
+    @property
     def description(self) -> str:
         return (
             "在百度上搜索关键词，返回搜索结果摘要。"

@@ -7,6 +7,12 @@
 - error: 错误通知（含 code/message/detail/trace_id）
 - done: 对话完成
 - stop_ack: 停止确认
+- confirm_request: 请求人工确认某次工具调用（权限策略命中时）
+- confirm_timeout: 确认超时（按拒绝处理）
+
+控制消息（客户端 → 服务端）:
+- {"type": "stop"}: 中断生成
+- {"type": "confirm_reply", "data": {"request_id": "...", "approved": true|false}}
 """
 
 from __future__ import annotations
@@ -23,6 +29,9 @@ from pydantic import BaseModel
 logger = logging.getLogger("harness.api.ws")
 
 router = APIRouter()
+
+# 人工确认等待超时（秒）。超时按拒绝处理，避免请求永久挂起。
+CONFIRM_TIMEOUT = 120.0
 
 
 class WSMessage(BaseModel):
@@ -110,6 +119,58 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
 
         # 当前 AgentLoop 实例（供 stop 控制消息使用）
         current_loop: Any = None
+
+        # 待处理的确认请求：request_id -> Future[bool]
+        pending_confirms: dict[str, Any] = {}
+
+        async def _request_confirm(
+            tool_name: str, args: dict[str, Any], risk: str, reason: str
+        ) -> bool:
+            """向客户端发起人工确认请求并等待答复。
+
+            超时或连接异常均按拒绝处理（安全默认）。
+            """
+            request_id = str(uuid.uuid4())
+            fut: Any = asyncio.get_running_loop().create_future()
+            pending_confirms[request_id] = fut
+
+            await websocket.send_json(
+                {
+                    "type": "confirm_request",
+                    "data": {
+                        "request_id": request_id,
+                        "tool_name": tool_name,
+                        "args": args,
+                        "risk": risk,
+                        "reason": reason,
+                        "timeout": CONFIRM_TIMEOUT,
+                        "trace_id": trace_id,
+                    },
+                }
+            )
+            logger.info(
+                "已发起人工确认请求: %s (tool=%s risk=%s)",
+                request_id,
+                tool_name,
+                risk,
+            )
+
+            try:
+                return bool(await asyncio.wait_for(fut, timeout=CONFIRM_TIMEOUT))
+            except TimeoutError:
+                logger.warning("人工确认超时，按拒绝处理: %s", request_id)
+                try:
+                    await websocket.send_json(
+                        {
+                            "type": "confirm_timeout",
+                            "data": {"request_id": request_id, "tool_name": tool_name},
+                        }
+                    )
+                except Exception:
+                    pass
+                return False
+            finally:
+                pending_confirms.pop(request_id, None)
 
         async def _send_error(code: str, message: str, detail: Any = None) -> None:
             """发送统一格式的错误帧。"""
@@ -222,6 +283,20 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
                             ctrl_raw = await websocket.receive_text()
                             try:
                                 ctrl = json.loads(ctrl_raw)
+                                if ctrl.get("type") == "confirm_reply":
+                                    payload = ctrl.get("data") or ctrl
+                                    rid = payload.get("request_id", "")
+                                    fut = pending_confirms.get(rid)
+                                    if fut is not None and not fut.done():
+                                        fut.set_result(
+                                            bool(payload.get("approved", False))
+                                        )
+                                        logger.info(
+                                            "收到人工确认答复: %s -> %s",
+                                            rid,
+                                            payload.get("approved"),
+                                        )
+                                    continue
                                 if ctrl.get("type") == "stop":
                                     if current_loop is not None:
                                         current_loop.stop()
@@ -247,7 +322,19 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
                 original_chat = provider.chat
 
                 async def streaming_chat(*args: Any, **kwargs: Any) -> Any:
+                    from harness.engine.runtime import get_runtime
+
                     async for chunk in original_chat(*args, **kwargs):
+                        # 子代理运行时（contextvar 指向别的会话）不向主界面流式输出，
+                        # 避免把子代理的中间过程混进主对话
+                        _rt = get_runtime()
+                        _is_subagent = (
+                            _rt is not None
+                            and getattr(_rt, "session_id", "") != msg.session_id
+                        )
+                        if _is_subagent:
+                            yield chunk
+                            continue
                         if "delta" in chunk and chunk["delta"]:
                             await websocket.send_json(
                                 {
@@ -290,11 +377,17 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
                         model=msg.model,
                         budget=msg.budget,
                         on_tool_event=_on_tool_event,
+                        confirm_callback=_request_confirm,
                     )
                 finally:
                     # S20: 恢复 provider.chat
                     provider.chat = original_chat
                     current_loop = None
+                    # 未决的确认请求一律按拒绝处理，避免协程永久挂起
+                    for fut in list(pending_confirms.values()):
+                        if not fut.done():
+                            fut.set_result(False)
+                    pending_confirms.clear()
                     # 取消停止监听器
                     stop_task.cancel()
                     try:

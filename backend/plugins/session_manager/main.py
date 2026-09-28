@@ -36,7 +36,7 @@ class SessionManagerPlugin(BasePlugin):
         db_path = ctx.config.get("db_path", "")
         self._db = Database(db_path) if db_path else Database()
 
-        self._service = SessionServiceImpl(self._db)
+        self._service = SessionServiceImpl(self._db, services=ctx.services)
         ctx.services.register(SessionService, self._service, owner=self.plugin_id)
 
         ctx.logger.info("session-manager 已激活")

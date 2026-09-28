@@ -29,6 +29,10 @@ class ThemeSwitcherTool(ToolPlugin):
         return "theme_switcher"
 
     @property
+    def risk_level(self) -> str:
+        return "write"
+
+    @property
     def description(self) -> str:
         return (
             "切换前端界面主题颜色。可选主题: matrix(黑客帝国黑绿)、"

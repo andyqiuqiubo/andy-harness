@@ -24,6 +24,10 @@ class JevScoreTool(ToolPlugin):
         return "jev_score"
 
     @property
+    def risk_level(self) -> str:
+        return "read"
+
+    @property
     def description(self) -> str:
         return (
             "在自定义有序等级刻度上打分，返回加权得分、各等级概率分布和置信度。"

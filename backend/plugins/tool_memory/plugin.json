@@ -1,0 +1,10 @@
+{
+  "id": "tool_memory",
+  "name": "Memory Tools",
+  "version": "0.1.0",
+  "type": "tool",
+  "entry": "plugins.tool_memory.main:MemoryToolsPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["storage"],
+  "description": "长期记忆工具：memory_save（保存）/ memory_search（检索）"
+}

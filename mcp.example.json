@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "libgen": {
+      "url": "https://mcp.jmrp.io/libgen",
+      "type": "streamable-http",
+      "description": "公开免费 MCP 示例 - 书籍/文献检索（无需账号，来源见 https://mcp.jmrp.io/）",
+      "disabled": false
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "F:/traeprojects/andy-harness-gy"],
+      "type": "stdio",
+      "description": "本地文件系统 MCP（示例，默认关闭）",
+      "disabled": true
+    },
+    "example-echo": {
+      "command": "python",
+      "args": ["backend/tests/mcp_echo_server.py"],
+      "type": "stdio",
+      "description": "本地 stdio 测试用 echo server（示例，默认关闭）",
+      "disabled": true
+    }
+  }
+}

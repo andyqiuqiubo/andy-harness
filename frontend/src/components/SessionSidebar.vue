@@ -1,110 +1,175 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { usePluginLoaderStore } from '../stores/plugin-loader'
 import { useLanguage } from '../composables/useLanguage'
+import { apiClient } from '../api/client'
 
 const chatStore = useChatStore()
 const pluginLoaderStore = usePluginLoaderStore()
 const { t } = useLanguage()
 
-// M16: Show archived toggle
+// 显示归档
 const showArchived = ref(false)
 
-// 提示框（3 秒自动消失）
-const toastVisible = ref(false)
+// 轻提示（3 秒自动消失）：用于「导入成功 / 导出成功 / 分叉成功」等反馈
+const toastText = ref('')
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 
-function showToast() {
-  toastVisible.value = true
+function showToast(text: string) {
+  toastText.value = text
   if (toastTimer) clearTimeout(toastTimer)
   toastTimer = setTimeout(() => {
-    toastVisible.value = false
+    toastText.value = ''
   }, 3000)
 }
 
-// 右键上下文菜单
-const contextMenu = ref<{ visible: boolean; x: number; y: number; sessionId: string }>({
+// 会话操作菜单（点 ⋮ 或右键打开）
+const menu = ref<{ visible: boolean; x: number; y: number; sessionId: string }>({
   visible: false, x: 0, y: 0, sessionId: '',
 })
 
-// M16: Filter sessions by archived state
-const visibleSessions = computed(() => {
-  return chatStore.sessions.filter((s) => showArchived.value || !s.archived)
-})
+const visibleSessions = computed(() =>
+  chatStore.sessions.filter((s) => showArchived.value || !s.archived),
+)
 
-// Plugin menu items for sidebar injection
 const pluginMenuItems = computed(() => pluginLoaderStore.menuItems)
 
+const currentMenuSession = computed(
+  () => chatStore.sessions.find((s) => s.id === menu.value.sessionId) || null,
+)
+
 async function handleNewSession() {
-  // 先实时刷新会话列表：缓存中的 message_count 在问答成功后不会自动更新，
-  // 若不刷新会把"已有对话的会话"误判为空会话，导致错误提示
   await chatStore.loadSessions()
-  // 已存在空会话（无任何消息）时：不新建，跳转到该会话并提示
   const emptySession = chatStore.sessions.find(
-    (s) => !s.archived && s.message_count === 0
+    (s) => !s.archived && s.message_count === 0,
   )
   if (emptySession) {
     await chatStore.selectSession(emptySession.id)
-    showToast()
+    showToast(t.value('sessions.existingEmpty'))
     return
   }
   await chatStore.createSession('New Session')
 }
 
+function openMenu(e: MouseEvent, sessionId: string) {
+  e.stopPropagation()
+  const x = Math.min(e.clientX, window.innerWidth - 280)
+  const y = Math.min(e.clientY, window.innerHeight - 300)
+  menu.value = { visible: true, x, y, sessionId }
+}
+
+function closeMenu() {
+  menu.value.visible = false
+}
+
+// ── 会话操作实现 ──────────────────────────────────────
+
 async function handleRename(id: string) {
-  const session = chatStore.sessions.find(s => s.id === id)
+  const session = chatStore.sessions.find((s) => s.id === id)
   const title = window.prompt(t.value('sessions.rename'), session?.title || '')
-  if (title) {
-    await chatStore.renameSession(id, title)
-  }
+  if (title) await chatStore.renameSession(id, title)
+  closeMenu()
 }
 
 async function handleArchive(id: string) {
   await chatStore.archiveSession(id)
-  contextMenu.value.visible = false
+  closeMenu()
 }
 
 async function handleDelete(id: string) {
   if (window.confirm(t.value('sessions.confirmDelete'))) {
     await chatStore.deleteSession(id)
   }
-  contextMenu.value.visible = false
+  closeMenu()
+}
+
+function safeFileName(title: string) {
+  const cleaned = (title || 'session').replace(/[\\/:*?"<>|]/g, '_').trim()
+  return cleaned.slice(0, 60) || 'session'
+}
+
+/** 导出：下载为 JSON 文件（含会话元数据 + 全部消息 + 任务清单）。 */
+async function handleExport(id: string) {
+  try {
+    const payload = await apiClient.get<Record<string, unknown>>(`/sessions/${id}/export`)
+    const session = chatStore.sessions.find((s) => s.id === id)
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${safeFileName(session?.title || 'session')}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    showToast(t.value('sessions.exported'))
+  } catch (e) {
+    window.alert(t.value('sessions.exportFail') + ': ' + e)
+  }
+  closeMenu()
+}
+
+/** 分叉：复制当前会话为一份新会话（历史完整），并切换过去。 */
+async function handleFork(id: string) {
+  try {
+    const forked = await chatStore.forkSession(id, null)
+    showToast(`${t.value('sessions.forked')}：${forked.title}`)
+  } catch (e) {
+    window.alert(t.value('sessions.forkFail') + ': ' + e)
+  }
+  closeMenu()
+}
+
+// ── 导入 ──────────────────────────────────────────────
+const fileInput = ref<HTMLInputElement | null>(null)
+
+function triggerImport() {
+  fileInput.value?.click()
+}
+
+async function handleImportFile(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  try {
+    const text = await file.text()
+    const payload = JSON.parse(text)
+    if (!payload || typeof payload !== 'object' || !Array.isArray(payload.messages)) {
+      throw new Error(t.value('sessions.importInvalid'))
+    }
+    const title = payload?.session?.title
+      ? `${payload.session.title}（导入）`
+      : t.value('sessions.importedTitle')
+    const created = await chatStore.importSession(payload, title)
+    showToast(`${t.value('sessions.imported')}：${created.title}`)
+  } catch (err) {
+    window.alert(t.value('sessions.importFail') + ': ' + err)
+  } finally {
+    input.value = ''
+  }
 }
 
 async function handleDeleteAll() {
-  if (window.confirm(t.value('sessions.confirmDeleteAll'))) {
-    for (const s of chatStore.sessions) {
-      await chatStore.deleteSession(s.id)
-    }
+  if (!window.confirm(t.value('sessions.confirmDeleteAll'))) return
+  for (const s of chatStore.sessions) {
+    await chatStore.deleteSession(s.id)
   }
 }
 
-// 右键菜单
-function handleContextMenu(e: MouseEvent, sessionId: string) {
-  e.preventDefault()
-  contextMenu.value = {
-    visible: true,
-    x: e.clientX,
-    y: e.clientY,
-    sessionId,
-  }
-}
-
-function closeContextMenu() {
-  contextMenu.value.visible = false
-}
-
-// 关闭右键菜单（点击其他区域）
 onMounted(() => {
   chatStore.loadSessions()
-  document.addEventListener('click', closeContextMenu)
+  document.addEventListener('click', closeMenu)
+  document.addEventListener('scroll', closeMenu, true)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', closeMenu)
+  document.removeEventListener('scroll', closeMenu, true)
+  if (toastTimer) clearTimeout(toastTimer)
 })
 </script>
 
 <template>
   <div class="session-sidebar">
-    <!-- Gradient header -->
     <div class="sidebar-header">
       <div class="header-top">
         <div class="header-brand">
@@ -112,34 +177,42 @@ onMounted(() => {
           <h3>{{ t('sessions.title') }}</h3>
         </div>
       </div>
+
       <button class="btn-new" @click="handleNewSession">
         <span class="btn-icon-plus">+</span>
         <span>{{ t('sessions.new') }}</span>
       </button>
-      <button
-        v-if="chatStore.sessions.length > 0"
-        class="btn-clear"
-        @click="handleDeleteAll"
-        :title="t('sessions.deleteAll')"
-      >
-        <span class="btn-clear-icon">🗑</span>
-        <span>{{ t('sessions.deleteAll') }}</span>
-      </button>
+
+      <div class="header-tools">
+        <button class="tool-btn" @click="triggerImport" :title="t('sessions.importHint')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          <span>{{ t('sessions.import') }}</span>
+        </button>
+        <button
+          v-if="chatStore.sessions.length > 0"
+          class="tool-btn danger"
+          @click="handleDeleteAll"
+          :title="t('sessions.deleteAll')"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" />
+          </svg>
+          <span>{{ t('sessions.deleteAll') }}</span>
+        </button>
+      </div>
+
+      <p class="header-hint">{{ t('sessions.hint') }}</p>
     </div>
 
-    <!-- Archive toggle as a modern pill switch -->
     <div class="archive-toggle">
-      <button
-        class="toggle-pill"
-        :class="{ active: showArchived }"
-        @click="showArchived = !showArchived"
-      >
+      <button class="toggle-pill" :class="{ active: showArchived }" @click="showArchived = !showArchived">
         <span class="toggle-dot"></span>
         <span class="toggle-text">{{ showArchived ? t('sessions.hideArchived') : t('sessions.showArchived') }}</span>
       </button>
     </div>
 
-    <!-- Session list -->
     <div class="session-list">
       <div
         v-for="session in visibleSessions"
@@ -148,57 +221,95 @@ onMounted(() => {
         v-ripple="session.id === chatStore.currentSessionId ? 'rgba(255,255,255,0.2)' : 'rgba(99,102,241,0.15)'"
         @click="chatStore.selectSession(session.id)"
         @dblclick="handleRename(session.id)"
-        @contextmenu="handleContextMenu($event, session.id)"
+        @contextmenu.prevent="openMenu($event, session.id)"
       >
         <span class="session-title" :title="session.title">
           {{ session.title.length > 20 ? session.title.slice(0, 20) + '...' : session.title }}
           <span v-if="session.archived" class="archived-badge">{{ t('sessions.archived') }}</span>
         </span>
         <div class="session-actions">
-          <button class="action-btn" @click.stop="handleRename(session.id)" :title="t('sessions.rename')">✏️</button>
-          <button class="action-btn" @click.stop="handleArchive(session.id)" :title="t('sessions.archive')">📦</button>
-          <button class="action-btn action-delete" @click.stop="handleDelete(session.id)" :title="t('sessions.delete')">✕</button>
+          <button
+            class="action-btn menu-btn"
+            :title="t('sessions.menu')"
+            @click.stop="openMenu($event, session.id)"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>
+          </button>
         </div>
       </div>
 
-      <!-- Empty state -->
       <div v-if="visibleSessions.length === 0" class="empty-state">
         <div class="empty-icon">📝</div>
         <p class="empty-text">{{ t('sessions.empty') }}</p>
       </div>
+
+      <input
+        ref="fileInput"
+        type="file"
+        accept="application/json,.json"
+        class="hidden-file-input"
+        @change="handleImportFile"
+      />
     </div>
 
-    <!-- 右键上下文菜单 -->
+    <!-- 会话操作菜单 -->
     <teleport to="body">
       <div
-        v-if="contextMenu.visible"
-        class="context-menu"
-        :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+        v-if="menu.visible"
+        class="session-menu"
+        :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
         @click.stop
       >
-        <button class="ctx-item" @click="handleRename(contextMenu.sessionId); contextMenu.visible = false">
-          <span class="ctx-icon">✏️</span> {{ t('sessions.rename') }}
+        <div class="menu-header">
+          <span class="menu-title">{{ currentMenuSession?.title || t('sessions.menu') }}</span>
+          <span class="menu-sub">{{ t('sessions.menuSub') }}</span>
+        </div>
+        <button class="menu-item" @click="handleRename(menu.sessionId)">
+          <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" /></svg>
+          <span class="menu-text">
+            <span class="menu-label">{{ t('sessions.rename') }}</span>
+            <span class="menu-desc">{{ t('sessions.renameHint') }}</span>
+          </span>
         </button>
-        <button class="ctx-item" @click="handleArchive(contextMenu.sessionId)">
-          <span class="ctx-icon">📦</span> {{ t('sessions.archive') }}
+        <button class="menu-item" @click="handleExport(menu.sessionId)">
+          <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+          <span class="menu-text">
+            <span class="menu-label">{{ t('sessions.export') }}</span>
+            <span class="menu-desc">{{ t('sessions.exportHint') }}</span>
+          </span>
         </button>
-        <div class="ctx-divider"></div>
-        <button class="ctx-item ctx-danger" @click="handleDelete(contextMenu.sessionId)">
-          <span class="ctx-icon">✕</span> {{ t('sessions.delete') }}
+        <button class="menu-item" @click="handleFork(menu.sessionId)">
+          <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" /></svg>
+          <span class="menu-text">
+            <span class="menu-label">{{ t('sessions.fork') }}</span>
+            <span class="menu-desc">{{ t('sessions.forkHint') }}</span>
+          </span>
+        </button>
+        <button class="menu-item" @click="handleArchive(menu.sessionId)">
+          <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="5" rx="1" /><path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9" /><line x1="10" y1="13" x2="14" y2="13" /></svg>
+          <span class="menu-text">
+            <span class="menu-label">{{ t('sessions.archive') }}</span>
+            <span class="menu-desc">{{ t('sessions.archiveHint') }}</span>
+          </span>
+        </button>
+        <div class="menu-divider"></div>
+        <button class="menu-item danger" @click="handleDelete(menu.sessionId)">
+          <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" /></svg>
+          <span class="menu-text">
+            <span class="menu-label">{{ t('sessions.delete') }}</span>
+            <span class="menu-desc">{{ t('sessions.deleteHint') }}</span>
+          </span>
         </button>
       </div>
     </teleport>
 
-    <!-- 3 秒提示框 -->
+    <!-- 轻提示 -->
     <teleport to="body">
       <transition name="toast-fade">
-        <div v-if="toastVisible" class="session-toast">
-          {{ t('sessions.existingEmpty') }}
-        </div>
+        <div v-if="toastText" class="session-toast">{{ toastText }}</div>
       </transition>
     </teleport>
 
-    <!-- Plugin nav section -->
     <div v-if="pluginMenuItems.length > 0" class="plugin-nav">
       <div class="plugin-nav-header">{{ t('nav.hello') }}</div>
       <router-link
@@ -225,7 +336,7 @@ onMounted(() => {
   overflow: hidden;
 }
 
-/* ── Sidebar header ── */
+/* ── Header ── */
 .sidebar-header {
   padding: var(--space-md) var(--space-md) var(--space-sm);
   background: var(--bg-sidebar);
@@ -260,7 +371,6 @@ onMounted(() => {
   letter-spacing: -0.01em;
 }
 
-/* ── New session button ── */
 .btn-new {
   display: flex;
   align-items: center;
@@ -283,44 +393,59 @@ onMounted(() => {
   box-shadow: var(--shadow-md);
 }
 
-.btn-new:active {
-  transform: translateY(0);
-}
-
 .btn-icon-plus {
   font-size: 1.1rem;
   line-height: 1;
   font-weight: 600;
 }
 
-/* ── Clear all button (ghost/danger) ── */
-.btn-clear {
+.header-tools {
   display: flex;
+  gap: var(--space-sm);
+}
+
+.tool-btn {
+  flex: 1;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--space-xs);
+  gap: 5px;
   padding: var(--space-xs) var(--space-sm);
   background: transparent;
-  border: 1px solid rgba(239, 68, 68, 0.4);
+  border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
-  color: var(--color-danger);
+  color: var(--color-text-secondary);
   font-size: var(--font-size-xs);
   font-weight: 500;
   cursor: pointer;
-  transition: background var(--transition-base), border-color var(--transition-base), color var(--transition-base);
+  transition: var(--transition-base);
 }
 
-.btn-clear:hover {
-  background: var(--color-danger);
+.tool-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.tool-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.tool-btn.danger:hover {
+  background: var(--color-danger-light);
   border-color: var(--color-danger);
-  color: #fff;
+  color: var(--color-danger);
 }
 
-.btn-clear-icon {
-  font-size: 0.8rem;
+.header-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
 }
 
-/* ── Archive toggle (pill switch) ── */
+/* ── Archive toggle ── */
 .archive-toggle {
   padding: var(--space-sm) var(--space-md);
   border-bottom: 1px solid var(--border-color);
@@ -337,7 +462,7 @@ onMounted(() => {
   font-size: var(--font-size-xs);
   color: var(--color-text-secondary);
   cursor: pointer;
-  transition: background var(--transition-base), color var(--transition-base), border-color var(--transition-base);
+  transition: var(--transition-base);
 }
 
 .toggle-pill.active {
@@ -367,7 +492,7 @@ onMounted(() => {
 .session-list {
   flex: 1;
   overflow-y: auto;
-  padding: var(--space-sm) var(--space-sm);
+  padding: var(--space-sm);
 }
 
 .session-item {
@@ -379,7 +504,7 @@ onMounted(() => {
   cursor: pointer;
   border-radius: var(--radius-md);
   border-left: 3px solid transparent;
-  transition: background var(--transition-base), transform var(--transition-base), border-color var(--transition-base), box-shadow var(--transition-base);
+  transition: var(--transition-base);
   animation: slideInLeft var(--transition-base) ease both;
 }
 
@@ -427,20 +552,16 @@ onMounted(() => {
   vertical-align: middle;
 }
 
-/* ── Session action buttons ── */
 .session-actions {
   display: flex;
   gap: 2px;
   opacity: 0;
-  transform: translateX(8px);
-  transition: opacity var(--transition-base), transform var(--transition-base);
-  pointer-events: none;
+  transition: opacity var(--transition-base);
 }
 
-.session-item:hover .session-actions {
+.session-item:hover .session-actions,
+.session-item.active .session-actions {
   opacity: 1;
-  transform: translateX(0);
-  pointer-events: auto;
 }
 
 .action-btn {
@@ -453,23 +574,18 @@ onMounted(() => {
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-text-secondary);
-  font-size: 0.8rem;
   cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition: var(--transition-fast);
+}
+
+.action-btn svg {
+  width: 16px;
+  height: 16px;
 }
 
 .action-btn:hover {
-  background: var(--bg-hover);
-  color: var(--color-text);
-}
-
-.action-delete {
-  color: var(--color-danger);
-}
-
-.action-delete:hover {
-  background: var(--color-danger-light);
-  color: var(--color-danger-hover);
+  background: var(--bg-active);
+  color: var(--color-primary);
 }
 
 /* ── Empty state ── */
@@ -493,7 +609,11 @@ onMounted(() => {
   color: var(--color-text-tertiary);
 }
 
-/* ── Plugin nav section ── */
+.hidden-file-input {
+  display: none;
+}
+
+/* ── Plugin nav ── */
 .plugin-nav {
   border-top: 1px solid var(--border-color);
   padding: var(--space-sm) 0;
@@ -515,7 +635,7 @@ onMounted(() => {
   padding: var(--space-sm) var(--space-md);
   color: var(--color-text-secondary);
   font-size: var(--font-size-sm);
-  transition: background var(--transition-base), color var(--transition-base);
+  transition: var(--transition-base);
 }
 
 .plugin-nav-item:hover {
@@ -528,65 +648,116 @@ onMounted(() => {
   line-height: 1;
 }
 
-.plugin-nav-label {
-  font-weight: 450;
-}
-
-/* ── 右键上下文菜单 ── */
-.context-menu {
+/* ── 会话操作菜单 ── */
+.session-menu {
   position: fixed;
   z-index: 10000;
-  min-width: 160px;
-  padding: 4px;
+  width: 268px;
+  padding: 6px;
   background: var(--bg-surface);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-xl);
   animation: contextMenuIn 150ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 @keyframes contextMenuIn {
-  from { opacity: 0; transform: scale(0.95) translateY(-4px); }
+  from { opacity: 0; transform: scale(0.96) translateY(-4px); }
   to { opacity: 1; transform: scale(1) translateY(0); }
 }
 
-.ctx-item {
+.menu-header {
+  padding: 6px 10px 8px;
   display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 8px 12px;
-  border: none;
-  background: none;
-  color: var(--color-text);
-  font-size: var(--font-size-sm);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  flex-direction: column;
+  gap: 2px;
+  border-bottom: 1px solid var(--border-light);
+  margin-bottom: 4px;
 }
 
-.ctx-item:hover {
+.menu-title {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-sub {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+.menu-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: none;
+  text-align: left;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.menu-item:hover {
   background: var(--bg-hover);
 }
 
-.ctx-item.ctx-danger:hover {
+.menu-item.danger:hover {
   background: var(--color-error-bg);
   color: var(--color-danger);
 }
 
-.ctx-icon {
-  font-size: 0.9rem;
+.menu-icon {
   width: 16px;
-  text-align: center;
+  height: 16px;
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--color-text-secondary);
 }
 
-.ctx-divider {
+.menu-item:hover .menu-icon {
+  color: var(--color-primary);
+}
+
+.menu-item.danger:hover .menu-icon {
+  color: var(--color-danger);
+}
+
+.menu-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.menu-label {
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.menu-desc {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--color-text-tertiary);
+}
+
+.menu-item.danger:hover .menu-label {
+  color: var(--color-danger);
+}
+
+.menu-divider {
   height: 1px;
-  background: var(--border-color);
+  background: var(--border-light);
   margin: 4px 0;
 }
 
-/* ── 3 秒提示框 ── */
+/* ── 轻提示 ── */
 .session-toast {
   position: fixed;
   top: 24px;
@@ -600,7 +771,10 @@ onMounted(() => {
   font-weight: 500;
   border-radius: var(--radius-full);
   box-shadow: var(--shadow-lg);
+  max-width: 80vw;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .toast-fade-enter-active,

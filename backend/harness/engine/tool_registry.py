@@ -77,6 +77,10 @@ class ToolRegistry:
         """检查工具是否已注册。"""
         return tool_name in self._tools
 
+    def all_tools(self) -> list[Any]:
+        """返回所有工具实例（供子代理构建受限工具集）。"""
+        return [tool for tool, _owner in self._tools.values()]
+
     def get_tool_definitions(self) -> list[dict[str, Any]]:
         """获取工具定义列表（用于传递给模型的 function calling）。"""
         result: list[dict[str, Any]] = []

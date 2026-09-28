@@ -1,0 +1,11 @@
+{
+  "id": "scheduler",
+  "name": "Scheduler",
+  "version": "0.1.0",
+  "type": "service",
+  "entry": "plugins.scheduler.main:SchedulerPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["storage"],
+  "core": true,
+  "description": "定时任务：到点在隔离会话里自动执行提示词，可指定 MCP / Skills / 工具集"
+}

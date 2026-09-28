@@ -25,6 +25,10 @@ class JevNoulTool(ToolPlugin):
         return "jev_noul"
 
     @property
+    def risk_level(self) -> str:
+        return "read"
+
+    @property
     def description(self) -> str:
         return (
             "判断一个命题是否成立，返回 0~1 之间的概率值。"

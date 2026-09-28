@@ -27,6 +27,10 @@ class WebFetchTool(ToolPlugin):
         return "web_fetch"
 
     @property
+    def risk_level(self) -> str:
+        return "read"
+
+    @property
     def description(self) -> str:
         return (
             "抓取指定 URL 网页的正文内容。"

@@ -24,6 +24,10 @@ class JevChoiceTool(ToolPlugin):
         return "jev_choice"
 
     @property
+    def risk_level(self) -> str:
+        return "read"
+
+    @property
     def description(self) -> str:
         return (
             "从固定选项中做单选题，返回选中项、各选项概率和置信度。"

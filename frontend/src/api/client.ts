@@ -23,6 +23,16 @@ class APIClientImpl {
     return res.json()
   }
 
+  async put<T>(url: string, body?: unknown): Promise<T> {
+    const res = await fetch(`${BASE_URL}${url}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    })
+    if (!res.ok) throw new Error(await res.text())
+    return res.json()
+  }
+
   async patch<T>(url: string, body: unknown): Promise<T> {
     const res = await fetch(`${BASE_URL}${url}`, {
       method: 'PATCH',

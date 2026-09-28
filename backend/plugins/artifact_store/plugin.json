@@ -1,0 +1,11 @@
+{
+  "id": "artifact_store",
+  "name": "Artifact Store",
+  "version": "0.1.0",
+  "type": "service",
+  "entry": "plugins.artifact_store.main:ArtifactStorePlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["storage", "filesystem"],
+  "core": true,
+  "description": "大工具输出落盘（Context Offload）：超阈值的结果写入工件文件，仅回传路径与摘要"
+}

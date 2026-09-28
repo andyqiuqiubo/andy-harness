@@ -1,0 +1,11 @@
+{
+  "id": "memory_manager",
+  "name": "Memory Manager",
+  "version": "0.1.0",
+  "type": "service",
+  "entry": "plugins.memory_manager.main:MemoryManagerPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["storage"],
+  "core": true,
+  "description": "长期记忆（跨会话记忆）服务插件：持久化用户偏好 / 项目事实，按需检索注入"
+}

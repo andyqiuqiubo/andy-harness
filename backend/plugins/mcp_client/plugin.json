@@ -1,0 +1,10 @@
+{
+  "id": "mcp_client",
+  "name": "MCP Client",
+  "version": "0.1.0",
+  "type": "service",
+  "entry": "plugins.mcp_client.main:MCPClientPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["storage"],
+  "description": "MCP（Model Context Protocol）客户端：连接本地 MCP server，将其工具动态注册进工具注册表"
+}

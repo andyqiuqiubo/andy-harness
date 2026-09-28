@@ -1,0 +1,11 @@
+{
+  "id": "tracing",
+  "name": "Tracing",
+  "version": "0.1.0",
+  "type": "service",
+  "entry": "plugins.tracing.main:TracingPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["storage"],
+  "core": true,
+  "description": "可观测性：订阅 trace.span 事件落库，供前端运行轨迹泳道图回放"
+}

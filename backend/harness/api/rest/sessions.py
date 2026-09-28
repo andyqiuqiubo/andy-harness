@@ -6,7 +6,7 @@ import json
 from typing import Any, cast
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from harness.api.errors import APIError
 from harness.kernel.services import ServiceRegistry
@@ -34,6 +34,25 @@ class MessageCreate(BaseModel):
     content: str
     tool_calls: list[dict[str, Any]] | None = None
     tokens: int = 0
+
+
+class SessionImport(BaseModel):
+    """导入会话请求。"""
+
+    payload: dict[str, Any]
+    title: str | None = None
+
+
+class SessionFork(BaseModel):
+    """分叉会话请求。"""
+
+    at_message_id: str | None = None
+
+
+class TodoReplace(BaseModel):
+    """替换会话任务清单请求（覆盖式写入）。"""
+
+    todos: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def _get_session_service(registry: ServiceRegistry) -> Any:
@@ -135,6 +154,95 @@ def setup_session_routes(registry: ServiceRegistry) -> None:
                 503,
             )
 
+    # 导出 / 导入 / 分叉
+    @router.get("/{session_id}/export", summary="导出会话")
+    async def export_session(session_id: str) -> dict[str, Any]:
+        service = _get_session_service(registry)
+        payload = service.export_session(session_id)
+        if payload is None:
+            raise APIError("SESSION_NOT_FOUND", f"会话不存在: {session_id}", 404)
+        return cast("dict[str, Any]", payload)
+
+    @router.post("/import", summary="导入会话")
+    async def import_session(req: SessionImport) -> dict[str, Any]:
+        service = _get_session_service(registry)
+        try:
+            session = service.import_session(req.payload, title=req.title)
+        except Exception as e:
+            raise APIError("IMPORT_FAILED", f"导入失败: {e}", 400)
+        return cast("dict[str, Any]", session.to_dict())
+
+    @router.post("/{session_id}/fork", summary="从某条消息分叉出新会话")
+    async def fork_session(session_id: str, req: SessionFork) -> dict[str, Any]:
+        service = _get_session_service(registry)
+        if not service.get_session(session_id):
+            raise APIError("SESSION_NOT_FOUND", f"会话不存在: {session_id}", 404)
+        forked = service.fork_session(session_id, req.at_message_id)
+        if forked is None:
+            raise APIError(
+                "FORK_FAILED",
+                f"分叉失败：会话或消息不存在（at_message_id={req.at_message_id}）",
+                404,
+            )
+        return cast("dict[str, Any]", forked.to_dict())
+
+    # Todo 路由（会话级任务清单）
+    @router.get("/{session_id}/todos", summary="列出会话任务清单")
+    async def list_todos(session_id: str) -> dict[str, Any]:
+        from harness.modules.todo_manager.service import TodoService
+
+        service = _get_session_service(registry)
+        if not service.get_session(session_id):
+            raise APIError("SESSION_NOT_FOUND", f"会话不存在: {session_id}", 404)
+        try:
+            todo_service = registry.get(TodoService)
+        except Exception:
+            return {"available": False, "todos": [], "summary": {}}
+        items = todo_service.list_todos(session_id)
+        return {
+            "available": True,
+            "todos": [t.to_dict() for t in items],
+            "summary": todo_service.summary(session_id),
+        }
+
+    @router.delete("/{session_id}/todos", summary="清空会话任务清单")
+    async def clear_todos(session_id: str) -> dict[str, Any]:
+        from harness.modules.todo_manager.service import TodoService
+
+        service = _get_session_service(registry)
+        if not service.get_session(session_id):
+            raise APIError("SESSION_NOT_FOUND", f"会话不存在: {session_id}", 404)
+        try:
+            todo_service = registry.get(TodoService)
+        except Exception:
+            raise APIError("TODO_SERVICE_UNAVAILABLE", "Todo 服务不可用", 503)
+        removed = todo_service.clear_todos(session_id)
+        return {"removed": removed}
+
+    @router.put("/{session_id}/todos", summary="替换会话任务清单")
+    async def replace_todos(session_id: str, payload: TodoReplace) -> dict[str, Any]:
+        from harness.modules.todo_manager.service import TodoService
+
+        service = _get_session_service(registry)
+        if not service.get_session(session_id):
+            raise APIError("SESSION_NOT_FOUND", f"会话不存在: {session_id}", 404)
+        try:
+            todo_service = registry.get(TodoService)
+        except Exception:
+            raise APIError("TODO_SERVICE_UNAVAILABLE", "Todo 服务不可用", 503)
+        # 去除来源 id：写入的是新记录，复用原 id 会撞主键
+        clean = [
+            {k: v for k, v in item.items() if k != "id"}
+            for item in payload.todos
+            if isinstance(item, dict)
+        ]
+        todo_service.replace_todos(session_id, clean)
+        return {
+            "available": True,
+            "saved": len(clean),
+            "todos": [t.to_dict() for t in todo_service.list_todos(session_id)],
+        }
+
     # 消息路由
     @router.get("/{session_id}/messages", summary="列出会话消息")
     async def list_messages(session_id: str) -> list[dict[str, Any]]:
@@ -210,3 +318,28 @@ def setup_session_routes(registry: ServiceRegistry) -> None:
             tokens=req.tokens,
         )
         return cast("dict[str, Any]", msg.to_dict())
+
+    @router.delete("/{session_id}/messages/{message_id}", summary="物理删除消息（可整轮）")
+    async def delete_message(
+        session_id: str, message_id: str, with_turn: bool = True
+    ) -> dict[str, Any]:
+        """删除一条消息。
+
+        `with_turn=true`（默认）且该消息是 user 消息时，删除**整轮问答**
+        （该提问 + 紧随的回答与工具消息）；否则只删这一条。
+        """
+        service = _get_session_service(registry)
+        if not service.get_session(session_id):
+            raise APIError("SESSION_NOT_FOUND", f"会话不存在: {session_id}", 404)
+        msg = service.get_message(message_id)
+        if msg is None or msg.session_id != session_id:
+            raise APIError("MESSAGE_NOT_FOUND", f"消息不存在: {message_id}", 404)
+
+        if with_turn and msg.role == "user":
+            removed = service.delete_turn(session_id, message_id)
+            if removed < 0:
+                raise APIError("MESSAGE_NOT_FOUND", f"消息不存在: {message_id}", 404)
+            return {"removed": removed, "mode": "turn"}
+
+        service.delete_message(message_id)
+        return {"removed": 1, "mode": "message"}

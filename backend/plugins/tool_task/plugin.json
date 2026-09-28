@@ -1,0 +1,10 @@
+{
+  "id": "tool_task",
+  "name": "Task Tool",
+  "version": "0.1.0",
+  "type": "tool",
+  "entry": "plugins.tool_task.main:TaskPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["storage"],
+  "description": "task 工具：派生上下文干净的子代理执行隔离子任务，只回传摘要"
+}

@@ -37,6 +37,10 @@ class CalculatorTool(ToolPlugin):
         return "calculator"
 
     @property
+    def risk_level(self) -> str:
+        return "read"
+
+    @property
     def description(self) -> str:
         return "计算数学表达式，支持加减乘除、幂、取模等。例如: 123*456、(1+2)*3"
 
@@ -89,6 +93,10 @@ class CurrentTimeTool(ToolPlugin):
     @property
     def tool_name(self) -> str:
         return "current_time"
+
+    @property
+    def risk_level(self) -> str:
+        return "read"
 
     @property
     def description(self) -> str:

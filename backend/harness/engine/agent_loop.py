@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from dataclasses import dataclass, field
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, cast
@@ -58,6 +59,8 @@ class AgentLoopConfig:
     max_retries: int = DEFAULT_MAX_RETRIES
     retry_base_delay: float = DEFAULT_RETRY_BASE_DELAY
     system_prompt: str = ""
+    # 限定注入的 Skill 目录：None=全部启用；[]=不注入；[...] = 仅这些
+    skill_allowlist: list[str] | None = None
 
 
 @dataclass
@@ -108,6 +111,10 @@ class AgentLoop:
         self._config = config or AgentLoopConfig()
         self._stopped = False
         self._on_tool_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None
+        # 人工确认回调：(tool_name, args, risk, reason) -> 是否放行（None 表示接入层不支持确认）
+        self._confirm_callback: (
+            Callable[[str, dict[str, Any], str, str], Awaitable[bool]] | None
+        ) = None
 
     @property
     def tool_registry(self) -> ToolRegistry:
@@ -132,6 +139,9 @@ class AgentLoop:
         model: str | None = None,
         budget: int | None = None,
         on_tool_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        confirm_callback: (
+            Callable[[str, dict[str, Any], str, str], Awaitable[bool]] | None
+        ) = None,
     ) -> AgentLoopResult:
         """执行一次完整的对话循环。
 
@@ -142,6 +152,9 @@ class AgentLoop:
             model: 模型名称（不指定用配置默认值）
             budget: token 预算（不指定用配置默认值）
             on_tool_event: 工具事件回调（每个工具执行完成后实时调用）
+            confirm_callback: 人工确认回调，签名
+                `(tool_name, args, risk, reason) -> 是否放行`。
+                未提供且策略要求确认时，按拒绝处理（安全默认）。
 
         Returns:
             AgentLoopResult
@@ -149,10 +162,27 @@ class AgentLoop:
         start_time = time.time()
         self._stopped = False
         self._on_tool_event = on_tool_event
+        self._confirm_callback = confirm_callback
         result = AgentLoopResult()
         used_model = model or self._config.model
         used_budget = budget or self._config.budget
         iterations = 0
+        trace_id = uuid.uuid4().hex[:16]
+
+        # 暴露本轮运行环境（供 task/子代理等工具读取 provider/model）
+        from harness.engine.runtime import AgentRuntime, reset_runtime, set_runtime
+
+        _rt_token = set_runtime(
+            AgentRuntime(
+                provider=provider,
+                model=used_model,
+                session_id=session_id,
+                services=self._services,
+                hooks=self._hooks,
+                tool_registry=self._tool_registry,
+                budget=used_budget,
+            )
+        )
 
         try:
             # 追加用户消息
@@ -175,7 +205,7 @@ class AgentLoop:
 
                 # 2. 调用模型（带重试）
                 response_content, response_tool_calls, call_usage = await self._call_model(
-                    provider, current_messages, used_model, session_id
+                    provider, current_messages, used_model, session_id, trace_id
                 )
                 # 累积所有模型调用的 token 用量（工具迭代可能调用多次）
                 result.usage = self._merge_usage(result.usage, call_usage)
@@ -203,7 +233,7 @@ class AgentLoop:
 
                 # 4. 执行工具调用
                 tool_results = await self._execute_tool_calls(
-                    response_tool_calls, session_id
+                    response_tool_calls, session_id, trace_id
                 )
 
                 result.tool_calls_made.extend(tool_results)
@@ -232,10 +262,45 @@ class AgentLoop:
             # 带有 tool_calls 但没有最终回答的 assistant 消息，
             # 以及对应的孤立 tool 消息。否则下次对话上下文会错乱。
             await self._cleanup_failed_round(session_id)
+        finally:
+            # 无论正常结束、异常还是被取消（CancelledError 属 BaseException，
+            # 上面的 except 捕获不到）都要复位运行环境，避免 ContextVar 泄漏
+            reset_runtime(_rt_token)
 
         result.iterations = iterations
         result.latency_ms = int((time.time() - start_time) * 1000)
+
+        # 记录一次运行的 trace span（可观测性；无 tracing 订阅者时开销极小）
+        await self._emit_span(
+            trace_id=trace_id,
+            parent_id=None,
+            session_id=session_id,
+            name="agent_run",
+            kind="run",
+            status="error" if result.error else "ok",
+            duration_ms=result.latency_ms,
+            iterations=result.iterations,
+            total_tokens=(result.usage or {}).get("total_tokens", 0),
+            model=used_model,
+            error=result.error or "",
+        )
         return result
+
+    async def _emit_span(self, **fields: Any) -> None:
+        """把一次 span 发布到事件总线（topic: trace.span）。
+
+        优雅降级：EventBus 未注册或无 tracing 订阅者时静默跳过，
+        绝不影响主对话流程。
+        """
+        try:
+            from harness.kernel.eventbus import EventBus
+
+            if not self._services.has(EventBus):
+                return
+            bus: EventBus = self._services.get(EventBus)
+            await bus.publish("trace.span", fields)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("发送 trace span 失败（已忽略）: %s", e)
 
     async def _build_context(
         self, session_id: str, budget: int, model: str
@@ -272,24 +337,39 @@ class AgentLoop:
             context_service.build(session_id, budget=budget, model=model),
         )
 
+        # 前置系统消息：用户自定义提示词 → 当前时间 → Skill 目录（L1）
+        # 顺序即优先级，全部放在会话历史之前
+        prefix_messages: list[dict[str, Any]] = []
+
+        # 注入用户自定义系统提示词（来自会话级设置）
+        if self._config.system_prompt:
+            prefix_messages.append(
+                {"role": "system", "content": self._config.system_prompt}
+            )
+
         # 注入当前日期时间的系统提示（模型本身不知道当前日期）
         from datetime import datetime
 
         now = datetime.now()
         weekday_cn = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"][now.weekday()]
-        date_prompt = {
-            "role": "system",
-            "content": f"当前时间: {now.strftime('%Y年%m月%d日 %H:%M')} {weekday_cn}。",
-        }
-        # 插到 system 消息之后的最前面
-        messages.insert(0, date_prompt)
-
-        # 注入用户自定义系统提示词（来自会话级设置）
-        if self._config.system_prompt:
-            messages.insert(0, {
+        prefix_messages.append(
+            {
                 "role": "system",
-                "content": self._config.system_prompt,
-            })
+                "content": f"当前时间: {now.strftime('%Y年%m月%d日 %H:%M')} {weekday_cn}。",
+            }
+        )
+
+        # 注入 Skill 目录（L1：仅 name + description，按需加载）
+        skill_catalog = self._render_skill_catalog()
+        if skill_catalog:
+            prefix_messages.append({"role": "system", "content": skill_catalog})
+
+        # 注入长期记忆（跨会话的偏好 / 事实，最近若干条）
+        memory_hint = self._render_memory_hint()
+        if memory_hint:
+            prefix_messages.append({"role": "system", "content": memory_hint})
+
+        messages = prefix_messages + messages
 
         # post_context_build 钩子
         build_ctx.messages = messages
@@ -307,6 +387,75 @@ class AgentLoop:
             messages = post_result.data.messages or messages
 
         return messages
+
+    def _check_permission(self, tool_name: str) -> Any | None:
+        """查询权限服务决策。
+
+        服务未注册时返回 None（视为放行），保证不含权限插件时行为不变。
+        """
+        try:
+            from harness.modules.permission_manager.service import PermissionService
+
+            if not self._services.has(PermissionService):
+                return None
+            service: PermissionService = self._services.get(PermissionService)
+            return service.decide(tool_name)
+        except Exception as e:
+            logger.debug("权限检查失败（已放行）: %s", e)
+            return None
+
+    async def _request_confirm(
+        self, tool_name: str, args: dict[str, Any], risk: str, reason: str
+    ) -> bool:
+        """请求人工确认。
+
+        接入层未提供回调时返回 False —— 需要确认却无人可问，按拒绝处理。
+        """
+        if self._confirm_callback is None:
+            logger.warning(
+                "工具 %s 需人工确认，但接入层未提供确认回调，已按拒绝处理",
+                tool_name,
+            )
+            return False
+        try:
+            return bool(
+                await self._confirm_callback(tool_name, args, risk, reason)
+            )
+        except Exception as e:
+            logger.error("人工确认流程异常，已按拒绝处理: %s", e)
+            return False
+
+    def _render_skill_catalog(self) -> str:
+        """渲染 Skill 目录（L1）作为系统提示。
+
+        优雅降级：Skill 服务不可用时返回空串，不影响主对话流程。
+        """
+        try:
+            from harness.modules.skill_manager.service import SkillService
+
+            if not self._services.has(SkillService):
+                return ""
+            service: SkillService = self._services.get(SkillService)
+            return service.render_catalog(names=self._config.skill_allowlist)
+        except Exception as e:
+            logger.debug("渲染 Skill 目录失败（已降级跳过）: %s", e)
+            return ""
+
+    def _render_memory_hint(self) -> str:
+        """渲染长期记忆片段作为系统提示。
+
+        优雅降级：记忆服务不可用或无记忆时返回空串。
+        """
+        try:
+            from harness.modules.memory_manager.service import MemoryService
+
+            if not self._services.has(MemoryService):
+                return ""
+            service: MemoryService = self._services.get(MemoryService)
+            return service.render_hint()
+        except Exception as e:
+            logger.debug("渲染长期记忆失败（已降级跳过）: %s", e)
+            return ""
 
     @staticmethod
     def _merge_usage(
@@ -348,6 +497,7 @@ class AgentLoop:
         messages: list[dict[str, Any]],
         model: str,
         session_id: str = "",
+        trace_id: str = "",
     ) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None]:
         """调用模型并解析响应（带重试）。
 
@@ -392,6 +542,7 @@ class AgentLoop:
                 # 合并 name 和 arguments 片段，否则参数永远不完整。
                 tool_calls_acc: dict[int, dict[str, Any]] = {}
 
+                call_start = time.time()
                 async for chunk in provider.chat(
                     messages=model_request.messages,
                     model=model_request.model,
@@ -445,6 +596,24 @@ class AgentLoop:
                     content = post_result.data.response or content
                     all_tool_calls = post_result.data.tool_calls or all_tool_calls
 
+                await self._emit_span(
+                    trace_id=trace_id,
+                    parent_id=trace_id or None,
+                    session_id=session_id,
+                    name="model_call",
+                    kind="model",
+                    status="ok",
+                    duration_ms=int((time.time() - call_start) * 1000),
+                    prompt_tokens=(usage or {}).get("prompt_tokens", 0),
+                    completion_tokens=(usage or {}).get("completion_tokens", 0),
+                    total_tokens=(usage or {}).get("total_tokens", 0),
+                    output_preview=content[:200],
+                    tool_calls=",".join(
+                        tc.get("function", {}).get("name", "")
+                        for tc in all_tool_calls
+                    ),
+                )
+
                 return content, all_tool_calls, usage
 
             except Exception as e:
@@ -469,6 +638,7 @@ class AgentLoop:
         self,
         tool_calls: list[dict[str, Any]],
         session_id: str,
+        trace_id: str = "",
     ) -> list[dict[str, Any]]:
         """执行工具调用列表。"""
         results: list[dict[str, Any]] = []
@@ -518,19 +688,52 @@ class AgentLoop:
             ):
                 tool_ctx = pre_result.data
 
+            # 权限校验：拒绝 / 需人工确认 / 放行
+            # 注意：被拒绝时也必须以错误形式回填 tool 消息，
+            # 否则会话末尾会留下"带 tool_calls 却无对应 tool 响应"的
+            # assistant 消息，下一轮请求会被 API 以 400 拒绝。
+            blocked_error: str | None = None
+            permission_decision = self._check_permission(tool_ctx.tool_name)
+            if permission_decision is not None and permission_decision.denied:
+                blocked_error = f"权限拒绝: {permission_decision.reason}"
+                logger.warning(
+                    "工具调用被权限拒绝: %s — %s",
+                    tool_ctx.tool_name,
+                    permission_decision.reason,
+                )
+            elif permission_decision is not None and permission_decision.needs_confirm:
+                approved = await self._request_confirm(
+                    tool_ctx.tool_name,
+                    tool_ctx.args,
+                    permission_decision.risk,
+                    permission_decision.reason,
+                )
+                if not approved:
+                    blocked_error = "用户拒绝执行该工具调用"
+                    logger.info("用户拒绝工具调用: %s", tool_ctx.tool_name)
+
             # 执行工具
+            tool_start = time.time()
             tool_result = ""
             tool_error: str | None = None
 
-            try:
-                tool = self._tool_registry.get(tool_ctx.tool_name)
-                tool_result = await tool.execute(tool_ctx.args)
-            except ToolNotFoundError:
-                tool_error = f"工具未找到: {tool_ctx.tool_name}"
-                logger.warning(tool_error)
-            except Exception as e:
-                tool_error = f"工具执行异常: {e}"
-                logger.error(tool_error)
+            if blocked_error is not None:
+                tool_error = blocked_error
+            else:
+                try:
+                    tool = self._tool_registry.get(tool_ctx.tool_name)
+                    # 需要会话上下文的工具：注入 session_id（不覆盖已有值）
+                    if getattr(tool, "needs_session", False) and "session_id" not in (
+                        tool_ctx.args or {}
+                    ):
+                        tool_ctx.args = {**tool_ctx.args, "session_id": session_id}
+                    tool_result = await tool.execute(tool_ctx.args)
+                except ToolNotFoundError:
+                    tool_error = f"工具未找到: {tool_ctx.tool_name}"
+                    logger.warning(tool_error)
+                except Exception as e:
+                    tool_error = f"工具执行异常: {e}"
+                    logger.error(tool_error)
 
             tool_ctx.result = tool_result
             tool_ctx.error = tool_error
@@ -556,6 +759,21 @@ class AgentLoop:
                     "result": tool_ctx.result,
                     "error": tool_ctx.error,
                 }
+            )
+
+            await self._emit_span(
+                trace_id=trace_id,
+                parent_id=trace_id or None,
+                session_id=session_id,
+                name=f"tool:{tool_ctx.tool_name}",
+                kind="tool",
+                status="error" if tool_ctx.error else "ok",
+                duration_ms=int((time.time() - tool_start) * 1000),
+                input_preview=json.dumps(
+                    tool_ctx.args, ensure_ascii=False, default=str
+                )[:200],
+                output_preview=(tool_ctx.result or "")[:200],
+                error=tool_ctx.error or "",
             )
 
             # 实时推送工具事件回调

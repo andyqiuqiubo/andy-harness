@@ -1,0 +1,11 @@
+{
+  "id": "permission_manager",
+  "name": "Permission Manager",
+  "version": "0.1.0",
+  "type": "service",
+  "entry": "plugins.permission_manager.main:PermissionManagerPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["filesystem"],
+  "core": true,
+  "description": "工具权限分级与人工确认（Human-in-the-loop）服务插件"
+}
