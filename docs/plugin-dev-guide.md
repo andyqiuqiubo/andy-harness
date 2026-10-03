@@ -52,6 +52,16 @@ backend/plugins/tool_my_tool/
 | `permissions` | `network`（网络访问）/ `filesystem`（文件访问）等 |
 | `core_api` | 语义化版本约束 |
 
+> ⚠️ **写插件时最容易搞错的一件事：版本号有三套，别混。**
+>
+> | 对象 | 含义 | 你的插件该怎么填 |
+> |---|---|---|
+> | 清单里的 `"version": "0.1.0"` | **插件自身版本** | 按你自己的迭代节奏递增；**不要**跟着产品版本改成 `1.0.0` |
+> | `core_api: ">=0.1.0 <1.0.0"` | **能运行的内核 API 区间** | 与后端 `backend/harness/kernel/loader.py` 的 `CORE_API_VERSION`（当前 `0.1.0`）对齐即可，通常照抄内置插件的值 |
+> | 产品版本 `1.0.0` | **andy-harness 本身的版本** | 与你无关，写在 `pyproject.toml` / `package.json` 里 |
+>
+> 加载器会拿 `core_api` 与 `CORE_API_VERSION` 比较，不兼容就**直接拒绝加载**并在日志里打印 `core_api 不兼容`。所以升级内核时要同步更新所有清单的 `core_api` 区间。
+
 ### 1.3 main.py 代码模板
 
 ```python

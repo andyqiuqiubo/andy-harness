@@ -88,6 +88,12 @@
 - `core_api` 做语义化版本兼容校验，内核升级时可明确拒绝不兼容插件。
 - `permissions` 声明式授权：网络、文件、密钥读取等。
 
+> ⚠️ **两套版本号不要混淆**（v1.0.0 起明确）：
+> - **产品版本 = `1.0.0`**：出现在 `backend/pyproject.toml`、`frontend/package.json`、`desktop/package.json`、`desktop/src-tauri/tauri.conf.json` 与 `Cargo.toml`，以及 FastAPI 应用与 MCP `clientInfo`。
+> - **内核 API 版本 = `CORE_API_VERSION`（`kernel/loader.py`，当前 `0.1.0`）**：与产品版本**无关**，只表示 `contracts/` 契约的兼容代次；插件通过 `core_api` 声明自己能跑的区间。
+> - **插件版本（清单里的 `"version"`，当前 `0.1.0`）**：同样与产品版本解耦，属于插件自身的迭代号；它**不随产品版本升级而改动**。
+> - 升级内核时若把 `CORE_API_VERSION` 提升到 `1.0.0`，现有清单里 `<1.0.0` 的上界会让**全部插件校验失败**（应用仍能启动，但插件全部加载失败）。改内核版本前必须同步更新所有 `core_api` 区间。
+
 ### 3.3 生命周期
 
 ```
@@ -412,7 +418,7 @@ andy-harness/
 │   │   ├── tool_code_runner/  tool_web_search/  tool_web_fetch/
 │   │   ├── tool_theme_switcher/  tool_ip_lookup/
 │   │   └── hello_plugin/
-│   └── tests/               # pytest 测试（20+ 测试文件）
+│   └── tests/               # pytest 测试（59 个测试模块 / 593 个用例）
 ├── frontend/
 │   ├── package.json         # vue3/vite/pinia/vue-router/markdown-it/highlight.js
 │   └── src/

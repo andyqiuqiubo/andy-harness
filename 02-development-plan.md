@@ -1,6 +1,6 @@
 # andy-harness 分阶段开发计划
 
-> 本文档记录 andy-harness 项目的分阶段开发计划。P0–P9 已全部完成并通过验收，当前版本为 v0.1.0。每阶段包含目标、任务清单和完成标准（DoD）。
+> 本文档记录 andy-harness 项目的分阶段开发计划。P0–P9 已全部完成并通过验收，当前版本为 v1.0.0（开发者预览版）。每阶段包含目标、任务清单和完成标准（DoD）。
 
 ---
 
@@ -233,17 +233,17 @@
 - [x] **插件开发指南**（docs/plugin-dev-guide.md）：后端工具/Provider 插件 + 前端 UI 插件 + 在线安装示例 + 调试技巧
 - [x] 示例：后端工具插件（tool-web-search / tool-web-fetch / tool-theme-switcher / tool-ip-lookup）+ 前端 UI 插件（hello）
 - [x] docker-compose 一键部署（含后端/前端 Dockerfile）
-- [x] 版本号 v0.1.0、CHANGELOG.md、Roadmap
+- [x] 版本号 v1.0.0、CHANGELOG.md、Roadmap
 - [x] README 打磨：徽章、功能特性、快速开始、使用指南、项目结构、FAQ
 - [x] issue / PR 模板、贡献指南（CONTRIBUTING.md）、行为准则
-- [x] 测试覆盖率：141 个测试全部通过（内核 / API / 插件 / 沙箱 / 会话 / 上下文等）
+- [x] 测试覆盖率：**593 个后端用例 + 43 个前端用例全部通过**（内核 / API / 插件 / 沙箱 / 会话 / 上下文 / 认证 / MCP / 编排 / 评测等；2026-10-01 复核实测）
 - [x] CI 发布工作流（.github/workflows/ci.yml）
 
 **完成标准（DoD）**
 1. 找一台干净机器按 README 操作，10 分钟内跑通对话 ✓
 2. 按插件开发指南从零写出一个新工具插件（后端）并运行成功 ✓（在线安装示例）
 3. 按插件开发指南从零写出一个新 UI 插件（前端）并运行成功 ✓（hello 插件）
-4. v0.1.0 发布：CI 绿、141 个测试全通过、文档链接全部有效 ✓
+4. v1.0.0 发布：CI 绿（后端 `ruff check` / `ruff format --check` / `mypy harness` / `pytest`；前端 `eslint` / `vitest` / `vue-tsc` / `vite build`）、593 个后端用例与 43 个前端用例全通过、文档链接全部有效 ✓（2026-10-01 复核）
 
 ---
 

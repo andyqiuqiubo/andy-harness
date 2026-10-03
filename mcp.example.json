@@ -8,7 +8,7 @@
     },
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "F:/traeprojects/andy-harness-gy"],
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
       "type": "stdio",
       "description": "本地文件系统 MCP（示例，默认关闭）",
       "disabled": true
