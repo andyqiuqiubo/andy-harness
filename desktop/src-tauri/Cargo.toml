@@ -1,0 +1,24 @@
+[package]
+name = "andy-harness-gy"
+version = "1.0.0"
+description = "Desktop shell for andy-harness"
+authors = ["andy-harness"]
+edition = "2021"
+rust-version = "1.77.2"
+
+# 库名供 main.rs 调用；Tauri 2 模板默认 lib + bin 结构。
+[lib]
+name = "andy_harness_gy_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# 默认保持空，Tauri 约定的自定义特性可在此添加。
+default = []
