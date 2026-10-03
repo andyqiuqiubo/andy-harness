@@ -83,10 +83,13 @@
 
 ## 快速开始
 
+> [!TIP]
+> **二次开发者 · 最快跑通路径（Windows 实测）**：把 <https://github.com/andyqiuqiubo/andy-harness> 下载（`git clone` 或 Download ZIP）并部署到你的本地项目目录 → 装依赖（`cd backend && uv sync --extra dev`；`cd frontend && pnpm install`）→ 构建前端产物（`cd frontend && pnpm build`）→ 双击 **`start-all.bat`** 自动拉起前后端并打开浏览器 <http://localhost:5173>，即可正确运行。首次安装约 16 分钟 / 磁盘约 2.1 GB；逐条命令、耗时基线、磁盘隔离与 14 条踩坑速查见下方「🧪 实测运行指南」章节。
+
 ### 环境要求
 
 - Python 3.11+
-- Node.js 22+
+- Node.js 22.12+（或 20.19+；Vite 8 的 engines 要求 `^20.19.0 || >=22.12.0`，Node 22.0~22.11 不满足，实测 Node 24 正常）
 - pnpm 10+
 - uv（Python 包管理器）
 - **Rust 工具链（仅桌面壳需要）**：用 [rustup](https://rustup.rs/) 安装稳定版（`rustc` ≥ 1.77.2）；只跑浏览器模式（`start-all.bat` / `make backend` + `make frontend`）可跳过
@@ -95,20 +98,19 @@
 ### 安装
 
 ```bash
-# 克隆仓库
-git clone https://github.com/andyqiuqiubo/andy-harness.git
+# 克隆仓库（仓库含 gif/ videos/ 演示资源约 47 MB，浅克隆更快；想保留完整历史去掉 --depth 1）
+git clone --depth 1 https://github.com/andyqiuqiubo/andy-harness.git
 cd andy-harness
 
-# 一键安装前后端依赖
-make install
+# 安装前后端依赖（Windows 主路径，无需 make）
+cd backend && uv sync --extra dev     # 生成 backend\.venv；首次实测约 16 分钟 / 54 个包
+cd frontend && pnpm install           # 生成 frontend\node_modules；实测约 2 分钟 / 253 个包
+
+# 构建一次前端产物（后端 pytest 与桌面壳都依赖 frontend/dist）
+cd frontend && pnpm build
 ```
 
-以上命令等价于：
-
-```bash
-cd backend && uv sync --extra dev
-cd frontend && pnpm install
-```
+> 已装 GNU Make 的环境（Linux / macOS，或 Windows 上 `choco install make`）也可用 `make install` 一键完成前两步；`make backend` / `make frontend` 分别等价于启动后端 / 前端。Windows 不自带 make，实测建议直接用上面的等价命令（详见 FAQ 第 2 条）。
 
 > 若要启用 **Computer Use 桌面操控**，后端需额外安装桌面依赖：`cd backend && uv sync --extra dev --extra desktop`（或在已装好的 venv 中再执行 `uv sync --extra desktop`）。未安装时 Computer Use 工具会优雅降级为「桌面不可用：未安装 pyautogui/mss」。
 
@@ -126,14 +128,16 @@ DEEPSEEK_API_KEY=sk-your-api-key-here
 
 ### 启动开发服务器
 
-打开两个终端分别执行：
+**方式 A（Windows 推荐）**：双击根目录 **`start-all.bat`** —— 自动拉起前后端（两个窗口）并自动打开浏览器；停止双击 `stop-all.bat`。注意它**不会自动安装依赖**，只复用已有的 `backend/.venv` 与 `frontend/node_modules`。
+
+**方式 B（两个终端 / 跨平台）**：
 
 ```bash
 # 终端 1：启动后端（端口 8000）
-make backend
+make backend     # 或：cd backend && uv run uvicorn harness.main:app --reload --host 127.0.0.1 --port 8000
 
 # 终端 2：启动前端（端口 5173）
-make frontend
+make frontend    # 或：cd frontend && pnpm dev
 ```
 
 访问：
@@ -177,12 +181,161 @@ cd desktop && pnpm build            # 产物在 desktop/src-tauri/target/release
 ### Docker 部署
 
 ```bash
-docker-compose up -d
+docker compose up -d     # Compose V2 插件（Docker Desktop / 新版 CLI，推荐）
+docker-compose up -d     # Compose V1 旧独立命令
 ```
 
 启动后访问 http://localhost:5173 。**安全说明**：`docker-compose.yml` 将端口绑定到 `127.0.0.1`（仅本机可访问，不暴露局域网）；后端镜像内置插件市场 / 技能市场 / MCP 市场的包（`backend/marketplace`、`backend/skills`、`backend/mcp_marketplace`），开箱即可从设置页一键安装。
 
-> ⚠️ **已知限制（预览版）**：前端镜像目前用静态服务器 `serve -s dist` 托管，**未配置 `/api` 与 `/ws` 反向代理**，因此容器模式下浏览器能打开页面但连不上后端（接口返回 HTML 兜底、WebSocket 无法握手）。Docker 路径**尚未端到端验证**，当前请优先使用 `make install` + `make backend` / `start-all.bat` 这两条已验证路径；如需容器化联调，请自行给前端加一层 nginx 反向代理（`location /api/ → backend:8000`、`location /ws/ → backend:8000` 并透传 `Upgrade` / `Connection` 头）。
+> ⚠️ **已知限制（预览版）**：前端镜像目前用静态服务器 `serve -s dist` 托管，**未配置 `/api` 与 `/ws` 反向代理**，因此容器模式下浏览器能打开页面但连不上后端（接口返回 HTML 兜底、WebSocket 无法握手）。Docker 路径**尚未端到端验证**，当前请优先使用 `uv sync` + `pnpm install` + `start-all.bat` 这条已验证路径；如需容器化联调，请自行给前端加一层 nginx 反向代理（`location /api/ → backend:8000`、`location /ws/ → backend:8000` 并透传 `Upgrade` / `Connection` 头）。
+
+---
+
+## 🧪 实测运行指南（Windows 实机复现，含磁盘占用与踩坑速查）
+
+> 本节所有数字都来自一次**全新克隆**的干净环境（环境见下表）。先看「实测基线」了解要花多少时间和磁盘，再照「完整流程」复制粘贴。
+
+### 实测基线（2026-10-03，Windows 10）
+
+| 项目 | 实测值 |
+|---|---|
+| 实测工具链 | Python **3.14.4** / uv **0.10.12** / Node **24.15.0** / pnpm **10.32.1** / Git 2.23.0 |
+| 仓库体积 | GitHub 报告 **≈47 MB**（含 `gif/`、`videos/`，508 个文件） |
+| `uv sync --extra dev` | **54 个包，耗时 16 分 00 秒**（网络一般时的主要耗时点） |
+| `pnpm install` | **253 个包，耗时 1 分 51 秒** |
+| 安装后磁盘占用 | 前端 `node_modules` **802.9 MB**；整个项目目录（含缓存）**约 2.1 GB** |
+| 启动耗时 | 后端就绪 < 10 秒；前端 Vite 就绪约 1 秒 |
+| 质量门禁 | `ruff check` ✅ / `ruff format --check` ✅（264 文件）/ `mypy --strict` ✅（**104 个源文件**）/ `eslint` ✅ / `vitest` ✅（**43 个用例**）/ `pnpm build` ✅ |
+| `pytest` | **593 passed, 2 skipped**（⚠️ 必须先 `pnpm build`，否则多 1 个 failed，见踩坑 8） |
+| 插件加载 | 启动日志：**34 个插件**已加载并激活 |
+
+### 完整流程（Windows PowerShell，复制即可）
+
+```powershell
+# ── 0. 一次性前置检查（缺哪个装哪个，安装命令见本节末尾） ──
+uv --version          # 需要 uv
+node --version        # 需要 Node 22.12+ / 20.19+
+pnpm --version        # 需要 pnpm 9+（CI 用 10）
+git --version
+
+# ── 1. 克隆（仓库含 gif/videos，用浅克隆更快） ──
+git clone --depth 1 --single-branch https://github.com/andyqiuqiubo/andy-harness.git
+cd andy-harness
+
+# ── 2. 安装前后端依赖（仓库不含 .venv / node_modules，必须先装） ──
+cd backend
+uv sync --extra dev            # 生成 backend\.venv；首次较慢（实测 16 分钟）
+cd ..\frontend
+pnpm install                   # 生成 frontend\node_modules
+
+# ── 3. 构建一次前端产物（重要！后端 pytest 与桌面壳都依赖 frontend\dist） ──
+pnpm build                     # vue-tsc + vite build，实测约 3 秒
+
+# ── 4. 启动（二选一） ──
+cd ..                          # 回到仓库根目录
+.\start-all.bat                # 方式 A：一键拉起前后端（两个窗口），并自动开浏览器
+# 方式 B：分别启动（便于看日志）
+#   cd backend  ; .\.venv\Scripts\python.exe -m uvicorn harness.main:app --reload --host 127.0.0.1 --port 8000
+#   cd frontend ; pnpm dev
+```
+
+启动后访问（**注意用 `localhost`，不要用 `127.0.0.1`**，原因见踩坑 9）：
+
+| 用途 | 地址 |
+|---|---|
+| 前端界面 | http://localhost:5173 |
+| 后端健康检查 | http://localhost:8000/api/health → 期望 `{"status":"ok"}` |
+| API 文档（Swagger） | http://localhost:8000/docs |
+
+**30 秒自检（可选，确认真的跑起来了）**：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/api/health           # {"status":"ok"}
+(Invoke-RestMethod http://127.0.0.1:8000/api/plugins).Count  # 34
+netstat -ano | findstr ":8000 :5173" | findstr LISTENING     # 两个端口都在监听
+```
+
+停止：双击 `stop-all.bat`（按「窗口标题 + 端口 8000/5173」双策略清理）。
+
+### 想装到指定盘、不污染 C 盘？按下面做
+
+本项目默认会把**下载缓存**放到 C 盘用户目录，即使仓库放在 D/E 盘也一样。若你希望「代码 + 依赖 + 缓存」全部留在项目目录（本次实测就是这么做的，C 盘零写入），**先设置环境变量再做任何安装**：
+
+```powershell
+# 一次性把缓存/临时目录重定向到项目目录（把 E:\projtects 换成你自己的项目目录）
+$root = 'E:\projtects'
+$env:UV_CACHE_DIR          = "$root\.env\uv-cache"    # uv 下载缓存（默认 %LOCALAPPDATA%\uv\cache）
+$env:UV_PYTHON_INSTALL_DIR = "$root\.env\uv-python"   # uv 托管 Python（默认 %APPDATA%\uv\python）
+$env:UV_TOOL_DIR           = "$root\.env\uv-tools"
+$env:UV_TOOL_BIN_DIR       = "$root\.env\uv-bin"
+$env:PIP_CACHE_DIR         = "$root\.env\pip-cache"
+$env:npm_config_cache      = "$root\.env\npm-cache"   # npm 缓存
+$env:npm_config_tmp        = "$root\.env\tmp"
+$env:TMP = $env:TEMP       = "$root\.env\tmp"         # 临时目录（默认 %LOCALAPPDATA%\Temp）
+
+cd backend     ; uv sync --extra dev
+cd ..\frontend ; pnpm install --store-dir ..\.env\pnpm-store   # 关键：pnpm 内容仓库默认在 C 盘
+pnpm store path                                                # 校验：应输出你指定的盘
+```
+
+| 内容 | 默认位置（C 盘） | 重定向开关 |
+|---|---|---|
+| uv 下载缓存 | `%LOCALAPPDATA%\uv\cache` | 环境变量 `UV_CACHE_DIR` |
+| uv 托管 Python | `%APPDATA%\uv\python` | 环境变量 `UV_PYTHON_INSTALL_DIR` |
+| pnpm 内容仓库 (store) | `%LOCALAPPDATA%\pnpm\store` | `pnpm install --store-dir <路径>` 或环境变量 `npm_config_store_dir` |
+| npm 缓存 | `%APPDATA%\npm-cache` | 环境变量 `npm_config_cache` |
+| 系统临时目录 | `%LOCALAPPDATA%\Temp` | 环境变量 `TMP` / `TEMP` |
+| 后端虚拟环境 | `backend/.venv`（**已在项目内**） | 无需设置 |
+| 前端依赖 | `frontend/node_modules`（**已在项目内**） | 无需设置 |
+| 运行数据（SQLite / 附件 / 密钥） | `backend/data/`（**已在项目内**） | `HARNESS_DB_PATH` 等（桌面壳模式见桌面壳章节） |
+
+> ⚠️ uv 的缓存重定向必须用**环境变量**：`uv sync` 没有 `--python-install-dir` 参数（实测报 `unexpected argument '--python-install-dir' found`）。
+
+### 首次启动看到这些日志，**不是报错**
+
+下面三行是「未配置 / 能力降级」提示，不影响正常对话（实测确认）：
+
+```
+Telegram 渠道已注册但未配置 HARNESS_TELEGRAM_BOT_TOKEN，未启动
+Computer Use：真实桌面控制不可用（缺 pyautogui/mss 或无显示器）...文件/命令能力仍可用。
+Jev Manager 已激活，但未配置 API Key。请在设置页面配置 jev_manager 的 api_key...
+```
+
+消除办法：Computer Use 执行 `uv sync --extra dev --extra desktop`；Jev 在「设置 → 插件管理 → Jev Manager」填 Key；Telegram 设置 `HARNESS_TELEGRAM_BOT_TOKEN`。
+
+### 实测踩坑记录（现象 → 原因 → 解决）
+
+| # | 现象 | 原因 | 解决 |
+|---|---|---|---|
+| 1 | `git clone` 卡很久甚至超时 | 仓库含 `gif/`、`videos/`，约 47 MB | 浅克隆：`git clone --depth 1 --single-branch ...` |
+| 2 | `uv sync` 报 `unexpected argument '--python-install-dir' found` | 该名字是**环境变量**，不是 `uv sync` 的参数 | 用 `$env:UV_PYTHON_INSTALL_DIR = ...` |
+| 3 | `uv sync` 第一次跑了 16 分钟 | 要下载 54 个包（numpy/matplotlib/mypy/ruff 各 10 MB 级） | 属正常；国内可加 `$env:UV_DEFAULT_INDEX='https://pypi.tuna.tsinghua.edu.cn/simple'` |
+| 4 | C 盘悄悄涨了几百 MB | uv / pnpm / npm / 临时目录默认都落 C 盘用户目录 | 按上一节把缓存重定向到项目目录 |
+| 5 | 想改用 `npm install` | 仓库用 `pnpm-lock.yaml` 锁版本，npm 会重新解析依赖 | 坚持用 pnpm 9+（CI 用 10） |
+| 6 | `make install` 报 `command not found` | Windows / Git for Windows 不自带 `make` | 不装 make，直接用 `uv sync` + `pnpm install`；或 `choco install make` |
+| 7 | `make clean` 报错 | Makefile 里用的是 `rm -rf`，Windows 无此命令 | 手动删 `backend\.venv`、`frontend\node_modules`、`frontend\dist` 等 |
+| 8 | 干净克隆后 `pytest` 出现 **1 failed** | `test_desktop_shell.py::test_tauri_conf_is_valid_and_grounded` 断言 `frontend/dist` 存在，此时尚未构建前端 | 先 `cd frontend && pnpm build` 再跑 `pytest` → 实测变为 **593 passed, 2 skipped** |
+| 9 | 浏览器打不开 `http://127.0.0.1:5173` | Vite 默认只绑 `localhost`，Windows 上解析为 IPv6 `[::1]` | 地址栏用 **`http://localhost:5173`**；或启动时显式 `pnpm exec vite --host 127.0.0.1` |
+| 10 | 按「Node.js 22+」装了 Node 22.0 却起不来 | Vite 8 的真实要求是 `^20.19.0 \|\| >=22.12.0` | 用 Node **22.12+**（或 20.19+）；实测 Node 24 正常 |
+| 11 | `start-all.bat` 一闪就退，提示「系统找不到指定的路径」 | 没先装依赖（仓库不含 `.venv` / `node_modules`） | 先执行安装步骤；`start-all.bat` **不会**自动装依赖，只复用已有环境 |
+| 12 | 提示 `Port 8000 is already in use`（或 5173） | 有旧实例仍在运行 | 先双击 `stop-all.bat`，再启动 |
+| 13 | 界面能打开但发消息失败 | 没配模型 API Key | 「设置 → Providers → 编辑 DeepSeek → 填 Key 并启用」；仅内置 DeepSeek 支持环境变量 `DEEPSEEK_API_KEY` |
+| 14 | 桌面壳模式看不到浏览器模式的历史会话 | 两者数据目录不同（桌面壳 `%APPDATA%\andy-harness`，浏览器模式 `backend/data/`） | 属设计如此，详见「桌面壳（Tauri）启动」章节 |
+
+### 前置工具怎么装
+
+```powershell
+# uv（Python 包管理器）——任选一种
+winget install --id=astral-sh.uv -e
+# 或：powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+# 或：pip install uv
+
+# Node.js（建议 22.12+ 或 24 LTS）：winget install OpenJS.NodeJS.LTS
+# pnpm：npm i -g pnpm      （或 corepack enable ; corepack prepare pnpm@10 --activate）
+
+# 校验
+uv --version ; node --version ; pnpm --version
+```
 
 ---
 
@@ -199,6 +352,8 @@ cd frontend && pnpm install            # 生成 node_modules
 ```
 
 直接双击 `start-all.bat` 而没装依赖，Windows 会弹出一个黑色窗口并瞬间报「系统找不到指定的路径」——这不是代码 bug，就是依赖没装。
+
+另外，**文档 / 图片上传依赖 `python-multipart`**——缺失时上传接口会失败；`start-all.bat` 启动时会专门检测 `import multipart` 并给出修复提示，正常执行 `uv sync --extra dev` 会自动装上。
 
 ### 2. Windows 上 `make install` 报 `command not found: make`
 Git for Windows 自带的 bash **不带 make**。两种解法：
@@ -367,7 +522,7 @@ andy-harness/
 │   │   ├── infra/     # L5 SQLite / 加密 / Repository / 安全原语
 │   │   ├── eval/      # 回归评测框架（python -m harness.eval）
 │   │   └── cli/       # 命令行入口
-│   ├── plugins/       # 33 个内置插件（自动扫描，含 provider / tool / service / channel）
+│   ├── plugins/       # 34 个内置插件（自动扫描，含 provider / tool / service / channel）
 │   ├── marketplace/   # 插件市场的可安装包（6 个）
 │   ├── skill_marketplace/  # 技能市场（6 个 SKILL.md 技能包）
 │   ├── mcp_marketplace/    # MCP 市场（5 个免鉴权公开服务配置）
