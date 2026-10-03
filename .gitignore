@@ -43,6 +43,7 @@ frontend/.vite/
 *.swp
 *.swo
 *~
+.trae/
 
 # IDE 内部记忆目录
 .workbuddy/
@@ -71,9 +72,17 @@ workspace/
 
 # 后端数据目录
 backend/data/
+# P0-5 修复前 bug 曾把 settings 写到这里，保留忽略作为兜底
+backend/harness/data/
 
 # 冒烟测试一次性数据库
 backend/.smoke-test.db
+
+# 本地冒烟 / 端到端脚本与临时产物（严禁上传）
+smoke.bat
+backend/scripts/
+backend/mcp.smoke.json
+frontend/.dev_*.txt
 
 # MCP 配置（可能含鉴权 header，不入库；示例见 mcp.example.json）
 mcp.json
@@ -90,6 +99,13 @@ frontend/dist/
 
 # 类型检查误产出的 .js（src 为纯 TS/Vue，出现即会遮蔽 .ts 源）
 frontend/src/**/*.js
+
+# Tauri 桌面壳构建产物
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+
+# Tauri dev 日志（仓库根目录无扩展名大写 Vite 文件，为 `tauri dev` 运行产物，非前端 Vite 构建器）
+/Vite
 
 # 临时文件
 *.tmp

@@ -28,7 +28,7 @@ assignees: ''
 
 - OS: [如 Windows 11 / macOS 14 / Ubuntu 22.04]
 - 浏览器: [如 Chrome 120]
-- andy-harness 版本: [如 0.1.0]
+- andy-harness 版本: [如 1.0.0]
 - 后端日志（如有报错）:
 
 ## 截图

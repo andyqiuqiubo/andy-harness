@@ -7,7 +7,7 @@ install:
 
 # 启动后端开发服务器（端口 8000）
 backend:
-	cd backend && uv run uvicorn harness.main:app --reload --host 0.0.0.0 --port 8000
+	cd backend && uv run uvicorn harness.main:app --reload --host 127.0.0.1 --port 8000
 
 # 启动前端开发服务器（端口 5173）
 frontend:

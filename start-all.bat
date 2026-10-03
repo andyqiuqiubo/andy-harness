@@ -5,6 +5,10 @@ echo ==========================================
 echo   andy-harness start all services
 echo ==========================================
 echo.
+echo   This script runs the browser mode (backend on 8000 + Vite on
+echo   5173). For the one-window desktop app (Tauri shell, dynamic
+echo   backend port) use start-desktop.bat instead -- do not run both.
+echo.
 echo   Capabilities: Skills system, tool-permission + human-in-the-loop,
 echo   planning/todo tracking, session export/import/fork, MCP client
 echo   (stdio + remote SSE), message actions, file transfer (docs+images),
@@ -57,7 +61,7 @@ echo Ports are free. Starting services ...
 echo.
 
 echo [1/2] Starting backend  - http://localhost:8000 ...
-start "andy-harness-backend" cmd /k "cd /d %~dp0backend && .venv\Scripts\python.exe -m uvicorn harness.main:app --reload --host 0.0.0.0 --port 8000"
+start "andy-harness-backend" cmd /k "cd /d %~dp0backend && .venv\Scripts\python.exe -m uvicorn harness.main:app --reload --host 127.0.0.1 --port 8000"
 
 echo Waiting for backend to be ready on port 8000 ...
 set /a tries=0

@@ -5,7 +5,9 @@ echo ==========================================
 echo   andy-harness stop all services
 echo ==========================================
 echo.
-echo   Stops backend (port 8000) and frontend (port 5173).
+echo   Stops backend (port 8000) and frontend (port 5173) started by
+echo   start-all.bat.  The desktop shell (start-desktop.bat) uses a
+echo   dynamic backend port -- stop it with stop-desktop.bat instead.
 echo   All built-in capabilities (Skills / permissions / todos /
 echo   session export-import-fork / MCP client (stdio + SSE) /
 echo   message actions / file transfer / output offload / long-term
@@ -47,4 +49,4 @@ echo.
 echo Done. All windows closed.
 
 echo.
-pause
+exit /b 0
