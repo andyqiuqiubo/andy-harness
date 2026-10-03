@@ -4,13 +4,73 @@ import { useChatStore } from '../stores/chat'
 import { usePluginLoaderStore } from '../stores/plugin-loader'
 import { useLanguage } from '../composables/useLanguage'
 import { apiClient } from '../api/client'
+import type { Session } from '../api/types'
 
 const chatStore = useChatStore()
 const pluginLoaderStore = usePluginLoaderStore()
-const { t } = useLanguage()
+const { t, language } = useLanguage()
 
 // 显示归档
 const showArchived = ref(false)
+
+// ── 搜索（E9：会话标题 / 消息内容） ──────────────────
+interface SearchMatch {
+  message_id: string
+  role: string
+  snippet: string
+  created_at: string
+}
+interface SearchResult {
+  session: Session
+  title_hit: boolean
+  msg_hits: number
+  matches: SearchMatch[]
+}
+
+const searchQuery = ref('')
+const searchResults = ref<SearchResult[]>([])
+const searching = ref(false)
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+async function runSearch(q: string) {
+  const term = q.trim()
+  if (!term) {
+    searchResults.value = []
+    searching.value = false
+    return
+  }
+  searching.value = true
+  try {
+    const params = new URLSearchParams({ q: term })
+    searchResults.value = await apiClient.get<SearchResult[]>(
+      `/sessions/search?${params.toString()}`,
+    )
+  } catch {
+    searchResults.value = []
+  } finally {
+    searching.value = false
+  }
+}
+
+function onSearchInput() {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    void runSearch(searchQuery.value)
+  }, 300)
+}
+
+function clearSearch() {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchQuery.value = ''
+  searchResults.value = []
+  searching.value = false
+}
+
+async function openSearchResult(result: SearchResult) {
+  await chatStore.selectSession(result.session.id)
+  clearSearch()
+}
+
 
 // 轻提示（3 秒自动消失）：用于「导入成功 / 导出成功 / 分叉成功」等反馈
 const toastText = ref('')
@@ -32,6 +92,65 @@ const menu = ref<{ visible: boolean; x: number; y: number; sessionId: string }>(
 const visibleSessions = computed(() =>
   chatStore.sessions.filter((s) => showArchived.value || !s.archived),
 )
+
+// ── 按「年月日」分组 + 排序（近期日期靠上）+ 可收缩/展开 ──────────
+interface SessionGroup {
+  key: string
+  label: string
+  sessions: Session[]
+}
+
+/** 从 ISO 时间串取本地日期键 YYYY-MM-DD（后端存的是本地朴素时间，无时区）。 */
+function toDateKey(iso: string): string {
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return 'unknown'
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+/** 分组标题：今天 / 昨天 / 本地化日期。 */
+function toDateLabel(key: string): string {
+  if (key === 'unknown') return t.value('sessions.unknownDate')
+  const d = new Date(key + 'T00:00:00')
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+  const diff = Math.round((today.getTime() - target.getTime()) / 86400000)
+  if (diff === 0) return t.value('sessions.today')
+  if (diff === 1) return t.value('sessions.yesterday')
+  if (language.value === 'en') {
+    return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+  }
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
+}
+
+/** 各日期分组的折叠状态（key → 是否折叠，默认展开）。 */
+const collapsedGroups = ref<Record<string, boolean>>({})
+
+function toggleGroup(key: string) {
+  collapsedGroups.value[key] = !collapsedGroups.value[key]
+}
+
+const groupedSessions = computed<SessionGroup[]>(() => {
+  const buckets = new Map<string, Session[]>()
+  for (const s of visibleSessions.value) {
+    const key = toDateKey(s.updated_at)
+    const arr = buckets.get(key)
+    if (arr) arr.push(s)
+    else buckets.set(key, [s])
+  }
+  const groups: SessionGroup[] = []
+  for (const [key, sessions] of buckets) {
+    // 组内同样按最后活跃时间降序
+    sessions.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))
+    groups.push({ key, label: toDateLabel(key), sessions })
+  }
+  // 日期降序：近期日期靠上
+  groups.sort((a, b) => b.key.localeCompare(a.key))
+  return groups
+})
 
 const pluginMenuItems = computed(() => pluginLoaderStore.menuItems)
 
@@ -207,6 +326,20 @@ onUnmounted(() => {
     </div>
 
     <div class="archive-toggle">
+      <div class="search-box">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>
+        <input
+          v-model="searchQuery"
+          class="search-input"
+          type="text"
+          :placeholder="t('sessions.searchPlaceholder')"
+          @input="onSearchInput"
+          @keydown.esc="clearSearch"
+        />
+        <button v-if="searchQuery" class="search-clear" @click="clearSearch">×</button>
+      </div>
       <button class="toggle-pill" :class="{ active: showArchived }" @click="showArchived = !showArchived">
         <span class="toggle-dot"></span>
         <span class="toggle-text">{{ showArchived ? t('sessions.hideArchived') : t('sessions.showArchived') }}</span>
@@ -214,34 +347,95 @@ onUnmounted(() => {
     </div>
 
     <div class="session-list">
-      <div
-        v-for="session in visibleSessions"
-        :key="session.id"
-        :class="['session-item', { active: session.id === chatStore.currentSessionId, archived: session.archived }]"
-        v-ripple="session.id === chatStore.currentSessionId ? 'rgba(255,255,255,0.2)' : 'rgba(99,102,241,0.15)'"
-        @click="chatStore.selectSession(session.id)"
-        @dblclick="handleRename(session.id)"
-        @contextmenu.prevent="openMenu($event, session.id)"
-      >
-        <span class="session-title" :title="session.title">
-          {{ session.title.length > 20 ? session.title.slice(0, 20) + '...' : session.title }}
-          <span v-if="session.archived" class="archived-badge">{{ t('sessions.archived') }}</span>
-        </span>
-        <div class="session-actions">
-          <button
-            class="action-btn menu-btn"
-            :title="t('sessions.menu')"
-            @click.stop="openMenu($event, session.id)"
+      <!-- 搜索结果 -->
+      <template v-if="searchQuery.trim()">
+        <div v-if="searching" class="search-hint">{{ t('sessions.searching') }}</div>
+        <template v-else-if="searchResults.length">
+          <div
+            v-for="result in searchResults"
+            :key="result.session.id"
+            class="search-result"
+            @click="openSearchResult(result)"
           >
-            <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>
-          </button>
+            <div class="search-result-title">
+              <span class="search-result-name">{{ result.session.title }}</span>
+              <span v-if="result.title_hit" class="search-badge">{{ t('sessions.searchTitleHit') }}</span>
+            </div>
+            <div
+              v-for="match in result.matches"
+              :key="match.message_id"
+              class="search-snippet"
+            >
+              <span class="search-role">{{ match.role }}:</span>
+              <span>{{ match.snippet }}</span>
+            </div>
+            <div v-if="result.msg_hits > result.matches.length" class="search-more">
+              {{ t('sessions.searchMore').replace('{0}', String(result.msg_hits)) }}
+            </div>
+          </div>
+        </template>
+        <div v-else class="empty-state">
+          <div class="empty-icon">🔍</div>
+          <p class="empty-text">{{ t('sessions.searchEmpty') }}</p>
         </div>
-      </div>
+      </template>
 
-      <div v-if="visibleSessions.length === 0" class="empty-state">
+      <template v-else>
+      <template v-for="group in groupedSessions" :key="group.key">
+        <button
+          class="group-header"
+          :class="{ collapsed: collapsedGroups[group.key] }"
+          @click="toggleGroup(group.key)"
+        >
+          <svg
+            class="group-chevron"
+            :class="{ collapsed: collapsedGroups[group.key] }"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M9 18l6-6-6-6" />
+          </svg>
+          <span class="group-label">{{ group.label }}</span>
+          <span class="group-count">{{ group.sessions.length }}</span>
+        </button>
+        <transition name="group-fade">
+          <div v-show="!collapsedGroups[group.key]" class="group-body">
+            <div
+              v-for="session in group.sessions"
+              :key="session.id"
+              :class="['session-item', { active: session.id === chatStore.currentSessionId, archived: session.archived }]"
+              v-ripple="session.id === chatStore.currentSessionId ? 'rgba(255,255,255,0.2)' : 'rgba(99,102,241,0.15)'"
+              @click="chatStore.selectSession(session.id)"
+              @dblclick="handleRename(session.id)"
+              @contextmenu.prevent="openMenu($event, session.id)"
+            >
+              <span class="session-title" :title="session.title">
+                {{ session.title.length > 20 ? session.title.slice(0, 20) + '...' : session.title }}
+                <span v-if="session.archived" class="archived-badge">{{ t('sessions.archived') }}</span>
+              </span>
+              <div class="session-actions">
+                <button
+                  class="action-btn menu-btn"
+                  :title="t('sessions.menu')"
+                  @click.stop="openMenu($event, session.id)"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </transition>
+      </template>
+
+      <div v-if="groupedSessions.length === 0" class="empty-state">
         <div class="empty-icon">📝</div>
         <p class="empty-text">{{ t('sessions.empty') }}</p>
       </div>
+      </template>
 
       <input
         ref="fileInput"
@@ -588,6 +782,74 @@ onUnmounted(() => {
   color: var(--color-primary);
 }
 
+/* ── 日期分组头 ── */
+.group-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+  padding: var(--space-xs) var(--space-sm);
+  margin-top: var(--space-xs);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  transition: var(--transition-base);
+}
+
+.group-header:hover {
+  color: var(--color-text-secondary);
+}
+
+.group-chevron {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  transition: transform var(--transition-base);
+}
+
+.group-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.group-label {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-count {
+  font-size: 10px;
+  line-height: 1;
+  background: var(--bg-hover);
+  color: var(--color-text-tertiary);
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.group-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.group-fade-enter-active,
+.group-fade-leave-active {
+  transition: opacity var(--transition-fast);
+}
+
+.group-fade-enter-from,
+.group-fade-leave-to {
+  opacity: 0;
+}
+
 /* ── Empty state ── */
 .empty-state {
   display: flex;
@@ -786,5 +1048,129 @@ onUnmounted(() => {
 .toast-fade-leave-to {
   opacity: 0;
   transform: translateX(-50%) translateY(-8px);
+}
+
+/* ── 搜索（E9） ── */
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.search-box:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-light);
+}
+
+.search-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+  padding: 3px 0;
+}
+
+.search-input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.search-clear {
+  border: none;
+  background: var(--bg-hover);
+  color: var(--color-text-secondary);
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.search-hint {
+  padding: var(--space-md);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-tertiary);
+  text-align: center;
+}
+
+.search-result {
+  padding: 8px 10px;
+  margin-bottom: 4px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  background: var(--bg-surface);
+  transition: var(--transition-fast);
+}
+
+.search-result:hover {
+  border-color: var(--color-primary);
+  background: var(--bg-hover);
+}
+
+.search-result-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.search-result-name {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-primary);
+  background: var(--color-primary-light);
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+}
+
+.search-snippet {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.search-role {
+  color: var(--color-text-tertiary);
+  margin-right: 4px;
+}
+
+.search-more {
+  font-size: 10px;
+  color: var(--color-text-tertiary);
+  margin-top: 3px;
 }
 </style>

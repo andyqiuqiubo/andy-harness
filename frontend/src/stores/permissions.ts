@@ -32,7 +32,11 @@ export const usePermissionStore = defineStore('permissions', () => {
     error.value = null
     try {
       const res = await apiClient.put<PermissionsState>('/permissions', { mode })
-      state.value = res
+      // ⚠️ 合并而非整体替换：后端 PUT 响应只回传 mode/overrides/tools，
+      // 不含 modes/actions/available。若整体替换，modes 清空会让 <option>
+      // 列表为空、select 选中文字消失且 available 丢失导致下拉被禁用。
+      // 合并保留已加载的 modes/actions/available，仅覆盖变更字段。
+      state.value = { ...state.value, ...res }
     } catch (e) {
       error.value = String(e)
       throw e

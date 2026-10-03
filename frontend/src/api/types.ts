@@ -18,6 +18,7 @@ export interface Message {
   tokens: number
   latency_ms?: number
   usage?: TokenUsage
+  reasoning?: string
   created_at: string
 }
 
@@ -94,6 +95,8 @@ export interface WSFrame {
     | 'stop_ack'
     | 'confirm_request'
     | 'confirm_timeout'
+    /** 服务端告知附件未被本次提问采纳（P1-1，不阻断对话） */
+    | 'attachment_warning'
   data: Record<string, unknown>
 }
 

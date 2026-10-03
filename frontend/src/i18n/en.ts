@@ -109,6 +109,7 @@ export default {
   'chat.confirmDeleteTurn': 'Delete this Q&A turn? This physically removes the question and its answer (cannot be undone).',
   'chat.deleteTurnEmpty': 'Nothing to delete.',
   'chat.deleteTurnFail': 'Delete failed',
+  'chat.retryFail': 'Retry failed',
   'chat.followUpLabel': 'Follow-up',
   'chat.followUpHint': 'Type your follow-up; the answer will be quoted when sent',
   'chat.followUpCancel': 'Cancel follow-up',
@@ -159,6 +160,14 @@ export default {
   'sessions.importInvalid': 'Not a valid session export file (missing "messages")',
   'sessions.exported': 'Exported as a JSON file',
   'sessions.forked': 'Forked a new session',
+  'sessions.today': 'Today',
+  'sessions.yesterday': 'Yesterday',
+  'sessions.unknownDate': 'Unknown date',
+  'sessions.searchPlaceholder': 'Search sessions or messages…',
+  'sessions.searching': 'Searching…',
+  'sessions.searchEmpty': 'No matching sessions found',
+  'sessions.searchTitleHit': 'Title',
+  'sessions.searchMore': '{0} matches in total',
 
   // MCP
   'settings.tab.mcp': 'MCP',
@@ -320,4 +329,15 @@ export default {
   'schedule.triggerManual': 'manual',
   'schedule.triggerSchedule': 'scheduled',
   'schedule.runOk': 'Run succeeded. Summary:',
+
+  // Auth (E12)
+  'auth.title': 'Sign in',
+  'auth.subtitle': 'Please sign in to continue with andy-harness',
+  'auth.username': 'Username',
+  'auth.password': 'Password',
+  'auth.submit': 'Sign in',
+  'auth.submitting': 'Signing in…',
+  'auth.failed': 'Invalid username or password',
+  'auth.logout': 'Sign out',
+  'auth.currentUser': 'Current user',
 } as Record<string, string>

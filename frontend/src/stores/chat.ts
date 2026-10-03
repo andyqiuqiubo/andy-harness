@@ -48,6 +48,37 @@ export const useChatStore = defineStore('chat', () => {
   // 待发送附件（用户选好文件后，发送前暂存；发送后清空）
   const pendingAttachments = ref<Attachment[]>([])
   const uploading = ref(false)
+  /** P1-1：服务端告知「附件未随本次提问送达」时的可见提示（不阻断对话）。 */
+  const attachmentWarning = ref('')
+
+  // ── P0-2：流式响应看门狗 ────────────────────────────
+  // 没有任何超时机制时，一旦服务端没回帧（请求被丢弃 / 连接已死），
+  // isStreaming 会永久为 true，输入框与发送按钮随之全部禁用。
+  // 这里用「首个响应超时」兜底，把界面恢复到可操作状态。
+  const STREAM_WATCHDOG_MS = 30000
+  let streamWatchdog: ReturnType<typeof setTimeout> | null = null
+
+  function _clearWatchdog() {
+    if (streamWatchdog) {
+      clearTimeout(streamWatchdog)
+      streamWatchdog = null
+    }
+  }
+
+  function _armWatchdog() {
+    _clearWatchdog()
+    streamWatchdog = setTimeout(() => {
+      streamWatchdog = null
+      if (!isStreaming.value) return
+      isStreaming.value = false
+      error.value = '未收到服务端响应，可能连接已中断。请检查连接后重试。'
+      streamingContent.value = ''
+      streamingReasoning.value = ''
+      reasoningDone.value = false
+      toolEvents.value = []
+      processEvents.value = []
+    }, STREAM_WATCHDOG_MS)
+  }
 
   const currentSession = computed(() =>
     sessions.value.find((s) => s.id === currentSessionId.value)
@@ -77,19 +108,42 @@ export const useChatStore = defineStore('chat', () => {
     return session
   }
 
+  // P1-5：切换会话的时序守卫。连续快速点击会话时，慢的那次请求可能在新的之后返回，
+  // 从而把旧会话的消息写进当前已选中的会话视图。
+  let selectSeq = 0
+
   async function selectSession(sessionId: string) {
+    const seq = ++selectSeq
     currentSessionId.value = sessionId
-    // 并行加载消息与最新上下文快照（有快照则显示，无则保持 null 隐藏）
-    const [msgs, snapshot] = await Promise.all([
-      apiClient.get<Message[]>(`/sessions/${sessionId}/messages`),
-      apiClient.get<Record<string, unknown> | null>(
-        `/sessions/${sessionId}/context-snapshot`
-      ),
-    ])
-    messages.value = msgs
+    // 立即清空上一会话的残留（补齐原先漏掉的思维链 / 过程框，避免跨会话串显）
+    messages.value = []
     streamingContent.value = ''
+    streamingReasoning.value = ''
+    reasoningDone.value = false
     toolEvents.value = []
-    contextSnapshot.value = snapshot || null
+    processEvents.value = []
+    contextSnapshot.value = null
+    // P1-1：待发送附件从属于**某个会话**；切会话必须清空，
+    // 否则会把 A 的附件 id 发到 B（服务端安全地丢弃，用户却以为已经附上了）。
+    pendingAttachments.value = []
+    attachmentWarning.value = ''
+    _clearWatchdog()
+
+    // 并行加载消息与最新上下文快照（有快照则显示，无则保持 null 隐藏）
+    try {
+      const [msgs, snapshot] = await Promise.all([
+        apiClient.get<Message[]>(`/sessions/${sessionId}/messages`),
+        apiClient.get<Record<string, unknown> | null>(
+          `/sessions/${sessionId}/context-snapshot`
+        ),
+      ])
+      // 已有更新的切换请求 → 丢弃本次回包
+      if (seq !== selectSeq) return
+      messages.value = msgs
+      contextSnapshot.value = snapshot || null
+    } catch (e) {
+      if (seq === selectSeq) error.value = String(e)
+    }
   }
 
   async function renameSession(sessionId: string, title: string) {
@@ -135,8 +189,16 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function handleWSFrame(frame: WSFrame) {
+    // 收到任何帧都说明服务端是活的 → 解除「首个响应超时」
+    if (frame.type !== 'token_delta') _clearWatchdog()
     switch (frame.type) {
+      case 'attachment_warning':
+        // P1-1：服务端发现附件不属于本会话（或已失效）并拒绝采纳。
+        // 这里只做提示，不影响流式状态——消息本身仍在正常生成。
+        attachmentWarning.value = (frame.data.message as string) || '附件未随本次提问送达'
+        break
       case 'token_delta':
+        _clearWatchdog()
         if (frame.data.reasoning_content) {
           const delta = frame.data.reasoning_content as string
           // 思维链内容：拼接到同一个字符串 + 过程框步骤
@@ -162,10 +224,12 @@ export const useChatStore = defineStore('chat', () => {
         contextSnapshot.value = frame.data
         break
       case 'error':
+        _clearWatchdog()
         error.value = (frame.data.message as string) || '未知错误'
         isStreaming.value = false
         break
       case 'done':
+        _clearWatchdog()
         // 标记思维链完成
         if (streamingReasoning.value) {
           reasoningDone.value = true
@@ -300,6 +364,29 @@ export const useChatStore = defineStore('chat', () => {
     reasoningDone.value = false
     toolEvents.value = []
     processEvents.value = []
+    attachmentWarning.value = ''
+
+    const settingsStore = useSettingsStore()
+    const settings = settingsStore.sessionSettings
+
+    // P0-2：先把「这条消息能否真的发出去」确认清楚，再落地乐观状态。
+    // 旧实现先 push 乐观消息并把 isStreaming 置 true，最后才调用 ws.send；
+    // 而 ws.send 在连接不可用时是静默丢弃的，于是界面被永久锁死。
+    const payload = {
+      session_id: sessionId,
+      content,
+      provider_id: providerId,
+      model: model || settings.model || undefined,
+      temperature: settings.temperature,
+      system_prompt: settings.system_prompt || undefined,
+      attachments: atts.map((a) => ({ id: a.id })),
+    }
+    if (!mockMode.value && !apiClient.ws.send(payload)) {
+      error.value = '未连接到服务，消息未发送。请等待右下角连接状态恢复后重试。'
+      return
+    }
+    // 已在传输中（或在握手队列里）→ 启动看门狗兜底
+    _armWatchdog()
 
     messages.value.push({
       id: Date.now().toString(),
@@ -318,19 +405,6 @@ export const useChatStore = defineStore('chat', () => {
       return
     }
 
-    // S26: Include temperature and system_prompt from session settings
-    const settingsStore = useSettingsStore()
-    const settings = settingsStore.sessionSettings
-
-    apiClient.ws.send({
-      session_id: sessionId,
-      content,
-      provider_id: providerId,
-      model: model || settings.model || undefined,
-      temperature: settings.temperature,
-      system_prompt: settings.system_prompt || undefined,
-      attachments: atts.map((a) => ({ id: a.id })),
-    })
     // 发送后清空待发送附件
     pendingAttachments.value = []
   }
@@ -366,6 +440,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function stopStreaming() {
+    _clearWatchdog()
     // 模拟模式：清除定时器
     if (mockTimer) {
       clearTimeout(mockTimer)
@@ -477,6 +552,7 @@ export const useChatStore = defineStore('chat', () => {
     mockMode,
     pendingAttachments,
     uploading,
+    attachmentWarning,
     processEvents,
     currentSession,
     loadSessions,

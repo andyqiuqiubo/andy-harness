@@ -34,10 +34,18 @@ function onChange(e: Event) {
 onMounted(() => {
   providerStore.loadModels()
 })
+
+/** 无可选模型时的原因：加载失败 vs 确实没有模型（未配置 API Key）。 */
+const emptyHint = computed(() => {
+  if (providerStore.loadError) return providerStore.loadError
+  if (providerStore.models.length === 0) return '暂无可用模型，请先在设置中配置 Provider 的 API Key'
+  return ''
+})
 </script>
 
 <template>
   <div class="model-selector-wrapper">
+    <span v-if="emptyHint" class="empty-hint" :title="emptyHint">{{ emptyHint }}</span>
     <select :value="modelValue" @change="onChange" class="model-selector">
       <option value="">选择模型...</option>
       <optgroup v-for="group in groupedModels" :key="group.provider" :label="group.provider">
@@ -59,6 +67,17 @@ onMounted(() => {
   position: relative;
   display: inline-flex;
   align-items: center;
+}
+
+/* 无模型可选时的原因提示（加载失败 / 未配置 API Key） */
+.empty-hint {
+  max-width: 220px;
+  margin-right: var(--space-sm);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .model-selector {

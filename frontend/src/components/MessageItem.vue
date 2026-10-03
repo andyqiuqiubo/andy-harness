@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import type { Message, TokenUsage } from '../api/types'
+import { formatTokens } from '../utils/format'
+import { fetchAttachmentBlobUrl } from '../api/client'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 
 const props = defineProps<{ message: Message }>()
@@ -9,10 +11,51 @@ const emit = defineEmits<{
   (e: 'delete-turn', message: Message): void
   (e: 'follow-up', message: Message): void
   (e: 'fork', message: Message): void
+  (e: 'retry', message: Message): void
 }>()
 
-// 复制反馈：短暂显示「已复制」
+// 复制反馈：短暂显示「复制成功」提示（3 秒）
 const copied = ref(false)
+let copyTimer: ReturnType<typeof setTimeout> | null = null
+
+// P2-4：图片附件加载失败追踪（用于显示降级占位，而非浏览器默认破图）
+const failedAttachments = ref<string[]>([])
+function markFailed(id: string) {
+  if (!failedAttachments.value.includes(id)) failedAttachments.value.push(id)
+}
+function markLoaded(id: string) {
+  failedAttachments.value = failedAttachments.value.filter((x) => x !== id)
+}
+
+// P0-3：图片附件以 blob: 渲染，使 E12 鉴权模式下也能正确带 Bearer 取图。
+// imageSrc 以 att.id 为键缓存已解析地址（blob: 或回退直链）。
+const imageSrc = ref<Record<string, string>>({})
+const imageAttachments = computed(() =>
+  (props.message.attachments ?? []).filter((a) => a.kind === 'image'),
+)
+const objectUrls = new Set<string>()
+
+async function resolveImage(id: string, sessionId: string) {
+  if (imageSrc.value[id]) return
+  const url = await fetchAttachmentBlobUrl(sessionId, id)
+  if (url.startsWith('blob:')) objectUrls.add(url)
+  imageSrc.value = { ...imageSrc.value, [id]: url }
+}
+
+// 附件列表变化（含首帧）时解析所有图片地址
+watch(
+  imageAttachments,
+  (list) => {
+    for (const att of list) resolveImage(att.id, props.message.session_id)
+  },
+  { immediate: true },
+)
+
+// 组件卸载时释放 blob: URL，避免内存泄漏
+onUnmounted(() => {
+  for (const url of objectUrls) URL.revokeObjectURL(url)
+  objectUrls.clear()
+})
 
 async function copyContent() {
   const text = props.message.content || ''
@@ -34,14 +77,15 @@ async function copyContent() {
     }
   }
   copied.value = true
-  window.setTimeout(() => {
+  if (copyTimer) clearTimeout(copyTimer)
+  copyTimer = window.setTimeout(() => {
     copied.value = false
-  }, 1200)
+  }, 3000)
 }
 
 // 是否在消息流中可见：
-// - tool 角色消息仅用于模型 API 上下文，其结果已在 assistant 的
-//   tool_calls 卡片中展示，不单独渲染（避免孤立的工具头像行）
+// - tool 角色消息仅用于模型 API 上下文，其结果已在「执行过程」过程框中
+//   展示（ChatView.displayItems），不单独渲染（避免孤立的工具头像行）
 // - assistant 消息既无正文也无工具调用时不渲染（避免空白气泡/空行）
 const isVisible = computed(() => {
   const m = props.message
@@ -86,14 +130,30 @@ function usageCacheMiss(u: TokenUsage | undefined): number {
         </div>
         <div class="message-bubble user-bubble">
           <div v-if="message.attachments && message.attachments.length" class="msg-attachments">
-            <img
+          <img
+            v-for="att in imageAttachments"
+            :key="att.id"
+            class="msg-attach-img"
+            :src="imageSrc[att.id] || ''"
+            :alt="att.filename"
+            :title="att.filename"
+            loading="lazy"
+            @error="markFailed(att.id)"
+            @load="markLoaded(att.id)"
+          />
+            <!-- P2-4：加载中占位 + 加载失败降级，避免布局抖动与无提示破图 -->
+            <div
               v-for="att in message.attachments.filter(a => a.kind === 'image')"
-              :key="att.id"
-              class="msg-attach-img"
-              :src="`/api/sessions/${message.session_id}/attachments/${att.id}`"
-              :alt="att.filename"
+              v-show="failedAttachments.includes(att.id)"
+              :key="`fb-${att.id}`"
+              class="msg-attach-img msg-attach-fallback"
               :title="att.filename"
-            />
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" />
+              </svg>
+              <span class="msg-attach-fallback-text">无法预览</span>
+            </div>
             <div
               v-for="att in message.attachments.filter(a => a.kind === 'document')"
               :key="att.id"
@@ -140,62 +200,48 @@ function usageCacheMiss(u: TokenUsage | undefined): number {
           <MarkdownRenderer :content="message.content" />
         </div>
 
-        <!-- 回答的操作条：复制 / 追问（仅 assistant 回答） -->
-        <div class="msg-actions" v-if="message.role === 'assistant' && message.content">
-          <button class="icon-btn" :title="copied ? '已复制' : '复制回答'" @click="copyContent">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-            </svg>
-          </button>
-          <button class="icon-btn" title="针对该回答继续追问" @click="emit('follow-up', message)">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="9 17 4 12 9 7" /><path d="M20 18v-2a4 4 0 0 0-4-4H4" />
-            </svg>
-          </button>
-          <button class="icon-btn" title="从该回答处分叉出新会话" @click="emit('fork', message)">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
-            </svg>
-          </button>
+        <!-- 回答的操作条：复制 / 重新回答 / 追问 / 分叉（仅 assistant 回答） -->
+        <div class="msg-actions-wrap" v-if="message.role === 'assistant' && message.content">
+          <div class="msg-actions">
+            <button class="icon-btn" :title="copied ? '已复制' : '复制回答'" @click="copyContent">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            </button>
+            <!-- 重新回答：原位删除该轮并用原问题重新生成（放在复制后、追问前） -->
+            <button class="icon-btn" title="重新回答" @click="emit('retry', message)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+              </svg>
+            </button>
+            <button class="icon-btn" title="针对该回答继续追问" @click="emit('follow-up', message)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="9 17 4 12 9 7" /><path d="M20 18v-2a4 4 0 0 0-4-4H4" />
+              </svg>
+            </button>
+            <button class="icon-btn" title="从该回答处分叉出新会话" @click="emit('fork', message)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
+              </svg>
+            </button>
+          </div>
+          <!-- 复制成功提示（3 秒后自动消失） -->
+          <transition name="copy-toast-fade">
+            <span v-if="copied" class="copy-toast">复制成功</span>
+          </transition>
         </div>
 
         <!-- 本次对话的 token 用量（DeepSeek 官方 usage），每条回答各自保留 -->
         <div v-if="message.role === 'assistant' && message.usage" class="message-usage">
           <span class="usage-label">本次用量</span>
-          <span class="usage-item">输入 {{ message.usage.prompt_tokens }}</span>
-          <span v-if="usageCacheHit(message.usage) > 0" class="usage-item usage-muted">(缓存 {{ usageCacheHit(message.usage) }} · 未命中 {{ usageCacheMiss(message.usage) }})</span>
-          <span class="usage-item">· 输出 {{ message.usage.completion_tokens }}</span>
-          <span class="usage-item usage-total">· 合计 {{ message.usage.total_tokens }} tokens</span>
+          <span class="usage-item">输入 {{ formatTokens(message.usage.prompt_tokens) }}</span>
+          <span v-if="usageCacheHit(message.usage) > 0" class="usage-item usage-muted">(缓存 {{ formatTokens(usageCacheHit(message.usage)) }} · 未命中 {{ formatTokens(usageCacheMiss(message.usage)) }})</span>
+          <span class="usage-item">· 输出 {{ formatTokens(message.usage.completion_tokens) }}</span>
+          <span class="usage-item usage-total">· 合计 {{ formatTokens(message.usage.total_tokens) }} tokens</span>
         </div>
 
-        <!-- Tool calls -->
-        <div v-if="message.tool_calls && message.tool_calls.length" class="tool-calls">
-          <details v-for="(tc, i) in message.tool_calls" :key="i" class="tool-card">
-            <summary class="tool-summary">
-              <svg class="tool-icon" width="16" height="16" viewBox="0 0 24 24" fill="none">
-                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              <span class="tool-name">{{ tc.tool_name }}</span>
-              <svg class="tool-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none">
-                <path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-            </summary>
-            <div class="tool-detail">
-              <div class="tool-arg-row">
-                <span class="tool-label">参数:</span>
-                <code class="tool-result-code">{{ JSON.stringify(tc.args) }}</code>
-              </div>
-              <div class="tool-arg-row">
-                <span class="tool-label">结果:</span>
-                <code class="tool-result-code">{{ tc.result }}</code>
-              </div>
-              <div v-if="tc.error" class="tool-arg-row tool-error-row">
-                <span class="tool-label">错误:</span>
-                <code class="tool-result-code">{{ tc.error }}</code>
-              </div>
-            </div>
-          </details>
-        </div>
+        <!-- Tool calls 已统一归并进「执行过程」过程框（ChatView.displayItems），
+             此处不再内联渲染，避免同一工具调用重复展示两处。 -->
       </div>
     </template>
   </div>
@@ -210,6 +256,40 @@ function usageCacheMiss(u: TokenUsage | undefined): number {
   flex-shrink: 0;
   opacity: 0;
   transition: opacity var(--transition-fast);
+}
+
+/* 操作条 + 复制成功提示的容器（相对定位，供 toast 绝对定位） */
+.msg-actions-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 复制成功提示：浮于操作条上方，3 秒后淡出；不受 .msg-actions 悬浮显隐影响 */
+.copy-toast {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  background: var(--color-success, #16a34a);
+  color: #fff;
+  font-size: var(--font-size-xs);
+  line-height: 1;
+  padding: 5px 10px;
+  border-radius: var(--radius-md);
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: var(--shadow-sm);
+  z-index: 5;
+}
+
+.copy-toast-fade-enter-active,
+.copy-toast-fade-leave-active {
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+.copy-toast-fade-enter-from,
+.copy-toast-fade-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
 }
 
 .message-row:hover .msg-actions,
@@ -261,11 +341,30 @@ function usageCacheMiss(u: TokenUsage | undefined): number {
 }
 
 .msg-attach-img {
+  /* P2-4：固定骨架尺寸，避免图片加载前后气泡高度抖动 */
+  width: 160px;
+  height: 120px;
   max-width: 180px;
   max-height: 180px;
   border-radius: var(--radius-sm);
   object-fit: cover;
   border: 1px solid var(--border-color);
+  background: var(--bg-surface);
+}
+
+/* 图片加载失败时的降级占位（不显示浏览器默认破图） */
+.msg-attach-fallback {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: var(--color-text-muted, #888);
+  font-size: var(--font-size-xs);
+}
+
+.msg-attach-fallback-text {
+  line-height: 1;
 }
 
 .msg-attach-doc {
@@ -393,110 +492,8 @@ function usageCacheMiss(u: TokenUsage | undefined): number {
   color: var(--color-warning);
 }
 
-/* ── Tool call cards ── */
-.tool-calls {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-}
-
-.tool-card {
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--bg-tool);
-  overflow: hidden;
-  transition: border-color var(--transition-base), box-shadow var(--transition-base);
-}
-
-.tool-card:hover {
-  border-color: var(--color-warning);
-  box-shadow: var(--shadow-sm);
-}
-
-.tool-summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  cursor: pointer;
-  list-style: none;
-  font-size: var(--font-size-sm);
-  font-weight: 500;
-  color: var(--color-text);
-  user-select: none;
-  transition: background var(--transition-base);
-}
-
-.tool-summary::-webkit-details-marker {
-  display: none;
-}
-
-.tool-summary:hover {
-  background: var(--bg-hover);
-}
-
-.tool-icon {
-  color: var(--color-warning);
-  flex-shrink: 0;
-}
-
-.tool-name {
-  flex: 1;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-}
-
-.tool-chevron {
-  color: var(--color-text-tertiary);
-  transition: transform var(--transition-base);
-}
-
-.tool-card[open] .tool-chevron {
-  transform: rotate(90deg);
-}
-
-.tool-detail {
-  padding: var(--space-sm) var(--space-md);
-  border-top: 1px solid var(--border-color);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-}
-
-.tool-arg-row {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.tool-label {
-  font-weight: 600;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.tool-result-code {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-  background: var(--bg-code);
-  padding: 6px 10px;
-  border-radius: var(--radius-sm);
-  white-space: pre-wrap;
-  word-break: break-all;
-  color: var(--color-text);
-  line-height: 1.5;
-}
-
-.tool-error-row .tool-label {
-  color: var(--color-danger);
-}
-
-.tool-error-row .tool-result-code {
-  background: var(--color-error-bg);
-  color: var(--color-danger);
-}
+/* Tool call 卡片样式已随内联渲染一并移除：工具调用统一在
+   ChatView 的「执行过程」过程框中展示（ProcessTrace）。 */
 
 /* ── Responsive ── */
 @media (max-width: 768px) {

@@ -54,7 +54,7 @@ const sleeping = ref(false)
 const bubble = ref('')
 const particles = ref<{ id: number; emoji: string; x: number }[]>([])
 const soundOn = ref(true)
-const panelOpen = ref(true)
+const panelOpen = ref(false)
 
 const petPos = reactive({ x: 0, y: 0 })
 const moveDur = ref(0)
@@ -77,7 +77,7 @@ const mood = computed<'happy' | 'hungry' | 'sad' | 'sleep'>(() => {
 const stage = computed(() => (state.care >= 60 ? 2 : state.care >= 20 ? 1 : 0))
 const stageName = computed(() => STAGE_NAMES[stage.value])
 const stageColor = computed(() => STAGE_COLORS[stage.value])
-const petSizeNum = computed(() => 62 + stage.value * 14)
+const petSizeNum = computed(() => 44 + stage.value * 10)
 const petSize = computed(() => petSizeNum.value + 'px')
 const petStyle = computed(() => ({ '--pet-size': petSize.value, '--pet-color': stageColor.value }))
 const bubbleStyle = computed(() => ({

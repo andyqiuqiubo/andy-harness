@@ -3,12 +3,14 @@ import { ref, watch, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useProviderStore } from '../stores/providers'
 import { useTodoStore } from '../stores/todos'
-import { apiClient, wsConnectionStatus } from '../api/client'
+import { apiClient, wsConnectionStatus, ApiError } from '../api/client'
 import type { WSFrame } from '../api/types'
 import { useLanguage } from '../composables/useLanguage'
 import { useSettingsStore } from '../stores/settings'
+import { useAuthStore } from '../stores/auth'
 import SessionSidebar from '../components/SessionSidebar.vue'
 import MessageItem from '../components/MessageItem.vue'
+import AttachmentImage from '../components/AttachmentImage.vue'
 import ModelSelector from '../components/ModelSelector.vue'
 import MarkdownRenderer from '../components/MarkdownRenderer.vue'
 import ProcessTrace from '../components/ProcessTrace.vue'
@@ -17,6 +19,7 @@ import type { Message, ProcessStep } from '../api/types'
 const chatStore = useChatStore()
 const providerStore = useProviderStore()
 const settingsStore = useSettingsStore()
+const authStore = useAuthStore()
 const todoStore = useTodoStore()
 const { t } = useLanguage()
 
@@ -93,8 +96,13 @@ watch(inputText, () => {
   nextTick(autoResize)
 })
 
-// ── 历史消息归并：把一轮问答里的中间步骤（思维/说明/工具调用）
-//    合并成一个「执行过程」步骤集，渲染为答案上方的过程框（默认收缩） ──────────
+// ── 历史消息归并 ──────────────────────────────────────────────
+// 规则（关键）：一次提问只产出**一个**可见答案气泡。以 user 消息为边界分组，
+// 每组 assistant 消息中只有**最后一条带正文**的渲染为答案气泡；它之前的带正文
+// assistant（如「我来帮您…」这种执行前过渡语）正文并入执行过程框，不再单独占
+// 气泡；所有 tool_calls 都归并进执行过程。这样既：①避免一个回答被拆成
+// 「过渡语气泡+最终结论气泡」两段（0.0.24 修复）；②保住 0.0.21——完整答案若与
+// 收尾工具同轮，那条仍是最后一条带正文，照常渲染为答案；③工具卡片不散落（0.0.23）。 ──
 interface DisplayItem {
   kind: 'message' | 'process'
   message?: Message
@@ -102,6 +110,22 @@ interface DisplayItem {
 }
 
 const displayItems = computed<DisplayItem[]>(() => {
+  const msgs = chatStore.messages
+  // 第一次倒序扫描：标记每条 assistant 是否为本组「最后一条带正文」（最终答案）。
+  // 以 user/system 消息为分组边界，每组只选最后一条带正文的 assistant 作为答案气泡。
+  const isFinalAnswer = new Set<number>()
+  let groupHasFinal = false
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]
+    if (m.role === 'user' || m.role === 'system') { groupHasFinal = false; continue }
+    if (m.role !== 'assistant') continue
+    const hasText = !!(m.content || '').trim()
+    if (!groupHasFinal && hasText) {
+      isFinalAnswer.add(i)
+      groupHasFinal = true
+    }
+  }
+
   const items: DisplayItem[] = []
   let pending: ProcessStep[] = []
   const flush = () => {
@@ -110,7 +134,21 @@ const displayItems = computed<DisplayItem[]>(() => {
       pending = []
     }
   }
-  for (const m of chatStore.messages) {
+  const pushToolSteps = (m: Message) => {
+    for (const tc of m.tool_calls || []) {
+      pending.push({
+        kind: 'tool',
+        tool: {
+          tool_name: tc.tool_name,
+          args: tc.args,
+          result: tc.result,
+          error: tc.error || undefined,
+        },
+      })
+    }
+  }
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i]
     if (m.role === 'user' || m.role === 'system') {
       flush()
       items.push({ kind: 'message', message: m })
@@ -119,24 +157,17 @@ const displayItems = computed<DisplayItem[]>(() => {
     if (m.role !== 'assistant') continue // tool 角色由后端 API 过滤，兜底跳过
     const hasTools = !!(m.tool_calls && m.tool_calls.length)
     const hasText = !!(m.content || '').trim()
-    if (hasText && !hasTools) {
-      // 最终回答：先输出累积的执行过程，再输出答案
+    if (isFinalAnswer.has(i)) {
+      // 本组最终答案：思维链（整轮累积）作为过程步骤排在答案气泡之前；
+      // 附带的 tool_calls 仍归进执行过程
+      if (m.reasoning && m.reasoning.trim()) pending.push({ kind: 'reasoning', text: m.reasoning })
       flush()
       items.push({ kind: 'message', message: m })
+      if (hasTools) pushToolSteps(m)
     } else {
-      // 中间轮次：阶段性说明文字 + 工具调用 → 归并进执行过程
-      if (hasText) pending.push({ kind: 'text', text: m.content })
-      for (const tc of m.tool_calls || []) {
-        pending.push({
-          kind: 'tool',
-          tool: {
-            tool_name: tc.tool_name,
-            args: tc.args,
-            result: tc.result,
-            error: tc.error || undefined,
-          },
-        })
-      }
+      // 过渡轮：正文（如有）作为说明并入执行过程，工具调用也并入
+      if (hasText) pending.push({ kind: 'text', text: m.content!.trim() })
+      if (hasTools) pushToolSteps(m)
     }
   }
   // 兜底：末尾残留的中间步骤（如被中断的轮次）
@@ -405,7 +436,9 @@ async function handleFileSelect(e: Event) {
   try {
     await chatStore.uploadPending(accepted)
   } catch (err) {
-    window.alert(t.value('chat.attachmentUploadFail') + ': ' + err)
+    // P2-5：不再直接拼接原始错误对象，统一取可读文案
+    const msg = err instanceof ApiError ? err.message : String(err)
+    window.alert(t.value('chat.attachmentUploadFail') + '：' + msg)
   }
 }
 
@@ -460,6 +493,39 @@ async function handleForkAt(msg: { id: string }) {
     await chatStore.forkSession(chatStore.currentSessionId, msg.id)
   } catch (e) {
     window.alert(t.value('sessions.forkFail') + ': ' + e)
+  }
+}
+
+/** 重新回答：定位该回答对应的用户提问，删除该轮后用原问题重新生成（原位重生成）。 */
+async function handleRetry(msg: { id: string }) {
+  if (chatStore.isStreaming) return
+  const list = chatStore.messages
+  const idx = list.findIndex((m) => m.id === msg.id)
+  if (idx < 0) return
+  // 向上找到紧邻的用户提问
+  let question = ''
+  let userMsgId = ''
+  for (let i = idx - 1; i >= 0; i--) {
+    if (list[i].role === 'user') {
+      question = list[i].content || ''
+      userMsgId = list[i].id
+      break
+    }
+  }
+  if (!question || !userMsgId) return
+  try {
+    // 删除该轮（提问 + 回答 + 工具消息），仅影响这一轮，不波及后续
+    await chatStore.deleteTurn(userMsgId)
+    // 用原问题重新发送，原地生成一份新回答
+    chatStore.sendMessage(
+      question,
+      selectedProvider.value,
+      selectedModel.value || undefined,
+      [],
+    )
+    scrollToBottom()
+  } catch (e) {
+    window.alert(t.value('chat.retryFail') + ': ' + e)
   }
 }
 
@@ -555,6 +621,18 @@ onUnmounted(() => {
             <span class="conn-dot"></span>
             <span class="conn-text">{{ statusText(wsConnectionStatus) }}</span>
           </div>
+          <button
+            v-if="authStore.enabled"
+            class="btn-logout"
+            :title="t('auth.logout')"
+            @click="authStore.logout"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+          </button>
           <router-link to="/settings" class="btn-settings" title="设置">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3" />
@@ -601,6 +679,7 @@ onUnmounted(() => {
               @delete-turn="handleDeleteTurn"
               @follow-up="handleFollowUp"
               @fork="handleForkAt"
+              @retry="handleRetry"
             />
             <div v-else class="history-process-row">
               <ProcessTrace :steps="item.steps || []" />
@@ -713,17 +792,31 @@ onUnmounted(() => {
         </div>
         <div :class="['input-wrapper', { 'can-expand': canExpand }]">
           <!-- 待发送附件预览条 -->
+          <!-- P1-1：服务端确认附件未被采纳时的可见提示（否则用户以为文件已附上） -->
+          <div v-if="chatStore.attachmentWarning" class="attach-warning">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            <span class="attach-warning-text">{{ chatStore.attachmentWarning }}</span>
+            <button class="attach-warning-close" title="关闭" @click="chatStore.attachmentWarning = ''">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+
           <div v-if="chatStore.pendingAttachments.length" class="attach-strip">
             <div
               v-for="att in chatStore.pendingAttachments"
               :key="att.id"
               class="attach-chip"
             >
-              <img
-                v-if="att.kind === 'image'"
+              <AttachmentImage
+                v-if="att.kind === 'image' && chatStore.currentSessionId"
                 class="attach-thumb"
-                :src="`/api/sessions/${chatStore.currentSessionId}/attachments/${att.id}`"
-                :alt="att.filename"
+                :session-id="chatStore.currentSessionId"
+                :attachment-id="att.id"
+                :filename="att.filename"
               />
               <span v-else class="attach-doc-icon">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -979,7 +1072,8 @@ onUnmounted(() => {
 }
 
 /* ── Settings button ── */
-.btn-settings {
+.btn-settings,
+.btn-logout {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -989,9 +1083,13 @@ onUnmounted(() => {
   color: var(--color-text-secondary);
   transition: var(--transition-base);
   flex-shrink: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
 }
 
-.btn-settings:hover {
+.btn-settings:hover,
+.btn-logout:hover {
   background: var(--bg-hover);
   color: var(--color-primary);
 }
@@ -1077,11 +1175,18 @@ onUnmounted(() => {
 }
 
 .streaming-content {
-  white-space: pre-wrap;
+  /* 流式正文直接显示为与完成后一致的 assistant 气泡，
+     避免「裸文字 → 完成后突然变气泡」的视觉跳变。 */
+  background: var(--bg-assistant);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg) var(--radius-lg) var(--radius-lg) var(--radius-sm);
+  padding: 12px 16px;
+  box-shadow: var(--shadow-sm);
   line-height: 1.7;
   font-size: var(--font-size-base);
   color: var(--color-text);
   margin-top: var(--space-sm);
+  word-break: break-word;
 }
 
 .streaming-cursor {
@@ -1461,6 +1566,52 @@ onUnmounted(() => {
   box-shadow: var(--shadow-sm);
   transition: border-color var(--transition-base), box-shadow var(--transition-base);
   position: relative;
+}
+
+/* P1-1：附件未被采纳的提示条 */
+.attach-warning {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  max-width: var(--content-max-width);
+  margin: 0 auto var(--space-xs);
+  padding: 6px 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid #d89614;
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+}
+
+.attach-warning svg {
+  flex-shrink: 0;
+  color: #d89614;
+}
+
+.attach-warning-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.attach-warning-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted, #888);
+  cursor: pointer;
+}
+
+.attach-warning-close:hover {
+  background: var(--bg-input);
 }
 
 /* ── 附件预览条 ── */

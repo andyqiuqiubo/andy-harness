@@ -109,6 +109,7 @@ export default {
   'chat.confirmDeleteTurn': '确定删除这一轮问答？将物理删除该提问及其回答（不可撤销）。',
   'chat.deleteTurnEmpty': '没有可删除的内容。',
   'chat.deleteTurnFail': '删除失败',
+  'chat.retryFail': '重新回答失败',
   'chat.followUpLabel': '追问中',
   'chat.followUpHint': '输入你的追问，发送时会带上这条回答的引用',
   'chat.followUpCancel': '取消追问',
@@ -159,6 +160,14 @@ export default {
   'sessions.importInvalid': '不是有效的会话导出文件（缺少 messages 字段）',
   'sessions.exported': '已导出为 JSON 文件',
   'sessions.forked': '已分叉出新会话',
+  'sessions.today': '今天',
+  'sessions.yesterday': '昨天',
+  'sessions.unknownDate': '未知日期',
+  'sessions.searchPlaceholder': '搜索会话或消息…',
+  'sessions.searching': '搜索中…',
+  'sessions.searchEmpty': '未找到匹配的会话',
+  'sessions.searchTitleHit': '标题',
+  'sessions.searchMore': '共 {0} 条命中',
 
   // MCP
   'settings.tab.mcp': 'MCP',
@@ -320,4 +329,15 @@ export default {
   'schedule.triggerManual': '手动',
   'schedule.triggerSchedule': '定时',
   'schedule.runOk': '执行成功，结果摘要：',
+
+  // Auth（E12）
+  'auth.title': '登录',
+  'auth.subtitle': '请登录后继续使用 andy-harness',
+  'auth.username': '用户名',
+  'auth.password': '密码',
+  'auth.submit': '登录',
+  'auth.submitting': '登录中…',
+  'auth.failed': '用户名或密码错误',
+  'auth.logout': '退出登录',
+  'auth.currentUser': '当前用户',
 } as Record<string, string>

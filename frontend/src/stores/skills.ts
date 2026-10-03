@@ -22,6 +22,16 @@ export interface SkillDetail {
   resources: string[]
 }
 
+export interface SkillMarketplaceItem {
+  name: string
+  package_id: string
+  description: string
+  version: string
+  license: string
+  long_description: string
+  installed: boolean
+}
+
 interface SkillListResponse {
   skills: SkillInfo[]
   count: number
@@ -33,6 +43,8 @@ export const useSkillStore = defineStore('skills', () => {
   const loading = ref(false)
   const available = ref(false)
   const error = ref<string | null>(null)
+  const marketplace = ref<SkillMarketplaceItem[]>([])
+  const marketplaceLoading = ref(false)
 
   async function loadSkills() {
     loading.value = true
@@ -83,14 +95,57 @@ export const useSkillStore = defineStore('skills', () => {
     }
   }
 
+  async function fetchMarketplace() {
+    marketplaceLoading.value = true
+    try {
+      marketplace.value = await apiClient.get<SkillMarketplaceItem[]>(
+        '/skills/marketplace',
+      )
+    } catch {
+      marketplace.value = []
+    } finally {
+      marketplaceLoading.value = false
+    }
+  }
+
+  async function installMarketplaceSkill(packageId: string) {
+    error.value = null
+    try {
+      await apiClient.post(`/skills/marketplace/${packageId}/install`)
+      // 刷新已安装列表与市场状态
+      await loadSkills()
+      await fetchMarketplace()
+    } catch (e) {
+      error.value = String(e)
+      throw e
+    }
+  }
+
+  async function uninstallMarketplaceSkill(packageId: string) {
+    error.value = null
+    try {
+      await apiClient.delete(`/skills/marketplace/${packageId}`)
+      await loadSkills()
+      await fetchMarketplace()
+    } catch (e) {
+      error.value = String(e)
+      throw e
+    }
+  }
+
   return {
     skills,
     loading,
     available,
     error,
+    marketplace,
+    marketplaceLoading,
     loadSkills,
     reloadSkills,
     setSkillEnabled,
     fetchSkillDetail,
+    fetchMarketplace,
+    installMarketplaceSkill,
+    uninstallMarketplaceSkill,
   }
 })

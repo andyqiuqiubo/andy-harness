@@ -3,7 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useProviderStore } from '../stores/providers'
 import { usePluginStore, type PluginInfo, type MarketplacePlugin } from '../stores/plugins'
 import { useSettingsStore, THEME_LIST, type Theme } from '../stores/settings'
-import { useSkillStore, type SkillInfo } from '../stores/skills'
+import { useSkillStore, type SkillInfo, type SkillMarketplaceItem } from '../stores/skills'
 import { usePermissionStore } from '../stores/permissions'
 import { useLanguage } from '../composables/useLanguage'
 import { apiClient } from '../api/client'
@@ -269,13 +269,11 @@ const marketplaceInstalling = ref<string | null>(null)
 // 说明弹窗：当前查看说明的市场插件
 const marketplaceDescribeTarget = ref<MarketplacePlugin | null>(null)
 
-async function handleToggleMarketplace() {
-  showMarketplace.value = !showMarketplace.value
-  if (showMarketplace.value) {
-    marketplaceLoading.value = true
-    await pluginStore.fetchMarketplace()
-    marketplaceLoading.value = false
-  }
+async function handleOpenPluginMarketplace() {
+  showMarketplace.value = true
+  marketplaceLoading.value = true
+  await pluginStore.fetchMarketplace()
+  marketplaceLoading.value = false
 }
 
 async function handleMarketplaceInstall(mp: MarketplacePlugin) {
@@ -363,6 +361,37 @@ async function handleReloadSkills() {
     alert('重新扫描失败: ' + e)
   } finally {
     skillReloading.value = false
+  }
+}
+
+// ── 技能市场 ──────────────────────────────────────
+const showSkillMarketplace = ref(false)
+const skillMarketplaceInstalling = ref<string | null>(null)
+const skillMarketplaceDescribeTarget = ref<SkillMarketplaceItem | null>(null)
+
+async function handleOpenSkillMarketplace() {
+  showSkillMarketplace.value = true
+  await skillStore.fetchMarketplace()
+}
+
+async function handleSkillMarketplaceInstall(item: SkillMarketplaceItem) {
+  if (!window.confirm(`确定从技能市场安装「${item.name}」吗？`)) return
+  skillMarketplaceInstalling.value = item.package_id
+  try {
+    await skillStore.installMarketplaceSkill(item.package_id)
+  } catch (e) {
+    alert('安装失败: ' + e)
+  } finally {
+    skillMarketplaceInstalling.value = null
+  }
+}
+
+async function handleUninstallMarketplaceSkill(item: SkillMarketplaceItem) {
+  if (!window.confirm(`确定卸载技能「${item.name}」吗？此操作会删除本地文件，不可撤销。`)) return
+  try {
+    await skillStore.uninstallMarketplaceSkill(item.package_id)
+  } catch (e) {
+    alert('卸载失败: ' + e)
   }
 }
 
@@ -465,7 +494,7 @@ async function loadMcp() {
   try {
     const data = await apiClient.get<{ available: boolean; servers: McpServerInfo[] }>('/mcp/servers')
     mcpServers.value = data.available ? (data.servers || []) : []
-  } catch (e) {
+  } catch {
     mcpServers.value = []
   }
 }
@@ -538,6 +567,73 @@ async function handleDeleteMcp(name: string) {
   }
 }
 
+// ── MCP 市场 ──────────────────────────────────────
+interface McpMarketplaceItem {
+  package_id: string
+  name: string
+  type: string
+  url: string
+  command: string
+  args: string[]
+  description: string
+  long_description: string
+  auth_required: boolean
+  installed: boolean
+}
+const showMcpMarketplace = ref(false)
+const mcpMarketplaceLoading = ref(false)
+const mcpMarketplaceInstalling = ref<string | null>(null)
+const mcpMarketplaceList = ref<McpMarketplaceItem[]>([])
+const mcpMarketplaceDescribeTarget = ref<McpMarketplaceItem | null>(null)
+
+async function fetchMcpMarketplace() {
+  mcpMarketplaceLoading.value = true
+  try {
+    mcpMarketplaceList.value = await apiClient.get<McpMarketplaceItem[]>('/mcp/marketplace')
+  } catch {
+    mcpMarketplaceList.value = []
+  } finally {
+    mcpMarketplaceLoading.value = false
+  }
+}
+
+async function handleOpenMcpMarketplace() {
+  showMcpMarketplace.value = true
+  await fetchMcpMarketplace()
+}
+
+async function handleMcpMarketplaceInstall(item: McpMarketplaceItem) {
+  if (!window.confirm(`确定从 MCP 市场安装「${item.name}」吗？`)) return
+  mcpMarketplaceInstalling.value = item.package_id
+  try {
+    const data = await apiClient.post<{ connected: boolean; error?: string }>(
+      `/mcp/marketplace/${item.package_id}/install`,
+    )
+    await loadMcp()
+    if (!data.connected) {
+      mcpError.value = data.error || '配置已保存，但连接失败（可稍后在列表中重连）'
+    } else {
+      mcpError.value = ''
+    }
+    await fetchMcpMarketplace()
+  } catch (e) {
+    mcpError.value = String(e)
+  } finally {
+    mcpMarketplaceInstalling.value = null
+  }
+}
+
+async function handleUninstallMcpMarketplace(item: McpMarketplaceItem) {
+  if (!window.confirm(`确定卸载 MCP「${item.name}」吗？该操作会删除配置，不可撤销。`)) return
+  try {
+    await apiClient.delete(`/mcp/marketplace/${item.package_id}`)
+    await loadMcp()
+    await fetchMcpMarketplace()
+  } catch (e) {
+    mcpError.value = String(e)
+  }
+}
+
 // ── 工件（大工具输出落盘） ────────────────────
 interface ArtifactItem {
   id: string
@@ -561,7 +657,7 @@ async function loadArtifacts() {
     )
     artifactsAvailable.value = data.available
     artifacts.value = data.available ? data.artifacts || [] : []
-  } catch (e) {
+  } catch {
     artifacts.value = []
   }
 }
@@ -628,7 +724,7 @@ async function loadMemories() {
     const data = await apiClient.get<{ available: boolean; memories: MemoryItem[] }>(path)
     memoryAvailable.value = data.available
     memories.value = data.available ? data.memories || [] : []
-  } catch (e) {
+  } catch {
     memories.value = []
   }
 }
@@ -835,7 +931,7 @@ async function loadSchedules() {
     const data = await apiClient.get<{ available: boolean; tasks: ScheduleTask[] }>('/schedules')
     scheduleAvailable.value = data.available
     scheduleTasks.value = data.available ? data.tasks || [] : []
-  } catch (e) {
+  } catch {
     scheduleTasks.value = []
   }
 }
@@ -1059,7 +1155,7 @@ async function loadTraces() {
       traceDetailId.value = ''
       traceSpans.value = []
     }
-  } catch (e) {
+  } catch {
     traces.value = []
   }
 }
@@ -1367,48 +1463,57 @@ function formatMs(n: number): string {
       <section v-if="activeTab === 'plugins'" class="tab-content">
         <div class="section-header">
           <h2 class="section-title">{{ t('plugins.title') }}</h2>
-          <button class="btn-primary" @click="handleToggleMarketplace">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-            {{ showMarketplace ? '收起' : '从插件市场安装插件' }}
-          </button>
+        <button class="btn-primary" @click="handleOpenPluginMarketplace">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+          从插件市场安装
+        </button>
         </div>
 
         <!-- 插件市场 -->
-        <Transition name="fade-slide">
-          <div v-if="showMarketplace" class="marketplace-panel card">
-            <h3 class="form-card-title">插件市场</h3>
-            <div v-if="marketplaceLoading" class="modal-loading">加载中…</div>
-            <div v-else-if="pluginStore.marketplace.length === 0" class="empty-hint" style="border:none;padding:var(--space-md) 0;">
-              插件市场暂无可用插件
-            </div>
-            <div v-else class="marketplace-list">
-              <div v-for="mp in pluginStore.marketplace" :key="mp.plugin_id" class="marketplace-card">
-                <div class="marketplace-info">
-                  <div class="marketplace-name">
-                    {{ mp.name }}
-                    <span v-if="mp.installed" class="badge-pill badge-ok">已安装</span>
-                  </div>
-                  <div class="marketplace-meta">
-                    <span class="badge-pill badge-version">v{{ mp.version }}</span>
-                    <span class="badge-pill badge-type">{{ mp.type }}</span>
-                  </div>
-                  <div class="marketplace-desc">{{ mp.description }}</div>
+        <Transition name="modal-fade">
+          <div v-if="showMarketplace" class="modal-overlay" @click.self="showMarketplace = false">
+            <div class="modal-dialog marketplace-modal">
+              <div class="modal-header">
+                <h3 class="modal-title">插件市场</h3>
+                <button class="modal-close" @click="showMarketplace = false">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                </button>
+              </div>
+              <div class="modal-body">
+                <div v-if="marketplaceLoading" class="modal-loading">加载中…</div>
+                <div v-else-if="pluginStore.marketplace.length === 0" class="empty-hint" style="border:none;padding:var(--space-md) 0;">
+                  插件市场暂无可用插件
                 </div>
-                <div class="marketplace-actions">
-                  <button class="btn-ghost" @click="marketplaceDescribeTarget = mp">
-                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>
-                    说明
-                  </button>
-                  <button
-                    v-if="!mp.installed"
-                    class="btn-primary"
-                    @click="handleMarketplaceInstall(mp)"
-                    :disabled="marketplaceInstalling === mp.plugin_id"
-                  >
-                    {{ marketplaceInstalling === mp.plugin_id ? '安装中…' : '安装' }}
-                  </button>
+                <div v-else class="marketplace-list">
+                  <div v-for="mp in pluginStore.marketplace" :key="mp.plugin_id" class="marketplace-card">
+                    <div class="marketplace-info">
+                      <div class="marketplace-name">
+                        {{ mp.name }}
+                        <span v-if="mp.installed" class="badge-pill badge-ok">已安装</span>
+                      </div>
+                      <div class="marketplace-meta">
+                        <span class="badge-pill badge-version">v{{ mp.version }}</span>
+                        <span class="badge-pill badge-type">{{ mp.type }}</span>
+                      </div>
+                      <div class="marketplace-desc">{{ mp.description }}</div>
+                    </div>
+                    <div class="marketplace-actions">
+                      <button class="btn-ghost" @click="marketplaceDescribeTarget = mp">
+                        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>
+                        说明
+                      </button>
+                      <button
+                        v-if="!mp.installed"
+                        class="btn-primary"
+                        @click="handleMarketplaceInstall(mp)"
+                        :disabled="marketplaceInstalling === mp.plugin_id"
+                      >
+                        {{ marketplaceInstalling === mp.plugin_id ? '安装中…' : '安装' }}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1459,14 +1564,76 @@ function formatMs(n: number): string {
       <section v-if="activeTab === 'skills'" class="tab-content">
         <div class="section-header">
           <h2 class="section-title">{{ t('skills.title') }}</h2>
-          <button class="btn-primary" @click="handleReloadSkills" :disabled="skillReloading">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
-              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-            </svg>
-            {{ skillReloading ? t('skills.scanning') : t('skills.rescan') }}
-          </button>
+          <div class="section-actions">
+            <button class="btn-primary" @click="handleOpenSkillMarketplace">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+              从技能市场安装
+            </button>
+            <button class="btn-ghost btn-sm" @click="handleReloadSkills" :disabled="skillReloading">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+              </svg>
+              {{ skillReloading ? t('skills.scanning') : t('skills.rescan') }}
+            </button>
+          </div>
         </div>
+
+        <!-- 技能市场 -->
+        <Transition name="modal-fade">
+          <div v-if="showSkillMarketplace" class="modal-overlay" @click.self="showSkillMarketplace = false">
+            <div class="modal-dialog marketplace-modal">
+              <div class="modal-header">
+                <h3 class="modal-title">技能市场</h3>
+                <button class="modal-close" @click="showSkillMarketplace = false">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                </button>
+              </div>
+              <div class="modal-body">
+                <div v-if="skillStore.marketplaceLoading" class="modal-loading">加载中…</div>
+                <div v-else-if="skillStore.marketplace.length === 0" class="empty-hint" style="border:none;padding:var(--space-md) 0;">
+                  技能市场暂无可用技能
+                </div>
+                <div v-else class="marketplace-list">
+                  <div v-for="mp in skillStore.marketplace" :key="mp.package_id" class="marketplace-card">
+                    <div class="marketplace-info">
+                      <div class="marketplace-name">
+                        {{ mp.name }}
+                        <span v-if="mp.installed" class="badge-pill badge-ok">已安装</span>
+                      </div>
+                      <div class="marketplace-meta">
+                        <span v-if="mp.version" class="badge-pill badge-version">v{{ mp.version }}</span>
+                        <span v-if="mp.license" class="badge-pill badge-type">{{ mp.license }}</span>
+                      </div>
+                      <div class="marketplace-desc">{{ mp.description }}</div>
+                    </div>
+                    <div class="marketplace-actions">
+                      <button class="btn-ghost" @click="skillMarketplaceDescribeTarget = mp">
+                        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>
+                        说明
+                      </button>
+                      <button
+                        v-if="!mp.installed"
+                        class="btn-primary"
+                        @click="handleSkillMarketplaceInstall(mp)"
+                        :disabled="skillMarketplaceInstalling === mp.package_id"
+                      >
+                        {{ skillMarketplaceInstalling === mp.package_id ? '安装中…' : '安装' }}
+                      </button>
+                      <button
+                        v-else
+                        class="btn-ghost btn-uninstall"
+                        @click="handleUninstallMarketplaceSkill(mp)"
+                      >
+                        卸载
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </Transition>
 
         <p class="skills-hint">{{ t('skills.hint') }}</p>
 
@@ -1541,15 +1708,56 @@ function formatMs(n: number): string {
             </div>
           </div>
         </div>
+
+        <!-- 技能市场说明弹窗 -->
+        <Transition name="modal-fade">
+          <div v-if="skillMarketplaceDescribeTarget" class="modal-overlay" @click.self="skillMarketplaceDescribeTarget = null">
+            <div class="modal-dialog">
+              <div class="modal-header">
+                <h3 class="modal-title">{{ skillMarketplaceDescribeTarget.name }} <span class="badge-pill badge-version">v{{ skillMarketplaceDescribeTarget.version }}</span></h3>
+                <button class="modal-close" @click="skillMarketplaceDescribeTarget = null">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                </button>
+              </div>
+              <div class="modal-body">
+                <p class="marketplace-desc" style="margin-bottom:var(--space-md);">{{ skillMarketplaceDescribeTarget.description }}</p>
+                <div class="marketplace-long-desc">{{ skillMarketplaceDescribeTarget.long_description }}</div>
+              </div>
+              <div class="modal-footer">
+                <button class="btn-ghost" @click="skillMarketplaceDescribeTarget = null">关闭</button>
+                <button
+                  v-if="!skillMarketplaceDescribeTarget.installed"
+                  class="btn-primary"
+                  @click="handleSkillMarketplaceInstall(skillMarketplaceDescribeTarget)"
+                >
+                  安装
+                </button>
+                <button
+                  v-else
+                  class="btn-danger"
+                  @click="handleUninstallMarketplaceSkill(skillMarketplaceDescribeTarget)"
+                >
+                  卸载
+                </button>
+              </div>
+            </div>
+          </div>
+        </Transition>
       </section>
 
       <!-- ═══════════════ MCP 客户端 ═══════════════ -->
       <section v-if="activeTab === 'mcp'" class="tab-content">
         <div class="section-header">
           <h2 class="section-title">{{ t('mcp.title') }}</h2>
-          <button class="btn-primary btn-sm" @click="handleReloadMcp" :disabled="mcpLoading">
-            {{ t('mcp.refresh') }}
-          </button>
+          <div class="section-actions">
+            <button class="btn-primary btn-sm" @click="handleOpenMcpMarketplace">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+              从 MCP 市场安装
+            </button>
+            <button class="btn-ghost btn-sm" @click="handleReloadMcp" :disabled="mcpLoading">
+              {{ t('mcp.refresh') }}
+            </button>
+          </div>
         </div>
         <p class="section-desc">{{ t('mcp.desc') }}</p>
 
@@ -1634,6 +1842,97 @@ function formatMs(n: number): string {
           </button>
           <p v-if="mcpError" class="mcp-error">{{ mcpError }}</p>
         </div>
+
+        <!-- MCP 市场 -->
+        <Transition name="modal-fade">
+          <div v-if="showMcpMarketplace" class="modal-overlay" @click.self="showMcpMarketplace = false">
+            <div class="modal-dialog marketplace-modal">
+              <div class="modal-header">
+                <h3 class="modal-title">MCP 市场</h3>
+                <button class="modal-close" @click="showMcpMarketplace = false">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                </button>
+              </div>
+              <div class="modal-body">
+                <div v-if="mcpMarketplaceLoading" class="modal-loading">加载中…</div>
+                <div v-else-if="mcpMarketplaceList.length === 0" class="empty-hint" style="border:none;padding:var(--space-md) 0;">
+                  MCP 市场暂无可用 server
+                </div>
+                <div v-else class="marketplace-list">
+                  <div v-for="mp in mcpMarketplaceList" :key="mp.package_id" class="marketplace-card">
+                    <div class="marketplace-info">
+                      <div class="marketplace-name">
+                        {{ mp.name }}
+                        <span v-if="mp.installed" class="badge-pill badge-ok">已安装</span>
+                      </div>
+                      <div class="marketplace-meta">
+                        <span class="badge-pill badge-version">{{ mp.type }}</span>
+                        <span class="badge-pill" :class="mp.auth_required ? 'badge-disabled' : 'badge-ok'">{{ mp.auth_required ? '需鉴权' : '免鉴权' }}</span>
+                      </div>
+                      <div class="marketplace-desc">{{ mp.description }}</div>
+                    </div>
+                    <div class="marketplace-actions">
+                      <button class="btn-ghost" @click="mcpMarketplaceDescribeTarget = mp">
+                        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>
+                        说明
+                      </button>
+                      <button
+                        v-if="!mp.installed"
+                        class="btn-primary"
+                        @click="handleMcpMarketplaceInstall(mp)"
+                        :disabled="mcpMarketplaceInstalling === mp.package_id"
+                      >
+                        {{ mcpMarketplaceInstalling === mp.package_id ? '安装中…' : '安装' }}
+                      </button>
+                      <button
+                        v-else
+                        class="btn-ghost btn-uninstall"
+                        @click="handleUninstallMcpMarketplace(mp)"
+                      >
+                        卸载
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </Transition>
+
+        <!-- MCP 市场说明弹窗 -->
+        <Transition name="modal-fade">
+          <div v-if="mcpMarketplaceDescribeTarget" class="modal-overlay" @click.self="mcpMarketplaceDescribeTarget = null">
+            <div class="modal-dialog">
+              <div class="modal-header">
+                <h3 class="modal-title">{{ mcpMarketplaceDescribeTarget.name }} <span class="badge-pill badge-version">{{ mcpMarketplaceDescribeTarget.type }}</span></h3>
+                <button class="modal-close" @click="mcpMarketplaceDescribeTarget = null">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                </button>
+              </div>
+              <div class="modal-body">
+                <p class="marketplace-desc" style="margin-bottom:var(--space-md);">{{ mcpMarketplaceDescribeTarget.description }}</p>
+                <div class="marketplace-long-desc">{{ mcpMarketplaceDescribeTarget.long_description }}</div>
+              </div>
+              <div class="modal-footer">
+                <button class="btn-ghost" @click="mcpMarketplaceDescribeTarget = null">关闭</button>
+                <button
+                  v-if="!mcpMarketplaceDescribeTarget.installed"
+                  class="btn-primary"
+                  @click="handleMcpMarketplaceInstall(mcpMarketplaceDescribeTarget)"
+                >
+                  安装
+                </button>
+                <button
+                  v-else
+                  class="btn-danger"
+                  @click="handleUninstallMcpMarketplace(mcpMarketplaceDescribeTarget)"
+                >
+                  卸载
+                </button>
+              </div>
+            </div>
+          </div>
+        </Transition>
       </section>
 
       <!-- ═══════════════ 工件（大工具输出落盘） ═══════════════ -->
@@ -2404,6 +2703,12 @@ function formatMs(n: number): string {
   margin-bottom: var(--space-lg);
 }
 
+.section-actions {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: center;
+}
+
 .section-title {
   font-size: var(--font-size-xl);
   font-weight: 700;
@@ -2933,6 +3238,15 @@ function formatMs(n: number): string {
   overflow: hidden;
 }
 
+/* 市场弹框：尺寸放大，列表在 body 内纵向滚动 */
+.marketplace-modal {
+  max-width: 720px;
+  width: 94%;
+}
+.marketplace-modal .modal-body {
+  padding: var(--space-lg);
+}
+
 .modal-header {
   display: flex;
   justify-content: space-between;
@@ -3176,11 +3490,6 @@ function formatMs(n: number): string {
 }
 
 /* ── 插件市场 ── */
-.marketplace-panel {
-  padding: var(--space-lg);
-  margin-bottom: var(--space-lg);
-}
-
 .marketplace-list {
   display: flex;
   flex-direction: column;
