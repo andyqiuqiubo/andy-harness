@@ -1,0 +1,9 @@
+{
+  "name": "context7",
+  "type": "streamable-http",
+  "url": "https://mcp.context7.com/mcp",
+  "description": "查询主流开发库/框架的官方文档与代码示例，避免模型凭记忆写出过时 API。",
+  "enabled": true,
+  "auth_required": false,
+  "long_description": "Context7 MCP：为模型提供「实时、带版本」的库文档与代码片段，**无需账号、无需 API Key**。\n\n工具：\n\n1. `resolve-library-id` —— 把模糊的库名（如 react、vue、fastapi）解析成规范的 Context7 库 ID。\n2. `query-docs` —— 用该 ID 拉取对应主题的官方 README / 文档片段与示例代码。\n\n典型用法：问「某某库某个函数怎么用」「两个版本之间某某 API 变了没」，先 resolve-library-id 再 query-docs。\n\n实测：握手后返回以上 2 个工具。"
+}

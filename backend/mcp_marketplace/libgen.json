@@ -1,0 +1,9 @@
+{
+  "name": "libgen",
+  "type": "streamable-http",
+  "url": "https://mcp.jmrp.io/libgen",
+  "description": "书籍 / 论文 / 漫画 / 杂志 / 标准文献的检索与正文读取，命中后可取下载链接。",
+  "enabled": true,
+  "auth_required": false,
+  "long_description": "libgen-mcp：面向公开学术资源的检索服务，**无需注册账号，也无需任何 API Key**。\n\n工具链（按标识符串联）：\n\n1. `search` —— 在书目库与开放源里检索，返回每条记录的 md5（图书）或 doi（文章）。\n2. `get_details` —— 取某条记录的完整元数据，附可直接粘贴的 BibTeX / RIS 引用。\n3. `download` —— 用 md5 / doi / isbn 解析可下载副本，返回自取链接（不会替你落盘保存成文件）。\n4. `read` —— 按 md5 / doi 抓取文件并分页阅读、全文查找或生成目录大纲，不依赖先调用 download。\n\n另有 `acquire_book`、`research_topic`、`get_paper`、`download_troubleshoot` 四个提示词模板，把上述工具串成可直接用的工作流。\n\n实测：search('Clean Code') 返回 25 条书目（含作者、年份、体积、md5 与下载链接）。"
+}

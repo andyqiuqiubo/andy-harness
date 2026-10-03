@@ -66,14 +66,10 @@ def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(APIError)
     async def api_error_handler(request: Request, exc: APIError) -> JSONResponse:
         logger.warning("API 错误: %s — %s", exc.code, exc.message)
-        return _error_response(
-            exc.code, exc.message, exc.status_code, exc.detail
-        )
+        return _error_response(exc.code, exc.message, exc.status_code, exc.detail)
 
     @app.exception_handler(ServiceUnavailable)
-    async def service_unavailable_handler(
-        request: Request, exc: ServiceUnavailable
-    ) -> JSONResponse:
+    async def service_unavailable_handler(request: Request, exc: ServiceUnavailable) -> JSONResponse:
         return _error_response(
             "SERVICE_UNAVAILABLE",
             str(exc),
@@ -82,9 +78,7 @@ def register_error_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(PluginDeactivateError)
-    async def plugin_deactivate_error_handler(
-        request: Request, exc: PluginDeactivateError
-    ) -> JSONResponse:
+    async def plugin_deactivate_error_handler(request: Request, exc: PluginDeactivateError) -> JSONResponse:
         return _error_response(
             "PLUGIN_DEACTIVATE_FORBIDDEN",
             str(exc),
@@ -93,9 +87,7 @@ def register_error_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(PluginValidationError)
-    async def plugin_validation_error_handler(
-        request: Request, exc: PluginValidationError
-    ) -> JSONResponse:
+    async def plugin_validation_error_handler(request: Request, exc: PluginValidationError) -> JSONResponse:
         return _error_response(
             "PLUGIN_VALIDATION_ERROR",
             str(exc),
@@ -104,9 +96,7 @@ def register_error_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(PluginError)
-    async def plugin_error_handler(
-        request: Request, exc: PluginError
-    ) -> JSONResponse:
+    async def plugin_error_handler(request: Request, exc: PluginError) -> JSONResponse:
         return _error_response(
             "PLUGIN_ERROR",
             str(exc),
@@ -114,9 +104,7 @@ def register_error_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(PluginNotLoadedError)
-    async def plugin_not_found_handler(
-        request: Request, exc: PluginNotLoadedError
-    ) -> JSONResponse:
+    async def plugin_not_found_handler(request: Request, exc: PluginNotLoadedError) -> JSONResponse:
         return _error_response(
             "PLUGIN_NOT_FOUND",
             str(exc),
@@ -124,9 +112,7 @@ def register_error_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(Exception)
-    async def general_error_handler(
-        request: Request, exc: Exception
-    ) -> JSONResponse:
+    async def general_error_handler(request: Request, exc: Exception) -> JSONResponse:
         trace_id = str(uuid.uuid4())
         logger.error("未处理异常 (trace_id=%s): %s", trace_id, exc, exc_info=True)
         return _error_response(

@@ -65,7 +65,7 @@ class SlidingWindowStrategy(ContextStrategy):
             return messages
 
         # 保留最近的 N 条
-        recent = messages[-self.max_messages:]
+        recent = messages[-self.max_messages :]
 
         # 钉住的消息（不在 recent 中的）
         pinned = []
@@ -92,13 +92,9 @@ class SummaryCompressionStrategy(ContextStrategy):
     ) -> list[dict[str, Any]]:
         """计算 token 数，超限时将旧消息替换为摘要。"""
         if token_counter is None:
-            return SlidingWindowStrategy().apply(
-                messages, token_counter, model, budget, pinned_indices
-            )
+            return SlidingWindowStrategy().apply(messages, token_counter, model, budget, pinned_indices)
 
-        total_tokens = sum(
-            token_counter.count_tokens(m.get("content") or "", model) for m in messages
-        )
+        total_tokens = sum(token_counter.count_tokens(m.get("content") or "", model) for m in messages)
 
         if total_tokens <= budget:
             return messages
@@ -114,9 +110,7 @@ class SummaryCompressionStrategy(ContextStrategy):
 
         # 从最近的开始保留，直到达到预算
         result = list(pinned)
-        current_tokens = sum(
-            token_counter.count_tokens(m.get("content") or "", model) for m in result
-        )
+        current_tokens = sum(token_counter.count_tokens(m.get("content") or "", model) for m in result)
 
         kept: list[dict[str, Any]] = []
         for msg in reversed(remaining):
@@ -130,12 +124,9 @@ class SummaryCompressionStrategy(ContextStrategy):
         dropped_count = len(remaining) - len(kept)
         if dropped_count > 0:
             # 收集被丢弃消息的摘要信息
-            dropped_contents = [
-                (m.get("content") or "")[:100] for m in remaining[:dropped_count]
-            ]
+            dropped_contents = [(m.get("content") or "")[:100] for m in remaining[:dropped_count]]
             summary_text = (
-                f"[上下文摘要] 之前有 {dropped_count} 条消息被压缩。"
-                f"关键内容: {' | '.join(dropped_contents[:3])}"
+                f"[上下文摘要] 之前有 {dropped_count} 条消息被压缩。关键内容: {' | '.join(dropped_contents[:3])}"
             )
             summary_msg = {
                 "role": "system",
@@ -146,12 +137,122 @@ class SummaryCompressionStrategy(ContextStrategy):
         return result + kept
 
 
+class StructuredCompactionStrategy(ContextStrategy):
+    """结构化压缩策略（compaction v2）：保留最近 N 条原文 + 旧消息折叠为结构化事件日志。
+
+    相比 `SummaryCompressionStrategy`（截断拼接、易丢失事实）：
+    - **不依赖 LLM 重写**：确定性地把旧消息按「请求 / 工具调用 / 结果 / 结论」
+      提取为紧凑事件日志，零额外成本、不会产生幻觉；
+    - **保留最近若干条消息原文**，高时效细节不丢；
+    - **不切断工具组**：裁剪边界自动避让 assistant(tool_calls) ↔ tool 消息组，
+      避免产生孤立 tool 消息。
+    """
+
+    def __init__(
+        self,
+        keep_recent_messages: int = 8,
+        max_content_chars: int = 160,
+        max_tool_result_chars: int = 160,
+        max_arg_chars: int = 120,
+    ) -> None:
+        self.keep_recent_messages = keep_recent_messages
+        self.max_content_chars = max_content_chars
+        self.max_tool_result_chars = max_tool_result_chars
+        self.max_arg_chars = max_arg_chars
+
+    @staticmethod
+    def _collapse(text: Any, limit: int) -> str:
+        """折叠空白并截断到 limit。"""
+        if text is None:
+            return ""
+        raw = text if isinstance(text, str) else str(text)
+        collapsed = " ".join(raw.split())
+        if len(collapsed) > limit:
+            collapsed = collapsed[:limit] + "…"
+        return collapsed
+
+    def _tool_call_line(self, tc: dict[str, Any]) -> str:
+        fn = tc.get("function", {})
+        name = fn.get("name", "?") if isinstance(fn, dict) else "?"
+        args_raw = fn.get("arguments", "") if isinstance(fn, dict) else ""
+        args = self._collapse(args_raw, self.max_arg_chars)
+        return f"调用 {name}({args})" if args else f"调用 {name}()"
+
+    def _safe_boundary(self, messages: list[dict[str, Any]]) -> int:
+        """计算一个不会切断 tool 组的最近区起始下标。"""
+        start = max(0, len(messages) - self.keep_recent_messages)
+        while start < len(messages):
+            if messages[start].get("role") == "tool":
+                start += 1
+                continue
+            if start > 0 and messages[start - 1].get("role") == "assistant" and messages[start - 1].get("tool_calls"):
+                start += 1
+                continue
+            break
+        return start
+
+    def _build_log_entries(self, older: list[tuple[int, dict[str, Any]]]) -> list[str]:
+        entries: list[str] = []
+        for _, m in older:
+            role = m.get("role")
+            if role == "user":
+                content = self._collapse(m.get("content"), self.max_content_chars)
+                if content:
+                    entries.append(f"请求: {content}")
+            elif role == "assistant":
+                tool_calls = m.get("tool_calls")
+                if tool_calls:
+                    for tc in tool_calls:
+                        if isinstance(tc, dict):
+                            entries.append(self._tool_call_line(tc))
+                content = self._collapse(m.get("content"), self.max_content_chars)
+                if content:
+                    label = "结论" if tool_calls else "回复"
+                    entries.append(f"{label}: {content}")
+            elif role == "tool":
+                result = self._collapse(m.get("content"), self.max_tool_result_chars)
+                entries.append(f"  → {result}" if result else "  → (无输出)")
+        return entries
+
+    def apply(
+        self,
+        messages: list[dict[str, Any]],
+        token_counter: TokenCounter | None,
+        model: str,
+        budget: int,
+        pinned_indices: set[int],
+    ) -> list[dict[str, Any]]:
+        """保留最近原文 + 旧消息结构化事件日志 + 钉住消息。"""
+        if len(messages) <= self.keep_recent_messages:
+            return messages
+
+        start = self._safe_boundary(messages)
+
+        pinned_older: list[dict[str, Any]] = []
+        older_indexed: list[tuple[int, dict[str, Any]]] = []
+        for idx, msg in enumerate(messages[:start]):
+            if idx in pinned_indices:
+                pinned_older.append(msg)
+            else:
+                older_indexed.append((idx, msg))
+
+        recent = messages[start:]
+
+        result: list[dict[str, Any]] = list(pinned_older)
+
+        entries = self._build_log_entries(older_indexed)
+        if entries:
+            header = "[结构化历史记录] 以下是更早对话的结构化事件日志（请求 / 工具调用 / 结果 / 结论，按时间顺序）："
+            body = "\n".join(f"{i + 1}. {e}" for i, e in enumerate(entries))
+            result.append({"role": "system", "content": header + "\n" + body})
+
+        return result + recent
+
+
 class ContextService(Protocol):
     """上下文服务接口。"""
 
-    def build(
-        self, session_id: str, budget: int = 4096, model: str = "gpt-4o"
-    ) -> list[dict[str, Any]]: ...
+    def build(self, session_id: str, budget: int = 4096, model: str = "gpt-4o") -> list[dict[str, Any]]: ...
 
     def get_snapshot(self, session_id: str) -> Any: ...
 
@@ -186,9 +287,7 @@ class ContextServiceImpl:
             result.append(m)
         return result
 
-    def _render_multimodal(
-        self, messages: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    def _render_multimodal(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """把携带 attachments 的 user 消息渲染为多模态 content。
 
         仅当消息确实带附件时，调用 attachment 模块的 render_content_parts
@@ -209,9 +308,7 @@ class ContextServiceImpl:
         for msg in messages:
             if msg.get("role") == "user" and msg.get("attachments"):
                 metas = msg["attachments"]
-                content = render_content_parts(
-                    msg.get("content") or "", metas, att_repo
-                )
+                content = render_content_parts(msg.get("content") or "", metas, att_repo)
                 new_msg = dict(msg)
                 new_msg["content"] = content
                 new_msg.pop("attachments", None)
@@ -274,9 +371,7 @@ class ContextServiceImpl:
         except Exception:
             return None
 
-    def build(
-        self, session_id: str, budget: int = 4096, model: str = "gpt-4o"
-    ) -> list[dict[str, Any]]:
+    def build(self, session_id: str, budget: int = 4096, model: str = "gpt-4o") -> list[dict[str, Any]]:
         """构建上下文消息列表。
 
         Args:
@@ -339,9 +434,7 @@ class ContextServiceImpl:
         # 插入系统提示词模板
         system_messages: list[dict[str, Any]] = []
         if self._system_prompt_template:
-            system_content = self._render_template(
-                self._system_prompt_template, session_id, model=model, budget=budget
-            )
+            system_content = self._render_template(self._system_prompt_template, session_id, model=model, budget=budget)
             system_messages.append({"role": "system", "content": system_content})
 
         non_system = [m for m in raw_messages if m["role"] != "system"]
@@ -353,16 +446,11 @@ class ContextServiceImpl:
         pinned_indices = self.get_pinned_indices(session_id)
 
         # 应用压缩策略
-        compressed = self._strategy.apply(
-            non_system, token_counter, model, budget, pinned_indices=pinned_indices
-        )
+        compressed = self._strategy.apply(non_system, token_counter, model, budget, pinned_indices=pinned_indices)
 
         # 如果仍超预算且有 token 计数器，回退到摘要压缩策略
         if token_counter:
-            total = sum(
-                token_counter.count_tokens(m.get("content") or "", model)
-                for m in compressed
-            )
+            total = sum(token_counter.count_tokens(m.get("content") or "", model) for m in compressed)
             if total > budget:
                 logger.info(
                     "首次压缩后仍超预算 (%d > %d)，回退到摘要压缩策略",
@@ -388,9 +476,7 @@ class ContextServiceImpl:
         # 计算实际 token 数
         token_count = 0
         if token_counter:
-            token_count = sum(
-                token_counter.count_tokens(m.get("content") or "", model) for m in result
-            )
+            token_count = sum(token_counter.count_tokens(m.get("content") or "", model) for m in result)
         else:
             token_count = sum(len(m.get("content") or "") // 4 for m in result)
 

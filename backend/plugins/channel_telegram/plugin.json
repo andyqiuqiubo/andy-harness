@@ -1,0 +1,11 @@
+{
+  "id": "channel_telegram",
+  "name": "Telegram Channel",
+  "version": "0.1.0",
+  "type": "channel",
+  "entry": "plugins.channel_telegram.main:TelegramChannelPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["network"],
+  "core": false,
+  "description": "Telegram 长轮询渠道：Bot getUpdates 收消息，统一接入 AgentLoop"
+}

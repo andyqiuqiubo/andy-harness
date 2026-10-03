@@ -9,8 +9,8 @@
   "config_schema": {
     "type": "object",
     "properties": {
-      "api_key": { "type": "string", "secret": true },
-      "base_url": { "type": "string", "default": "https://ark.cn-beijing.volces.com/api/v3" }
+      "api_key": { "type": "string", "secret": true, "title": "API 密钥", "title_en": "API Key" },
+      "base_url": { "type": "string", "default": "https://ark.cn-beijing.volces.com/api/v3", "title": "API 基础地址", "title_en": "API Base URL" }
     }
   },
   "description": "Doubao 大模型接入（火山方舟，model 填接入点/模型 ID）"

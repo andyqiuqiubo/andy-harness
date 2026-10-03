@@ -28,9 +28,7 @@ DEFAULT_ARTIFACTS_MAX = 500
 
 # 默认落盘目录：<项目根>/workspace/artifacts
 # 本文件位于 backend/harness/modules/artifact_store/service.py
-DEFAULT_ARTIFACTS_DIR = (
-    Path(__file__).resolve().parents[3] / "workspace" / "artifacts"
-)
+DEFAULT_ARTIFACTS_DIR = Path(__file__).resolve().parents[3] / "workspace" / "artifacts"
 
 
 def artifacts_dir() -> Path:
@@ -123,9 +121,7 @@ class ArtifactStore(ABC):
         """内容是否达到落盘阈值。"""
 
     @abstractmethod
-    def offload(
-        self, session_id: str, tool_name: str, content: str
-    ) -> ArtifactRecord:
+    def offload(self, session_id: str, tool_name: str, content: str) -> ArtifactRecord:
         """落盘内容并返回工件记录。"""
 
     @abstractmethod
@@ -133,16 +129,21 @@ class ArtifactStore(ABC):
         """按 id 获取工件元数据。"""
 
     @abstractmethod
-    def read(
-        self, artifact_id: str, offset: int = 0, limit: int | None = None
-    ) -> str | None:
+    def read(self, artifact_id: str, offset: int = 0, limit: int | None = None) -> str | None:
         """读取工件正文（支持 offset/limit 分页）；不存在返回 None。"""
 
     @abstractmethod
     def list_artifacts(
-        self, session_id: str | None = None, limit: int = 100
+        self,
+        session_id: str | None = None,
+        limit: int = 100,
+        user_id: str | None = None,
     ) -> list[ArtifactRecord]:
-        """列出工件（可按会话过滤，按时间倒序）。"""
+        """列出工件（可按会话过滤，按时间倒序）。
+
+        user_id 非空时做两跳归属过滤（按 session 的 user_id 收敛），
+        仅多用户部署（启用认证）下生效，单用户部署传空串不过滤。
+        """
 
     @abstractmethod
     def delete(self, artifact_id: str) -> bool:
@@ -152,9 +153,7 @@ class ArtifactStore(ABC):
 class ArtifactStoreImpl(ArtifactStore):
     """基于 SQLite 元数据 + 本地文件的工件存储实现。"""
 
-    def __init__(
-        self, db: Database, base_dir: str | Path | None = None
-    ) -> None:
+    def __init__(self, db: Database, base_dir: str | Path | None = None) -> None:
         self._db = db
         self._base_dir = Path(base_dir) if base_dir else artifacts_dir()
         self._base_dir.mkdir(parents=True, exist_ok=True)
@@ -167,13 +166,8 @@ class ArtifactStoreImpl(ArtifactStore):
         threshold = offload_threshold()
         return threshold > 0 and len(content) > threshold
 
-    def offload(
-        self, session_id: str, tool_name: str, content: str
-    ) -> ArtifactRecord:
-        aid = (
-            f"art_{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}_"
-            f"{uuid.uuid4().hex[:8]}"
-        )
+    def offload(self, session_id: str, tool_name: str, content: str) -> ArtifactRecord:
+        aid = f"art_{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
         path = self._base_dir / f"{aid}.txt"
         path.write_text(content, encoding="utf-8")
 
@@ -226,14 +220,10 @@ class ArtifactStoreImpl(ArtifactStore):
             self._db.execute("DELETE FROM artifacts WHERE id = ?", (row["id"],))
 
     def get(self, artifact_id: str) -> ArtifactRecord | None:
-        row = self._db.query_one(
-            "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
-        )
+        row = self._db.query_one("SELECT * FROM artifacts WHERE id = ?", (artifact_id,))
         return ArtifactRecord.from_row(row) if row is not None else None
 
-    def read(
-        self, artifact_id: str, offset: int = 0, limit: int | None = None
-    ) -> str | None:
+    def read(self, artifact_id: str, offset: int = 0, limit: int | None = None) -> str | None:
         record = self.get(artifact_id)
         if record is None:
             return None
@@ -248,12 +238,24 @@ class ArtifactStoreImpl(ArtifactStore):
         return text[offset:end]
 
     def list_artifacts(
-        self, session_id: str | None = None, limit: int = 100
+        self,
+        session_id: str | None = None,
+        limit: int = 100,
+        user_id: str | None = None,
     ) -> list[ArtifactRecord]:
-        if session_id:
+        if user_id:
+            # E12：仅返回归属当前用户的会话下的工件（两跳：artifacts.session_id → sessions.user_id）。
+            # 用 JOIN 把无主 / 他人会话下的工件排除（单用户模式 user_id 为 None，不触发）。
             rows = self._db.query(
-                "SELECT * FROM artifacts WHERE session_id = ? "
-                "ORDER BY created_at DESC, id DESC LIMIT ?",
+                "SELECT a.* FROM artifacts a "
+                "JOIN sessions s ON a.session_id = s.id "
+                "WHERE s.user_id = ? "
+                "ORDER BY a.created_at DESC, a.id DESC LIMIT ?",
+                (user_id, limit),
+            )
+        elif session_id:
+            rows = self._db.query(
+                "SELECT * FROM artifacts WHERE session_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
                 (session_id, limit),
             )
         else:

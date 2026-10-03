@@ -27,6 +27,7 @@ class Session:
         created_at: str | None = None,
         updated_at: str | None = None,
         archived: bool = False,
+        user_id: str = "",
     ) -> None:
         self.id: str = id or str(uuid.uuid4())
         self.title: str = title
@@ -34,6 +35,8 @@ class Session:
         self.created_at: str = created_at or datetime.now().isoformat()
         self.updated_at: str = updated_at or datetime.now().isoformat()
         self.archived: bool = archived
+        # E12：归属用户；'' 表示无归属（未启用认证 / 历史数据）。
+        self.user_id: str = user_id
 
     def to_dict(self) -> dict[str, Any]:
         """序列化为字典。"""
@@ -44,6 +47,7 @@ class Session:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "archived": self.archived,
+            "user_id": self.user_id,
         }
 
 
@@ -61,6 +65,7 @@ class Message:
         tokens: int = 0,
         latency_ms: int | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        reasoning: str = "",
         created_at: str | None = None,
     ) -> None:
         self.id: str = id or str(uuid.uuid4())
@@ -73,6 +78,8 @@ class Message:
         self.latency_ms: int | None = latency_ms
         # 附件公开元信息（不含 storage_path）：id/kind/filename/mime/size
         self.attachments: list[dict[str, Any]] = attachments or []
+        # 思维链（reasoning_content），用于历史回放执行过程
+        self.reasoning: str = reasoning
         self.created_at: str = created_at or datetime.now().isoformat()
 
     def to_dict(self) -> dict[str, Any]:
@@ -86,6 +93,7 @@ class Message:
             "tokens": self.tokens,
             "latency_ms": self.latency_ms,
             "attachments": self.attachments,
+            "reasoning": self.reasoning,
             "created_at": self.created_at,
         }
 
@@ -118,11 +126,13 @@ class SessionRepository:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    def create(self, session: Session) -> Session:
-        """创建会话。"""
+    def create(self, session: Session, user_id: str = "") -> Session:
+        """创建会话；`user_id` 非空时记录归属。"""
+        if user_id:
+            session.user_id = user_id
         self._db.execute(
-            "INSERT INTO sessions (id, title, config_json, created_at, updated_at, archived) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, title, config_json, created_at, updated_at, "
+            "archived, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 session.id,
                 session.title,
@@ -130,41 +140,53 @@ class SessionRepository:
                 session.created_at,
                 session.updated_at,
                 1 if session.archived else 0,
+                session.user_id,
             ),
         )
         logger.info("会话已创建: %s", session.id)
         return session
 
-    def get(self, session_id: str) -> Session | None:
-        """获取会话。"""
-        row = self._db.query_one(
-            "SELECT * FROM sessions WHERE id = ?", (session_id,)
-        )
+    def get(self, session_id: str, user_id: str = "") -> Session | None:
+        """获取会话；`user_id` 非空时仅返回归属该用户的会话。"""
+        row = self._db.query_one("SELECT * FROM sessions WHERE id = ?", (session_id,))
         if not row:
             return None
-        return self._row_to_session(row)
+        session = self._row_to_session(row)
+        if user_id and session.user_id != user_id:
+            return None
+        return session
 
-    def list_sessions(self, include_archived: bool = False) -> list[Session]:
-        """列出会话。"""
-        if include_archived:
-            rows = self._db.query("SELECT * FROM sessions ORDER BY updated_at DESC")
-        else:
-            rows = self._db.query(
-                "SELECT * FROM sessions WHERE archived = 0 ORDER BY updated_at DESC"
-            )
+    def list_sessions(
+        self,
+        include_archived: bool = False,
+        user_id: str = "",
+    ) -> list[Session]:
+        """列出会话；`user_id` 非空时按归属过滤。"""
+        where: list[str] = []
+        params: list[Any] = []
+        if not include_archived:
+            where.append("archived = 0")
+        if user_id:
+            where.append("user_id = ?")
+            params.append(user_id)
+        sql = "SELECT * FROM sessions"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY updated_at DESC"
+        rows = self._db.query(sql, tuple(params))
         return [self._row_to_session(r) for r in rows]
 
     def update(self, session: Session) -> Session:
         """更新会话。"""
         session.updated_at = datetime.now().isoformat()
         self._db.execute(
-            "UPDATE sessions SET title = ?, config_json = ?, updated_at = ?, archived = ? "
-            "WHERE id = ?",
+            "UPDATE sessions SET title = ?, config_json = ?, updated_at = ?, archived = ?, user_id = ? WHERE id = ?",
             (
                 session.title,
                 json.dumps(session.config),
                 session.updated_at,
                 1 if session.archived else 0,
+                session.user_id,
                 session.id,
             ),
         )
@@ -194,6 +216,7 @@ class SessionRepository:
     @staticmethod
     def _row_to_session(row: Any) -> Session:
         """数据库行转 Session 对象。"""
+        keys = row.keys()
         return Session(
             id=row["id"],
             title=row["title"],
@@ -201,6 +224,7 @@ class SessionRepository:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             archived=bool(row["archived"]),
+            user_id=(row["user_id"] if "user_id" in keys else "") or "",
         )
 
 
@@ -214,7 +238,7 @@ class MessageRepository:
         """追加消息。"""
         # 将 tool_call_id 存入 tool_calls_json 中
         if message.tool_call_id:
-            extra = {"tool_call_id": message.tool_call_id}
+            extra: dict[str, Any] = {"tool_call_id": message.tool_call_id}
             if message.tool_calls:
                 extra["tool_calls"] = message.tool_calls
             tool_calls_json = json.dumps(extra)
@@ -225,8 +249,8 @@ class MessageRepository:
 
         self._db.execute(
             "INSERT INTO messages (id, session_id, role, content, tool_calls_json, "
-            "tokens, latency_ms, attachments, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "tokens, latency_ms, attachments, reasoning, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 message.id,
                 message.session_id,
@@ -236,6 +260,7 @@ class MessageRepository:
                 message.tokens,
                 message.latency_ms,
                 json.dumps(message.attachments or []),
+                message.reasoning or "",
                 message.created_at,
             ),
         )
@@ -245,8 +270,7 @@ class MessageRepository:
     def list_by_session(self, session_id: str) -> list[Message]:
         """列出会话的所有消息（按时间排序；rowid 兜底保证同刻稳定）。"""
         rows = self._db.query(
-            "SELECT * FROM messages WHERE session_id = ? "
-            "ORDER BY created_at ASC, rowid ASC",
+            "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, rowid ASC",
             (session_id,),
         )
         return [self._row_to_message(r) for r in rows]
@@ -261,18 +285,14 @@ class MessageRepository:
 
     def get(self, message_id: str) -> Message | None:
         """获取单条消息。"""
-        row = self._db.query_one(
-            "SELECT * FROM messages WHERE id = ?", (message_id,)
-        )
+        row = self._db.query_one("SELECT * FROM messages WHERE id = ?", (message_id,))
         if not row:
             return None
         return self._row_to_message(row)
 
     def delete_by_session(self, session_id: str) -> int:
         """删除会话的所有消息。"""
-        cursor = self._db.execute(
-            "DELETE FROM messages WHERE session_id = ?", (session_id,)
-        )
+        cursor = self._db.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         return cursor.rowcount
 
     def delete(self, message_id: str) -> bool:
@@ -314,6 +334,7 @@ class MessageRepository:
             tokens=row["tokens"],
             latency_ms=row["latency_ms"],
             attachments=json.loads(row["attachments"]) if row["attachments"] else [],
+            reasoning=(row["reasoning"] if "reasoning" in row.keys() else "") or "",
             created_at=row["created_at"],
         )
 
@@ -359,9 +380,7 @@ class AttachmentRepository:
 
     def get(self, att_id: str) -> dict[str, Any] | None:
         """获取附件（含 storage_path，仅供后端内部使用）。"""
-        row = self._db.query_one(
-            "SELECT * FROM attachments WHERE id = ?", (att_id,)
-        )
+        row = self._db.query_one("SELECT * FROM attachments WHERE id = ?", (att_id,))
         if not row:
             return None
         return {
@@ -398,11 +417,23 @@ class AttachmentRepository:
             for r in (by_id[i] for i in att_ids if i in by_id)
         ]
 
+    def delete_by_ids(self, att_ids: list[str]) -> int:
+        """按 id 批量删除附件元信息，返回删除条数。
+
+        P1-2：供删除单条消息 / 整轮问答时回收附件使用（磁盘文件由调用方先行清理）。
+        """
+        if not att_ids:
+            return 0
+        placeholders = ",".join("?" for _ in att_ids)
+        cursor = self._db.execute(
+            f"DELETE FROM attachments WHERE id IN ({placeholders})",
+            tuple(att_ids),
+        )
+        return int(cursor.rowcount or 0)
+
     def delete_by_session(self, session_id: str) -> int:
         """删除会话的全部附件元信息，返回删除条数。"""
-        cursor = self._db.execute(
-            "DELETE FROM attachments WHERE session_id = ?", (session_id,)
-        )
+        cursor = self._db.execute("DELETE FROM attachments WHERE session_id = ?", (session_id,))
         return cursor.rowcount
 
 
@@ -440,8 +471,7 @@ class ContextSnapshotRepository:
     def get_latest(self, session_id: str) -> ContextSnapshot | None:
         """获取最新的快照。"""
         row = self._db.query_one(
-            "SELECT * FROM context_snapshots WHERE session_id = ? "
-            "ORDER BY created_at DESC LIMIT 1",
+            "SELECT * FROM context_snapshots WHERE session_id = ? ORDER BY created_at DESC LIMIT 1",
             (session_id,),
         )
         if not row:

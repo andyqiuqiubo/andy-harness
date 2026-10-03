@@ -1,0 +1,11 @@
+{
+  "id": "tool_unit_converter",
+  "name": "单位换算 Unit Converter",
+  "version": "0.1.0",
+  "type": "tool",
+  "entry": "plugins.tool_unit_converter.main:UnitConverterPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": [],
+  "description": "常见物理量单位换算：长度、重量、温度、面积、体积、速度、数据大小。",
+  "long_description": "单位换算工具，覆盖 7 大类常用物理量：\n\n- length 长度：m / km / cm / mm / mi(英里) / yd(码) / ft(英尺) / in(英寸)\n- mass 重量：kg / g / mg / t(吨) / lb(磅) / oz(盎司)\n- temperature 温度：C / F / K（含公式换算）\n- area 面积：m2 / km2 / cm2 / ha(公顷) / acre(英亩) / ft2\n- volume 体积：L / mL / m3 / gal(加仑) / ft3\n- speed 速度：m/s / km/h / mph / knot(节)\n- data 数据：B / KB / MB / GB / TB（十进制 1000 与二进制 1024 均支持，默认 1024）\n\n适用于『5 英里等于多少公里』『100 华氏度是多少摄氏』『1 TB 是多少 GB』等换算问题。"
+}

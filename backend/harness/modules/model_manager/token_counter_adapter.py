@@ -52,7 +52,8 @@ class ProviderTokenCounter(TokenCounter):
                 if model in models:
                     try:
                         provider = registry.get_provider(provider_info["id"])
-                        return provider.count_tokens(text, model)
+                        count: int = provider.count_tokens(text, model)
+                        return count
                     except Exception as e:
                         logger.debug(
                             "Provider %s 计算 token 失败，回退到估算: %s",

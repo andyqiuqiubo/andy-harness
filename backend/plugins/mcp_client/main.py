@@ -23,8 +23,18 @@ logger = logging.getLogger("harness.plugins.mcp_client")
 # 名字以这些前缀开头的远端工具视为只读查询（大多数 MCP 工具是查询类），
 # 从而不触发人工确认；其余保持保守的 write。
 _READ_PREFIXES = (
-    "get", "query", "list", "search", "read", "fetch",
-    "describe", "find", "show", "count", "stat", "lookup",
+    "get",
+    "query",
+    "list",
+    "search",
+    "read",
+    "fetch",
+    "describe",
+    "find",
+    "show",
+    "count",
+    "stat",
+    "lookup",
 )
 
 
@@ -32,11 +42,16 @@ class MCPTool(ToolPlugin):
     """把单个 MCP 远端工具包装成本地 ToolPlugin。"""
 
     def __init__(
-        self, services: ServiceRegistry, spec: MCPToolSpec, service: MCPClientService
+        self,
+        services: ServiceRegistry,
+        spec: MCPToolSpec,
+        service: MCPClientService,
+        server_description: str = "",
     ) -> None:
         self._services = services
         self._spec = spec
         self._mcp = service
+        self._server_description = server_description
 
     @property
     def tool_name(self) -> str:
@@ -51,9 +66,13 @@ class MCPTool(ToolPlugin):
 
     @property
     def description(self) -> str:
+        # 头部带上 server 级说明（用户在 mcp.json 里写的中文能力描述 + 参数约定），
+        # 远端自带描述通常只有一句英文，不足以让模型判断该不该用、参数怎么填。
+        head = f"[MCP:{self._spec.server}]"
+        if self._server_description:
+            head = f"{head} {self._server_description}"
         return (
-            f"[MCP:{self._spec.server}] {self._spec.description}\n"
-            f"远端工具 {self._spec.name}，由 MCP server '{self._spec.server}' 提供。"
+            f"{head}\n远端工具 {self._spec.name}（由 MCP server '{self._spec.server}' 提供）：{self._spec.description}"
         )
 
     @property
@@ -62,9 +81,7 @@ class MCPTool(ToolPlugin):
 
     async def execute(self, args: dict[str, Any]) -> str:
         try:
-            return await self._mcp.call_tool(
-                self._spec.server, self._spec.name, args or {}
-            )
+            return await self._mcp.call_tool(self._spec.server, self._spec.name, args or {})
         except Exception as e:  # noqa: BLE001
             return f"调用 MCP 工具失败: {e}"
 
@@ -96,9 +113,11 @@ class MCPClientPlugin(BasePlugin):
             ctx.services.register(ToolRegistry, ToolRegistry(), owner=self.plugin_id)
         tool_registry = ctx.services.get(ToolRegistry)
 
+        server_descriptions = {name: cfg.description for name, cfg in self._service.get_configs().items()}
         for server, specs in tool_specs_by_server.items():
+            server_desc = server_descriptions.get(server, "")
             for spec in specs:
-                tool = MCPTool(ctx.services, spec, self._service)
+                tool = MCPTool(ctx.services, spec, self._service, server_desc)
                 tool_registry.register(tool, owner=self.plugin_id)
                 self._registered.append(tool.tool_name)
                 total += 1

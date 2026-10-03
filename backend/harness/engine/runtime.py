@@ -29,9 +29,7 @@ class AgentRuntime:
     budget: int = 4096
 
 
-_current: ContextVar[AgentRuntime | None] = ContextVar(
-    "harness_agent_runtime", default=None
-)
+_current: ContextVar[AgentRuntime | None] = ContextVar("harness_agent_runtime", default=None)
 
 
 def set_runtime(rt: AgentRuntime) -> Any:

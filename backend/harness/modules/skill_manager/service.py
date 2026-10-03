@@ -177,12 +177,8 @@ class SkillServiceImpl(SkillService):
         state_file: Path | None = None,
     ) -> None:
         self._roots = roots if roots is not None else default_skill_roots()
-        self._plugin_dirs = (
-            plugin_dirs if plugin_dirs is not None else default_plugin_dirs()
-        )
-        self._state_file = state_file or (
-            Path(__file__).resolve().parents[3] / "data" / "skill_state.json"
-        )
+        self._plugin_dirs = plugin_dirs if plugin_dirs is not None else default_plugin_dirs()
+        self._state_file = state_file or (Path(__file__).resolve().parents[3] / "data" / "skill_state.json")
         self._skills: dict[str, SkillMeta] = {}
         self.reload()
 
@@ -223,9 +219,7 @@ class SkillServiceImpl(SkillService):
         if meta is None:
             return
         if meta.name in found:
-            logger.warning(
-                "Skill 重名，已忽略: %s (%s)", meta.name, meta.path
-            )
+            logger.warning("Skill 重名，已忽略: %s (%s)", meta.name, meta.path)
             return
         found[meta.name] = meta
 
@@ -251,9 +245,7 @@ class SkillServiceImpl(SkillService):
         name = meta_raw.get("name", "").strip() or skill_dir.name
         description = meta_raw.get("description", "").strip()
         if not description:
-            logger.warning(
-                "Skill 缺少 description，已跳过: %s", skill_file
-            )
+            logger.warning("Skill 缺少 description，已跳过: %s", skill_file)
             return None
 
         return SkillMeta(
@@ -303,21 +295,15 @@ class SkillServiceImpl(SkillService):
         （空列表 → 返回空串），供定时任务等需要限定 Skill 范围的场景使用。
         """
         allowed = None if names is None else {n for n in names}
-        available = [
-            m
-            for m in self.list_skills()
-            if m.enabled and (allowed is None or m.name in allowed)
-        ]
+        available = [m for m in self.list_skills() if m.enabled and (allowed is None or m.name in allowed)]
         if not available:
             return ""
 
         lines = [
             "## 可用 Skills（按需加载）",
-            "下面是你已安装的 Skills。每个 Skill 是一套标准作业流程，"
-            "包含详细步骤、规范与可选脚本。",
+            "下面是你已安装的 Skills。每个 Skill 是一套标准作业流程，包含详细步骤、规范与可选脚本。",
             "规则：",
-            "- 仅当用户任务**明确匹配**某个 Skill 的 description 时，"
-            "才用 use_skill 工具加载它（传入 name）。",
+            "- 仅当用户任务**明确匹配**某个 Skill 的 description 时，才用 use_skill 工具加载它（传入 name）。",
             "- 不要预先加载，不要加载与当前任务无关的 Skill。",
             "- 加载后严格按其中的步骤执行。",
             "",
@@ -378,10 +364,7 @@ class SkillServiceImpl(SkillService):
             return f"错误: 读取资源失败: {e}"
 
         if len(text) > MAX_RESOURCE_CHARS:
-            text = (
-                text[:MAX_RESOURCE_CHARS]
-                + f"\n\n... [已截断，剩余 {len(text) - MAX_RESOURCE_CHARS} 字符未显示]"
-            )
+            text = text[:MAX_RESOURCE_CHARS] + f"\n\n... [已截断，剩余 {len(text) - MAX_RESOURCE_CHARS} 字符未显示]"
         return text
 
     def set_enabled(self, name: str, enabled: bool) -> bool:
@@ -389,9 +372,7 @@ class SkillServiceImpl(SkillService):
         if name not in self._skills:
             return False
         self._skills[name].enabled = enabled
-        self._save_disabled(
-            {n for n, m in self._skills.items() if not m.enabled}
-        )
+        self._save_disabled({n for n, m in self._skills.items() if not m.enabled})
         return True
 
     # ── 状态持久化 ────────────────────────────────────

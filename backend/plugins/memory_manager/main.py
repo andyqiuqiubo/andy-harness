@@ -8,6 +8,7 @@ from pathlib import Path
 from harness.infra.database import Database
 from harness.kernel.context import PluginContext
 from harness.kernel.contracts.base import BasePlugin, PluginManifest
+from harness.modules.memory_manager.embedding import build_embedder_from_env
 from harness.modules.memory_manager.service import MemoryService, MemoryServiceImpl
 from harness.modules.memory_manager.summarizer import (
     MemorySummarizer,
@@ -38,15 +39,13 @@ class MemoryManagerPlugin(BasePlugin):
             db = ctx.services.get(Database)
         except Exception:
             db = Database()
-        self._service = MemoryServiceImpl(db)
+        self._service = MemoryServiceImpl(db, embedder=build_embedder_from_env())
         ctx.services.register(MemoryService, self._service, owner=self.plugin_id)
 
         # 定时自主总结（把会话问答压缩成长期记忆）
         state_path = Path(getattr(db, "db_path", "harness.db")).parent / "memory_state.json"
         self._summarizer = MemorySummarizer(ctx.services, state_path)
-        ctx.services.register(
-            MemorySummarizer, self._summarizer, owner=self.plugin_id
-        )
+        ctx.services.register(MemorySummarizer, self._summarizer, owner=self.plugin_id)
         if summary_enabled():
             self._task = asyncio.create_task(run_summary_loop(self._summarizer))
             ctx.logger.info("memory-manager 已激活（含自动总结）")

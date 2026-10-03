@@ -119,9 +119,7 @@ class TodoWriteTool(ToolPlugin):
             }.get(item.status, "[ ]")
             lines.append(f"{mark} {item.content}（{STATUS_LABEL.get(item.status, item.status)}）")
         summary = service.summary(session_id)
-        lines.append(
-            f"进度：已完成 {summary.get(STATUS_COMPLETED, 0)} / {len(saved)}"
-        )
+        lines.append(f"进度：已完成 {summary.get(STATUS_COMPLETED, 0)} / {len(saved)}")
         return "\n".join(lines)
 
 

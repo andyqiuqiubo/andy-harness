@@ -77,15 +77,11 @@ def classify(filename: str, size: int) -> tuple[str, str]:
     if ext in DOCUMENT_EXTENSIONS:
         kind = "document"
         if size > MAX_DOCUMENT_SIZE:
-            raise AttachmentError(
-                f"文档 {filename} 过大（{size} 字节，上限 {MAX_DOCUMENT_SIZE} 字节）"
-            )
+            raise AttachmentError(f"文档 {filename} 过大（{size} 字节，上限 {MAX_DOCUMENT_SIZE} 字节）")
     elif ext in IMAGE_EXTENSIONS:
         kind = "image"
         if size > MAX_IMAGE_SIZE:
-            raise AttachmentError(
-                f"图片 {filename} 过大（{size} 字节，上限 {MAX_IMAGE_SIZE} 字节）"
-            )
+            raise AttachmentError(f"图片 {filename} 过大（{size} 字节，上限 {MAX_IMAGE_SIZE} 字节）")
     else:
         raise AttachmentError(f"不支持的文件类型: {filename}（后缀 {ext or '无'}）")
     return kind, _MIME_BY_EXT.get(ext, "application/octet-stream")

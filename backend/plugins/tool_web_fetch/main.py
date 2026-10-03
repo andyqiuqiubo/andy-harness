@@ -163,9 +163,7 @@ class WebFetchPlugin(BasePlugin):
         from harness.engine.tool_registry import ToolRegistry
 
         if not ctx.services.has(ToolRegistry):
-            ctx.services.register(
-                ToolRegistry, ToolRegistry(), owner=self.plugin_id
-            )
+            ctx.services.register(ToolRegistry, ToolRegistry(), owner=self.plugin_id)
         tool_registry = ctx.services.get(ToolRegistry)
 
         tool_registry.register(WebFetchTool(), owner=self.plugin_id)

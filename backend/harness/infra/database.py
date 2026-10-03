@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     config_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    archived INTEGER NOT NULL DEFAULT 0
+    archived INTEGER NOT NULL DEFAULT 0,
+    user_id TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -121,7 +123,8 @@ CREATE TABLE IF NOT EXISTS memories (
     tags TEXT NOT NULL DEFAULT '',
     embedding TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    user_id TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -188,10 +191,47 @@ CREATE TABLE IF NOT EXISTS scheduled_task_runs (
 );
 """
 
+# 运行检查点（断点续跑）：记录每次 AgentLoop 运行的状态与迭代数，
+# 服务重启 / 崩溃后可据此从会话已持久化的上下文续跑。
+_CREATE_AGENT_RUNS = """
+CREATE TABLE IF NOT EXISTS agent_runs (
+    run_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    iteration INTEGER NOT NULL DEFAULT 0,
+    snapshot_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+# 渠道会话映射（E1：多渠道 Channel）：每个 (channel, user) 对应一个会话，
+# 使外部渠道的同一用户在多次 / 重启后仍续接同一对话。
+_CREATE_CHANNEL_LINKS = """
+CREATE TABLE IF NOT EXISTS channel_links (
+    channel TEXT NOT NULL,
+    external_user TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (channel, external_user)
+);
+"""
+
+# 用户账户（E12：认证与多用户）：启用认证后按用户隔离会话与记忆。
+_CREATE_USERS = """
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    salt TEXT NOT NULL,
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
 _CREATE_INDEX_MESSAGES_SESSION = """
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
 """
-
 _CREATE_INDEX_SNAPSHOTS_SESSION = """
 CREATE INDEX IF NOT EXISTS idx_snapshots_session ON context_snapshots(session_id, created_at);
 """
@@ -204,18 +244,27 @@ class Database:
         # 支持环境变量覆盖（测试隔离用），db_path 显式传入优先级最高
         self.db_path = db_path or os.environ.get("HARNESS_DB_PATH") or DEFAULT_DB_PATH
         self._conn: sqlite3.Connection | None = None
+        # 单共享连接上的并发保护：WAL 允许读写分离，但同一连接仍不可被多线程同时访问。
+        # 用可重入锁包裹所有数据库操作，避免多会话 / 后台任务并写时的连接损坏与交错。
+        self._lock = threading.RLock()
 
         # 确保数据目录存在
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
     @property
     def conn(self) -> sqlite3.Connection:
-        """获取数据库连接（惰性创建）。"""
+        """获取数据库连接（惰性创建，双重检查锁保证只建一次）。"""
         if self._conn is None:
-            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
-            self._conn.execute("PRAGMA foreign_keys = ON")
-            self.init_schema()
+            with self._lock:
+                if self._conn is None:
+                    self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+                    self._conn.row_factory = sqlite3.Row
+                    self._conn.execute("PRAGMA foreign_keys = ON")
+                    # WAL：读写分离，缓解并发写时的「database is locked」；
+                    # busy_timeout：写冲突时等待而非立即报错。
+                    self._conn.execute("PRAGMA journal_mode = WAL")
+                    self._conn.execute("PRAGMA busy_timeout = 5000")
+                    self.init_schema()
         return self._conn
 
     def init_schema(self) -> None:
@@ -233,6 +282,9 @@ class Database:
             + _CREATE_SCHEDULED_TASKS
             + _CREATE_SCHEDULED_RUNS
             + _CREATE_ATTACHMENTS
+            + _CREATE_AGENT_RUNS
+            + _CREATE_CHANNEL_LINKS
+            + _CREATE_USERS
             + _CREATE_INDEX_MESSAGES_SESSION
             + _CREATE_INDEX_SNAPSHOTS_SESSION
             + "CREATE INDEX IF NOT EXISTS idx_todos_session ON todos(session_id, position);"
@@ -243,42 +295,48 @@ class Database:
             + "CREATE INDEX IF NOT EXISTS idx_sched_tasks_next ON scheduled_tasks(enabled, next_run_at);"
             + "CREATE INDEX IF NOT EXISTS idx_sched_runs_task ON scheduled_task_runs(task_id, started_at);"
             + "CREATE INDEX IF NOT EXISTS idx_attachments_session ON attachments(session_id, created_at);"
+            + "CREATE INDEX IF NOT EXISTS idx_agent_runs_session ON agent_runs(session_id, updated_at);"
         )
         self._conn.commit()
-        # 旧库升级：messages 表可能缺少 attachments 列
+        # 旧库升级：messages 表可能缺少 attachments / reasoning 列
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(messages)")}
         if "attachments" not in cols:
-            self._conn.execute(
-                "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'"
-            )
-            self._conn.commit()
+            self._conn.execute("ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
+        if "reasoning" not in cols:
+            self._conn.execute("ALTER TABLE messages ADD COLUMN reasoning TEXT NOT NULL DEFAULT ''")
+        # E12：旧库补用户归属列（认证启用后按用户隔离）
+        sess_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(sessions)")}
+        if "user_id" not in sess_cols:
+            self._conn.execute("ALTER TABLE sessions ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+        mem_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(memories)")}
+        if "user_id" not in mem_cols:
+            self._conn.execute("ALTER TABLE memories ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+        self._conn.commit()
         logger.info("数据库 schema 已初始化: %s", self.db_path)
 
-    def execute(
-        self, sql: str, params: tuple[Any, ...] = ()
-    ) -> sqlite3.Cursor:
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
         """执行 SQL（非查询）。"""
-        cursor = self.conn.execute(sql, params)
-        self.conn.commit()
-        return cursor
+        with self._lock:
+            cursor = self.conn.execute(sql, params)
+            self.conn.commit()
+            return cursor
 
-    def query(
-        self, sql: str, params: tuple[Any, ...] = ()
-    ) -> list[sqlite3.Row]:
+    def query(self, sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
         """查询并返回所有行。"""
-        cursor = self.conn.execute(sql, params)
-        return cursor.fetchall()
+        with self._lock:
+            cursor = self.conn.execute(sql, params)
+            return cursor.fetchall()
 
-    def query_one(
-        self, sql: str, params: tuple[Any, ...] = ()
-    ) -> sqlite3.Row | None:
+    def query_one(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Row | None:
         """查询并返回第一行。"""
-        cursor = self.conn.execute(sql, params)
-        result = cursor.fetchone()
-        return result if result is not None else None
+        with self._lock:
+            cursor = self.conn.execute(sql, params)
+            result = cursor.fetchone()
+            return result if result is not None else None
 
     def close(self) -> None:
         """关闭连接。"""
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._conn:
+                self._conn.close()
+                self._conn = None

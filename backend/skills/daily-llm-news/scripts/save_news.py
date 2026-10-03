@@ -8,6 +8,7 @@
 输入 JSON 为数组，或含 "news"/"items" 键的对象；每条含
 title/source/time/summary/url 字段。
 """
+
 import argparse
 import json
 import os
@@ -33,7 +34,7 @@ def load_items(path):
 def render(date, items):
     lines = ["大模型新闻日报 " + date, "=" * 40, ""]
     for i, it in enumerate(items, 1):
-        lines.append("%d. %s" % (i, it.get("title", "(无标题)")))
+        lines.append(f"{i}. {it.get('title', '(无标题)')}")
         meta = " | ".join(x for x in [it.get("source"), it.get("time")] if x)
         if meta:
             lines.append("   来源：" + meta)
@@ -57,7 +58,7 @@ def main():
 
     items = load_items(args.input)
     if len(items) != 5:
-        print("警告：期望 5 条新闻，实际 %d 条" % len(items), file=sys.stderr)
+        print(f"警告：期望 5 条新闻，实际 {len(items)} 条", file=sys.stderr)
 
     os.makedirs(args.outdir, exist_ok=True)
     path = os.path.join(args.outdir, date + "-llm-news.txt")

@@ -53,10 +53,7 @@ class UseSkillTool(ToolPlugin):
                 },
                 "resource": {
                     "type": "string",
-                    "description": (
-                        "可选。要读取的随附资源相对路径，"
-                        "如 'references/api.md'，仅在正文要求时才读"
-                    ),
+                    "description": ("可选。要读取的随附资源相对路径，如 'references/api.md'，仅在正文要求时才读"),
                 },
             },
             "required": ["name"],
@@ -97,13 +94,9 @@ class UseSkillTool(ToolPlugin):
             for rel in resources:
                 lines.append(f"- {rel}")
             lines.append("")
+            lines.append(f"读取方式：再次调用 use_skill，传 name='{name}' 与 resource='<上面的相对路径>'。")
             lines.append(
-                f"读取方式：再次调用 use_skill，"
-                f"传 name='{name}' 与 resource='<上面的相对路径>'。"
-            )
-            lines.append(
-                "若某资源是脚本且正文要求执行它，用你已有的文件读取/代码执行工具处理，"
-                f"Skill 目录绝对路径: {meta.path}"
+                f"若某资源是脚本且正文要求执行它，用你已有的文件读取/代码执行工具处理，Skill 目录绝对路径: {meta.path}"
             )
         else:
             lines.append("- （无随附资源）")

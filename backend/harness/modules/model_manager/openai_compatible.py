@@ -25,7 +25,7 @@ logger = logging.getLogger("harness.model_manager")
 _tiktoken_encoding = None
 
 
-def _get_tiktoken_encoding():
+def _get_tiktoken_encoding() -> Any:
     """获取（缓存）tiktoken 编码器，避免每次调用都重新加载。"""
     global _tiktoken_encoding
     if _tiktoken_encoding is None:
@@ -135,9 +135,7 @@ class OpenAICompatibleProvider(TokenCounter, ModelProviderPlugin):
         for attempt in range(max_retries):
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
-                    async with client.stream(
-                        "POST", url, json=body, headers=self._headers()
-                    ) as response:
+                    async with client.stream("POST", url, json=body, headers=self._headers()) as response:
                         if response.status_code != 200:
                             error_text = await response.aread()
                             error_msg = self._parse_error_response(
@@ -205,9 +203,7 @@ class OpenAICompatibleProvider(TokenCounter, ModelProviderPlugin):
                 logger.info("%s 等待 %ds 后重试...", self.provider_name, backoff)
                 await asyncio.sleep(backoff)
 
-        raise ProviderError(
-            f"{self.provider_name} 请求失败，已重试 {max_retries} 次: {last_error}"
-        )
+        raise ProviderError(f"{self.provider_name} 请求失败，已重试 {max_retries} 次: {last_error}")
 
     def _parse_stream_chunk(self, data: dict[str, Any]) -> dict[str, Any] | None:
         """解析单个 SSE 流式数据块。

@@ -19,6 +19,7 @@ logger = logging.getLogger("harness.api.schedules")
 
 router = APIRouter(prefix="/api/schedules", tags=["schedules"])
 
+
 # 以下模型必须定义在路由装饰器之前（from __future__ import annotations 下
 # 装饰器运行时会解析注解，定义在后面的模型会因 ForwardRef 未解析而 422）。
 class ScheduleSpecModel(BaseModel):
@@ -178,9 +179,7 @@ def setup_schedule_routes(registry: ServiceRegistry) -> None:
         if not body.prompt.strip():
             raise APIError("SCHEDULE_INVALID", "任务内容（prompt）不能为空", 400)
         if body.schedule.type not in VALID_TYPES:
-            raise APIError(
-                "SCHEDULE_INVALID", f"无效的调度类型: {body.schedule.type}", 400
-            )
+            raise APIError("SCHEDULE_INVALID", f"无效的调度类型: {body.schedule.type}", 400)
         task = svc.create_task(body.model_dump())
         return {"task": task.to_dict()}
 

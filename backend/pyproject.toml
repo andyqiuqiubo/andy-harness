@@ -1,6 +1,6 @@
 [project]
 name = "harness"
-version = "0.1.0"
+version = "1.0.0"
 description = "andy-harness — 插件化 Agent Harness 智能体底座"
 license = { text = "MIT" }
 requires-python = ">=3.11"
@@ -10,6 +10,7 @@ dependencies = [
     "httpx>=0.27.0",
     "cryptography>=43.0.0",
     "tiktoken>=0.7.0",
+    "pillow>=10.0.0",
     "matplotlib>=3.11.2",
     "numpy>=2.4.6",
     "python-multipart>=0.0.20",
@@ -22,6 +23,13 @@ dev = [
     "httpx>=0.27.0",
     "ruff>=0.6.0",
     "mypy>=1.11.0",
+]
+# Computer Use（桌面操控：截图/鼠标/键盘）所需的可选依赖。
+# 缺失时 RealDesktopController.available 优雅降级为 False，核心对话能力不受影响；
+# 需启用 Computer Use 时再安装（见 README「可选：桌面操控依赖」）。
+desktop = [
+    "pyautogui>=0.9.54",
+    "mss>=9.0.1",
 ]
 
 [build-system]

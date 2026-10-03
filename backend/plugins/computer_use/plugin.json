@@ -1,0 +1,51 @@
+{
+  "id": "computer_use",
+  "name": "Computer Use",
+  "version": "0.1.0",
+  "type": "tool",
+  "entry": "plugins.computer_use.main:ComputerUsePlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["network", "secrets.read", "desktop", "filesystem", "shell"],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "api_key": { "type": "string", "secret": true, "default": "", "title": "API 密钥", "title_en": "API Key" },
+      "base_url": { "type": "string", "default": "https://api.deepseek.com", "title": "API 基础地址", "title_en": "API Base URL" },
+      "model": { "type": "string", "default": "deepseek-v4-flash", "title": "模型名称", "title_en": "Model" },
+      "max_iterations": { "type": "integer", "default": 15, "title": "最大迭代轮数（历史字段，现由 max_llm_calls 兜底）", "title_en": "Max Iterations (legacy, superseded by max_llm_calls)" },
+      "max_llm_calls": { "type": "integer", "default": 15, "title": "模型调用次数预算（硬上限，超出即中止）", "title_en": "Max LLM Calls Budget (hard cap)" },
+      "plan_first": { "type": "boolean", "default": true, "title": "计划先行（先用一次调用产出步骤清单）", "title_en": "Plan First (one call to produce a step plan)" },
+      "stagnation_limit": { "type": "integer", "default": 4, "title": "卡死检测阈值（连续相同操作次数）", "title_en": "Stagnation Limit" },
+      "overall_timeout": { "type": "number", "default": 300, "title": "整体超时（秒）", "title_en": "Overall Timeout (s)" },
+      "step_timeout": { "type": "number", "default": 15, "title": "单步超时（秒）", "title_en": "Step Timeout (s)" },
+      "http_timeout": { "type": "number", "default": 60, "title": "HTTP 超时（秒）", "title_en": "HTTP Timeout (s)" },
+      "max_retries": { "type": "integer", "default": 2, "title": "失败最大重试次数", "title_en": "Max Retries" },
+      "max_image_dimension": { "type": "integer", "default": 1280, "title": "截图最大边长（像素）", "title_en": "Max Image Dimension (px)" },
+      "jpeg_quality": { "type": "integer", "default": 70, "title": "截图压缩质量（1-100）", "title_en": "Screenshot JPEG Quality" },
+      "max_output_chars": { "type": "integer", "default": 4000, "title": "结果截断字符数", "title_en": "Max Output Chars" },
+      "approval_mode": { "type": "string", "default": "whitelist", "title": "授权模式（whitelist/interactive）", "title_en": "Approval Mode" },
+      "allow_desktop": { "type": "boolean", "default": true, "title": "允许桌面操作", "title_en": "Allow Desktop Control" },
+      "allow_commands": {
+        "type": "string",
+        "default": "dir,ls,cat,type,echo,python,python3,pip,pip3,git,node,npm,npx,ping,ipconfig,cls,clear,mkdir,md,copy,move,ren,cp,mv,touch,notepad,code,explorer,start",
+        "title": "命令白名单（逗号分隔）",
+        "title_en": "Allowed Commands (comma-separated)"
+      },
+      "allow_paths": { "type": "string", "default": "", "title": "允许路径作用域（逗号分隔，留空为全部）", "title_en": "Allowed Paths (comma-separated)" },
+      "deny_commands": {
+        "type": "string",
+        "default": "rm -rf,rm -fr,del /f,del /q,del /s,format ,mkfs,dd if=,shutdown,restart,reg delete,diskpart,:(){ ,| sh,| bash,| powershell,> /dev/sd,wipe",
+        "title": "命令黑名单（逗号分隔，硬性拦截）",
+        "title_en": "Denied Commands (comma-separated)"
+      },
+      "deny_paths": {
+        "type": "string",
+        "default": "C:\\Windows,C:\\Program Files,C:\\ProgramData,C:\\Users,/etc,/System,/usr,/bin,/sbin,/private,/Library",
+        "title": "受限目录（逗号分隔，硬性拦截）",
+        "title_en": "Restricted Paths (comma-separated)"
+      },
+      "working_dir": { "type": "string", "default": "", "title": "工作目录（留空为系统临时目录）", "title_en": "Working Directory (blank = system temp)" }
+    }
+  },
+  "description": "基于 DeepSeek V4.1 Flash（模型 id: deepseek-v4-flash）的 Computer Use 能力：自主操作桌面（截图/鼠标/键盘）、读写文件、执行命令。内置安全围栏：白名单或人工授权二选一、危险命令与受限目录硬性拦截、单步/整体超时、失败重试、结果截断、异常兜底，避免模型失控。"
+}

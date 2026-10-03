@@ -42,9 +42,7 @@ class ArtifactStorePlugin(BasePlugin):
             db = Database()
         self._service = ArtifactStoreImpl(db)
         ctx.services.register(ArtifactStore, self._service, owner=self.plugin_id)
-        ctx.hooks.register(
-            "post_tool_call", self._on_post_tool_call, owner=self.plugin_id
-        )
+        ctx.hooks.register("post_tool_call", self._on_post_tool_call, owner=self.plugin_id)
         ctx.logger.info(
             "artifact-store 已激活（目录=%s，阈值=%d 字符）",
             self._service.base_dir,
@@ -78,7 +76,7 @@ class ArtifactStorePlugin(BasePlugin):
             f"文件路径: {record.path}\n"
             f"内容摘要: {record.summary}\n"
             f"如需查看完整内容，请调用 read_artifact 工具"
-            f"（artifact_id=\"{record.id}\"，可用 offset/limit 分页）。"
+            f'（artifact_id="{record.id}"，可用 offset/limit 分页）。'
         )
         if self._ctx is not None:
             self._ctx.logger.info(

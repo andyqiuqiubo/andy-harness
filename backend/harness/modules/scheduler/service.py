@@ -108,7 +108,7 @@ class ScheduleSpec:
         if self.type == DAILY:
             return f"每天 {hhmm}"
         if self.type == WEEKLY:
-            days = [ _WEEKDAY_LABELS[d] for d in sorted(set(self.weekdays))]
+            days = [_WEEKDAY_LABELS[d] for d in sorted(set(self.weekdays))]
             label = "、".join(days) if days else "（未选择星期）"
             return f"每{label} {hhmm}"
         if self.type == INTERVAL:
@@ -151,9 +151,7 @@ def compute_next_run(spec: ScheduleSpec, now: datetime | None = None) -> str:
     if not weekdays:
         weekdays = [now.weekday()]
     for delta in range(0, 8):
-        day = (now + timedelta(days=delta)).replace(
-            hour=hour, minute=minute, second=0, microsecond=0
-        )
+        day = (now + timedelta(days=delta)).replace(hour=hour, minute=minute, second=0, microsecond=0)
         if day.weekday() in weekdays and day > now:
             return _to_iso(day)
     return ""
@@ -327,9 +325,7 @@ class SchedulerService:
         return [ScheduledTask.from_row(r) for r in rows]
 
     def get_task(self, task_id: str) -> ScheduledTask | None:
-        row = self._db.query_one(
-            "SELECT * FROM scheduled_tasks WHERE id = ?", (task_id,)
-        )
+        row = self._db.query_one("SELECT * FROM scheduled_tasks WHERE id = ?", (task_id,))
         return ScheduledTask.from_row(row) if row else None
 
     def due_tasks(self, now: datetime | None = None) -> list[ScheduledTask]:
@@ -346,8 +342,7 @@ class SchedulerService:
 
     def list_runs(self, task_id: str, limit: int = 20) -> list[TaskRun]:
         rows = self._db.query(
-            "SELECT * FROM scheduled_task_runs WHERE task_id = ? "
-            "ORDER BY rowid DESC LIMIT ?",
+            "SELECT * FROM scheduled_task_runs WHERE task_id = ? ORDER BY rowid DESC LIMIT ?",
             (task_id, max(1, limit)),
         )
         return [TaskRun.from_row(r) for r in rows]
@@ -395,11 +390,7 @@ class SchedulerService:
             return None
 
         enabled = bool(data.get("enabled", task.enabled))
-        schedule = (
-            ScheduleSpec.from_dict(data.get("schedule"))
-            if "schedule" in data
-            else task.schedule
-        )
+        schedule = ScheduleSpec.from_dict(data.get("schedule")) if "schedule" in data else task.schedule
 
         sets: list[str] = []
         params: list[Any] = []
@@ -454,14 +445,10 @@ class SchedulerService:
         return True
 
     def clear_runs(self, task_id: str) -> int:
-        rows = self._db.query(
-            "SELECT COUNT(*) AS n FROM scheduled_task_runs WHERE task_id = ?", (task_id,)
-        )
+        rows = self._db.query("SELECT COUNT(*) AS n FROM scheduled_task_runs WHERE task_id = ?", (task_id,))
         count = int(rows[0]["n"]) if rows else 0
         if count:
-            self._db.execute(
-                "DELETE FROM scheduled_task_runs WHERE task_id = ?", (task_id,)
-            )
+            self._db.execute("DELETE FROM scheduled_task_runs WHERE task_id = ?", (task_id,))
         return count
 
     # ── 运行记录 ──────────────────────────────────────
@@ -469,8 +456,7 @@ class SchedulerService:
     def start_run(self, task_id: str, trigger: str = "schedule") -> str:
         run_id = f"run_{uuid.uuid4().hex[:12]}"
         self._db.execute(
-            "INSERT INTO scheduled_task_runs (id, task_id, started_at, status, trigger) "
-            "VALUES (?, ?, ?, 'running', ?)",
+            "INSERT INTO scheduled_task_runs (id, task_id, started_at, status, trigger) VALUES (?, ?, ?, 'running', ?)",
             (run_id, task_id, _to_iso(_now_local()), trigger),
         )
         return run_id

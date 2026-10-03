@@ -100,10 +100,7 @@ class JevScoreTool(ToolPlugin):
             return f"错误: Jev Manager 服务未激活: {e}"
 
         if not manager.is_configured:
-            return (
-                "Jev API Key 未配置，请先在设置中配置 jev_manager 的 api_key，"
-                "或设置环境变量 JEV_API_KEY。"
-            )
+            return "Jev API Key 未配置，请先在设置中配置 jev_manager 的 api_key，或设置环境变量 JEV_API_KEY。"
 
         try:
             result = await manager.score(scene, question, scale)
@@ -142,9 +139,7 @@ class JevScorePlugin(BasePlugin):
         from harness.engine.tool_registry import ToolRegistry
 
         if not ctx.services.has(ToolRegistry):
-            ctx.services.register(
-                ToolRegistry, ToolRegistry(), owner=self.plugin_id
-            )
+            ctx.services.register(ToolRegistry, ToolRegistry(), owner=self.plugin_id)
         tool_registry = ctx.services.get(ToolRegistry)
         tool_registry.register(JevScoreTool(), owner=self.plugin_id)
         ctx.logger.info("Jev Score 工具已注册")

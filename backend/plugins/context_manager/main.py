@@ -13,7 +13,9 @@ from harness.kernel.contracts.base import BasePlugin, PluginManifest
 from harness.modules.context_manager.service import (
     ContextService,
     ContextServiceImpl,
+    ContextStrategy,
     SlidingWindowStrategy,
+    StructuredCompactionStrategy,
     SummaryCompressionStrategy,
 )
 
@@ -39,8 +41,11 @@ class ContextManagerPlugin(BasePlugin):
         strategy_name = ctx.config.get("strategy", "sliding_window")
         max_messages = ctx.config.get("max_messages", 20)
 
+        strategy: ContextStrategy
         if strategy_name == "summary_compression":
             strategy = SummaryCompressionStrategy()
+        elif strategy_name in {"structured", "structured_compaction", "compaction_v2"}:
+            strategy = StructuredCompactionStrategy(keep_recent_messages=max_messages)
         else:
             strategy = SlidingWindowStrategy(max_messages=max_messages)
 

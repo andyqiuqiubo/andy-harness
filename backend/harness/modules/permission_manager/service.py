@@ -128,9 +128,7 @@ class PermissionServiceImpl(PermissionService):
         mode: str | None = None,
     ) -> None:
         self._tool_registry = tool_registry
-        self._state_file = state_file or (
-            Path(__file__).resolve().parents[3] / "data" / "permission.json"
-        )
+        self._state_file = state_file or (Path(__file__).resolve().parents[3] / "data" / "permission.json")
         self._mode = MODE_CONFIRM_DANGEROUS
         self._overrides: dict[str, str] = {}
         self._load_state()
@@ -174,9 +172,7 @@ class PermissionServiceImpl(PermissionService):
 
         # 默认 MODE_CONFIRM_DANGEROUS
         if risk == RISK_DANGEROUS:
-            return Decision(
-                tool_name, risk, CONFIRM, "当前策略：危险操作（可执行代码）需确认"
-            )
+            return Decision(tool_name, risk, CONFIRM, "当前策略：危险操作（可执行代码）需确认")
         return Decision(tool_name, risk, ALLOW, "非危险工具自动放行")
 
     # ── 配置 ──────────────────────────────────────────
@@ -237,9 +233,7 @@ class PermissionServiceImpl(PermissionService):
                 if mode in VALID_MODES:
                     self._mode = mode
                 overrides = data.get("overrides", {})
-                self._overrides = {
-                    k: v for k, v in overrides.items() if v in VALID_ACTIONS
-                }
+                self._overrides = {k: v for k, v in overrides.items() if v in VALID_ACTIONS}
         except Exception as e:
             logger.warning("读取权限配置失败: %s", e)
 

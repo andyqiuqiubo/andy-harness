@@ -60,9 +60,7 @@ def setup_provider_routes(registry: ServiceRegistry) -> None:
     async def get_provider(provider_id: str) -> dict[str, Any]:
         pr = _get_provider_registry(registry)
         if not pr.has_provider(provider_id):
-            raise APIError(
-                "PROVIDER_NOT_FOUND", f"Provider 不存在: {provider_id}", 404
-            )
+            raise APIError("PROVIDER_NOT_FOUND", f"Provider 不存在: {provider_id}", 404)
         return cast("dict[str, Any]", pr.get_provider_info(provider_id))
 
     @router.post("", summary="创建自定义 provider")
@@ -107,23 +105,17 @@ def setup_provider_routes(registry: ServiceRegistry) -> None:
         return cast("dict[str, Any]", pr.get_provider_info(provider_id))
 
     @router.patch("/{provider_id}", summary="更新 provider")
-    async def update_provider(
-        provider_id: str, req: ProviderUpdate
-    ) -> dict[str, Any]:
+    async def update_provider(provider_id: str, req: ProviderUpdate) -> dict[str, Any]:
         from harness.infra.crypto import APIKeyEncryptor
         from harness.infra.database import Database
 
         pr = _get_provider_registry(registry)
         if not pr.has_provider(provider_id):
-            raise APIError(
-                "PROVIDER_NOT_FOUND", f"Provider 不存在: {provider_id}", 404
-            )
+            raise APIError("PROVIDER_NOT_FOUND", f"Provider 不存在: {provider_id}", 404)
 
         current_config = pr.get_provider_config(provider_id)
         if not current_config:
-            raise APIError(
-                "PROVIDER_NOT_FOUND", f"Provider 不存在: {provider_id}", 404
-            )
+            raise APIError("PROVIDER_NOT_FOUND", f"Provider 不存在: {provider_id}", 404)
 
         updated_config: dict[str, Any] = dict(current_config)
         if req.name is not None:

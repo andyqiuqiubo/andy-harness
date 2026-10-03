@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import logging
 
-from harness.kernel.contracts.base import BasePlugin, PluginManifest
 from harness.kernel.context import PluginContext
+from harness.kernel.contracts.base import BasePlugin, PluginManifest
 
 logger = logging.getLogger("harness.plugin.pet_plugin")
 

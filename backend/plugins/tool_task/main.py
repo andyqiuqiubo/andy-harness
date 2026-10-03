@@ -99,10 +99,7 @@ class TaskTool(ToolPlugin):
         content = result.content or "（子代理未返回内容）"
         if len(content) > _MAX_SUMMARY_CHARS:
             content = content[:_MAX_SUMMARY_CHARS] + " …（已截断）"
-        return (
-            f"[子代理已完成] 迭代 {result.iterations} 次，"
-            f"调用工具 {result.tool_calls} 次。结论如下：\n{content}"
-        )
+        return f"[子代理已完成] 迭代 {result.iterations} 次，调用工具 {result.tool_calls} 次。结论如下：\n{content}"
 
 
 class TaskPlugin(BasePlugin):

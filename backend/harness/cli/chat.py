@@ -139,9 +139,7 @@ def main() -> None:
     """CLI 入口。"""
     _register_builtins()
 
-    parser = argparse.ArgumentParser(
-        description="andy-harness CLI — 流式对话验证"
-    )
+    parser = argparse.ArgumentParser(description="andy-harness CLI — 流式对话验证")
     parser.add_argument(
         "message",
         help="对话内容",

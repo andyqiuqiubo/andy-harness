@@ -74,6 +74,7 @@ class AgentLoopResult:
     error: str | None = None
     short_circuited: bool = False
     usage: dict[str, Any] | None = None
+    trace_id: str = ""
 
 
 class AgentLoop:
@@ -112,9 +113,12 @@ class AgentLoop:
         self._stopped = False
         self._on_tool_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         # 人工确认回调：(tool_name, args, risk, reason) -> 是否放行（None 表示接入层不支持确认）
-        self._confirm_callback: (
-            Callable[[str, dict[str, Any], str, str], Awaitable[bool]] | None
-        ) = None
+        self._confirm_callback: Callable[[str, dict[str, Any], str, str], Awaitable[bool]] | None = None
+        # 当前运行的检查点标识（run() 开始时赋值，供 _checkpoint 使用）
+        self._run_id: str | None = None
+        self._run_session: str | None = None
+        # E12：当前运行归属用户（认证启用时注入工具与记忆检索）
+        self._run_user = ""
 
     @property
     def tool_registry(self) -> ToolRegistry:
@@ -139,10 +143,9 @@ class AgentLoop:
         model: str | None = None,
         budget: int | None = None,
         on_tool_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
-        confirm_callback: (
-            Callable[[str, dict[str, Any], str, str], Awaitable[bool]] | None
-        ) = None,
+        confirm_callback: (Callable[[str, dict[str, Any], str, str], Awaitable[bool]] | None) = None,
         attachments: list[dict[str, Any]] | None = None,
+        user_id: str = "",
     ) -> AgentLoopResult:
         """执行一次完整的对话循环。
 
@@ -156,6 +159,7 @@ class AgentLoop:
             confirm_callback: 人工确认回调，签名
                 `(tool_name, args, risk, reason) -> 是否放行`。
                 未提供且策略要求确认时，按拒绝处理（安全默认）。
+            user_id: 归属用户（E12，认证启用时注入工具与记忆检索）
 
         Returns:
             AgentLoopResult
@@ -164,11 +168,14 @@ class AgentLoop:
         self._stopped = False
         self._on_tool_event = on_tool_event
         self._confirm_callback = confirm_callback
+        self._run_user = user_id
         result = AgentLoopResult()
         used_model = model or self._config.model
         used_budget = budget or self._config.budget
         iterations = 0
         trace_id = uuid.uuid4().hex[:16]
+        self._run_id = trace_id
+        self._run_session = session_id
 
         # 暴露本轮运行环境（供 task/子代理等工具读取 provider/model）
         from harness.engine.runtime import AgentRuntime, reset_runtime, set_runtime
@@ -193,8 +200,12 @@ class AgentLoop:
                 content=user_message,
                 attachments=attachments,
             )
+            # 记录检查点：运行开始
+            self._checkpoint("running", 0, {"phase": "user_received"})
 
             current_messages: list[dict[str, Any]] = []
+            # 整轮（含工具迭代）累积的思维链
+            full_reasoning_parts: list[str] = []
 
             while iterations < self._config.max_tool_iterations:
                 if self._stopped:
@@ -202,17 +213,18 @@ class AgentLoop:
                     break
 
                 # 1. 装配上下文
-                context_msgs = await self._build_context(
-                    session_id, used_budget, used_model
-                )
+                context_msgs = await self._build_context(session_id, used_budget, used_model)
                 current_messages = context_msgs
 
                 # 2. 调用模型（带重试）
-                response_content, response_tool_calls, call_usage = await self._call_model(
+                response_content, response_tool_calls, call_usage, call_reasoning = await self._call_model(
                     provider, current_messages, used_model, session_id, trace_id
                 )
                 # 累积所有模型调用的 token 用量（工具迭代可能调用多次）
                 result.usage = self._merge_usage(result.usage, call_usage)
+                # 累积思维链，供最终 assistant 消息持久化
+                if call_reasoning:
+                    full_reasoning_parts.append(call_reasoning)
 
                 if self._stopped:
                     result.short_circuited = True
@@ -236,11 +248,15 @@ class AgentLoop:
                 )
 
                 # 4. 执行工具调用
-                tool_results = await self._execute_tool_calls(
-                    response_tool_calls, session_id, trace_id
-                )
+                tool_results = await self._execute_tool_calls(response_tool_calls, session_id, trace_id)
 
                 result.tool_calls_made.extend(tool_results)
+                # 记录检查点：本轮迭代完成（消息已持久化，可据此次续跑）
+                self._checkpoint(
+                    "running",
+                    iterations,
+                    {"phase": "iteration", "tool_calls": len(tool_results)},
+                )
             else:
                 # 达到最大迭代数：强制一次「无工具」收尾调用，
                 # 让模型基于已获取的信息给出最终回答。
@@ -251,9 +267,7 @@ class AgentLoop:
                     self._config.max_tool_iterations,
                 )
                 if not self._stopped:
-                    context_msgs = await self._build_context(
-                        session_id, used_budget, used_model
-                    )
+                    context_msgs = await self._build_context(session_id, used_budget, used_model)
                     wrapup_msgs = list(context_msgs)
                     wrapup_msgs.append(
                         {
@@ -266,41 +280,41 @@ class AgentLoop:
                         }
                     )
                     try:
-                        wrapup_content, _ignored, wrapup_usage = (
-                            await self._call_model(
-                                provider,
-                                wrapup_msgs,
-                                used_model,
-                                session_id,
-                                trace_id,
-                                allow_tools=False,
-                            )
+                        wrapup_content, _ignored, wrapup_usage, wrapup_reasoning = await self._call_model(
+                            provider,
+                            wrapup_msgs,
+                            used_model,
+                            session_id,
+                            trace_id,
+                            allow_tools=False,
                         )
+                        if wrapup_reasoning:
+                            full_reasoning_parts.append(wrapup_reasoning)
                         if wrapup_usage:
-                            result.usage = self._merge_usage(
-                                result.usage, wrapup_usage
-                            )
+                            result.usage = self._merge_usage(result.usage, wrapup_usage)
                         if wrapup_content:
                             result.content = wrapup_content
                     except Exception as e:  # noqa: BLE001
                         # 收尾失败不视为整体失败（前 N 轮工具结果已落库）
                         logger.warning("强制收尾调用失败: %s", e)
 
-            # 持久化最终 assistant 终答消息（不带 tool_calls）
+            # 持久化最终 assistant 终答消息（不带 tool_calls，带整轮思维链）
             if result.content and not result.short_circuited:
                 await self._persist_message(
                     session_id,
                     role="assistant",
                     content=result.content,
-                    tokens=(
-                        result.usage.get("total_tokens", 0)
-                        if result.usage else 0
-                    ),
+                    tokens=(result.usage.get("total_tokens", 0) if result.usage else 0),
+                    reasoning="".join(full_reasoning_parts),
                 )
+                # 记录检查点：运行完成
+                self._checkpoint("done", iterations, {"phase": "finished"})
 
         except Exception as e:
             logger.error("AgentLoop 执行失败: %s", e)
             result.error = str(e)
+            # 记录检查点：运行异常
+            self._checkpoint("error", iterations, {"error": str(e)})
             # 清理失败轮次残留的未完成消息：
             # 带有 tool_calls 但没有最终回答的 assistant 消息，
             # 以及对应的孤立 tool 消息。否则下次对话上下文会错乱。
@@ -312,13 +326,16 @@ class AgentLoop:
 
         result.iterations = iterations
         result.latency_ms = int((time.time() - start_time) * 1000)
+        result.trace_id = trace_id
+
+        run_title = self._build_run_title(session_id, user_message)
 
         # 记录一次运行的 trace span（可观测性；无 tracing 订阅者时开销极小）
         await self._emit_span(
             trace_id=trace_id,
             parent_id=None,
             session_id=session_id,
-            name="agent_run",
+            name=run_title,
             kind="run",
             status="error" if result.error else "ok",
             duration_ms=result.latency_ms,
@@ -328,6 +345,56 @@ class AgentLoop:
             error=result.error or "",
         )
         return result
+
+    def _build_run_title(self, session_id: str, user_message: str) -> str:
+        """run span 展示名：「会话标题 - 用户问题」（完整文本，不截断）。
+
+        截断与省略号由前端 CSS ellipsis 负责，hover 时 title 属性展示全文。
+        查不到会话标题或仍为 New Session 时退化为问题本身。
+        """
+
+        def _clean(t: str) -> str:
+            return (t or "").strip().replace("\n", " ").replace("\r", " ")
+
+        title = ""
+        try:
+            from harness.modules.session_manager.service import SessionService
+
+            svc = self._services.get(SessionService)
+            sess = svc.get_session(session_id)
+            if sess:
+                title = _clean(getattr(sess, "title", ""))
+        except Exception:
+            title = ""
+        question = _clean(user_message)
+        if not title or title == "New Session":
+            return question
+        return f"{title} - {question}"
+
+    def _checkpoint(
+        self,
+        status: str,
+        iteration: int,
+        snapshot: dict[str, Any] | None = None,
+    ) -> None:
+        """best-effort 记录运行检查点（G4 断点续跑）。
+
+        任何异常都不影响主流程：服务未注册 Database、检查点写入失败等均静默忽略。
+        """
+        run_id = self._run_id
+        session_id = self._run_session
+        if not run_id or not session_id:
+            return
+        try:
+            from harness.engine.checkpoint import RunCheckpointService
+            from harness.infra.database import Database
+
+            if not self._services.has(Database):
+                return
+            db = self._services.get(Database)
+            RunCheckpointService(db).record(run_id, session_id, status, iteration, snapshot)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("记录运行检查点失败（已忽略）: %s", e)
 
     async def _emit_span(self, **fields: Any) -> None:
         """把一次 span 发布到事件总线（topic: trace.span）。
@@ -345,16 +412,12 @@ class AgentLoop:
         except Exception as e:  # noqa: BLE001
             logger.debug("发送 trace span 失败（已忽略）: %s", e)
 
-    async def _build_context(
-        self, session_id: str, budget: int, model: str
-    ) -> list[dict[str, Any]]:
+    async def _build_context(self, session_id: str, budget: int, model: str) -> list[dict[str, Any]]:
         """装配上下文（含钩子）。"""
         from harness.modules.context_manager.service import ContextService
 
         # pre_context_build 钩子
-        build_ctx = BuildContext(
-            session_id=session_id, budget=budget, model=model
-        )
+        build_ctx = BuildContext(session_id=session_id, budget=budget, model=model)
         pre_result = await self._hooks.execute(
             "pre_context_build",
             HookContext(
@@ -364,9 +427,7 @@ class AgentLoop:
             ),
         )
         if pre_result.short_circuit:
-            raise RuntimeError(
-                f"pre_context_build 钩子短路: {pre_result.error}"
-            )
+            raise RuntimeError(f"pre_context_build 钩子短路: {pre_result.error}")
         if pre_result.data is not None and isinstance(pre_result.data, BuildContext):
             build_ctx = pre_result.data
             # 使用钩子可能修改的 budget/model
@@ -386,9 +447,7 @@ class AgentLoop:
 
         # 注入用户自定义系统提示词（来自会话级设置）
         if self._config.system_prompt:
-            prefix_messages.append(
-                {"role": "system", "content": self._config.system_prompt}
-            )
+            prefix_messages.append({"role": "system", "content": self._config.system_prompt})
 
         # 注入当前日期时间的系统提示（模型本身不知道当前日期）
         from datetime import datetime
@@ -402,13 +461,34 @@ class AgentLoop:
             }
         )
 
+        # 注入语言策略：用用户「本条消息」的语种回答，内部思考可用中文
+        prefix_messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "语言策略：请始终使用用户「本条消息」所使用的自然语言来回答"
+                    "——用户用中文提问就用中文回答，用英文提问就用英文回答，用其他语种提问也同理。"
+                    "你的内部思考、推理过程可以用中文进行，但最终面向用户的回答必须与用户提问的语种一致。\n"
+                    "当一条消息混合多种语言（例如中文、日文、英文混排）时，按以下规则判定作答语种："
+                    "① 以『承载主要意图/占比最大的语言』为准（通常是用户真正想表达需求的那一种）；"
+                    "② 若几种语言占比相当、难以判断主体，则以中文作答；"
+                    "③ 专有名词、代码、命令、产品名等可保留原文，不强制翻译。"
+                ),
+            }
+        )
+
         # 注入 Skill 目录（L1：仅 name + description，按需加载）
         skill_catalog = self._render_skill_catalog()
         if skill_catalog:
             prefix_messages.append({"role": "system", "content": skill_catalog})
 
+        # 注入外部 MCP 能力清单（仅在确有 MCP 工具时）
+        mcp_catalog = self._render_mcp_catalog()
+        if mcp_catalog:
+            prefix_messages.append({"role": "system", "content": mcp_catalog})
+
         # 注入长期记忆（跨会话的偏好 / 事实，最近若干条）
-        memory_hint = self._render_memory_hint()
+        memory_hint = self._render_memory_hint(self._run_user)
         if memory_hint:
             prefix_messages.append({"role": "system", "content": memory_hint})
 
@@ -424,9 +504,7 @@ class AgentLoop:
                 session_id=session_id,
             ),
         )
-        if post_result.data is not None and isinstance(
-            post_result.data, BuildContext
-        ):
+        if post_result.data is not None and isinstance(post_result.data, BuildContext):
             messages = post_result.data.messages or messages
 
         return messages
@@ -444,12 +522,12 @@ class AgentLoop:
             service: PermissionService = self._services.get(PermissionService)
             return service.decide(tool_name)
         except Exception as e:
-            logger.debug("权限检查失败（已放行）: %s", e)
+            # 权限服务已装配却异常：这是「本应拦截的高危工具可能被放行」的真实故障，
+            # 必须 error 级可见（原 debug 在默认日志级别下完全不可见，事后无法审计）。
+            logger.error("权限检查失败（已放行）: %s", e)
             return None
 
-    async def _request_confirm(
-        self, tool_name: str, args: dict[str, Any], risk: str, reason: str
-    ) -> bool:
+    async def _request_confirm(self, tool_name: str, args: dict[str, Any], risk: str, reason: str) -> bool:
         """请求人工确认。
 
         接入层未提供回调时返回 False —— 需要确认却无人可问，按拒绝处理。
@@ -461,9 +539,7 @@ class AgentLoop:
             )
             return False
         try:
-            return bool(
-                await self._confirm_callback(tool_name, args, risk, reason)
-            )
+            return bool(await self._confirm_callback(tool_name, args, risk, reason))
         except Exception as e:
             logger.error("人工确认流程异常，已按拒绝处理: %s", e)
             return False
@@ -484,7 +560,36 @@ class AgentLoop:
             logger.debug("渲染 Skill 目录失败（已降级跳过）: %s", e)
             return ""
 
-    def _render_memory_hint(self) -> str:
+    def _render_mcp_catalog(self) -> str:
+        """渲染已接入的 MCP 外部能力清单（L1：server + 工具名）。
+
+        远端工具只是作为 function 定义丢给模型，模型往往更倾向用自己熟悉的
+        内置工具（如 web_fetch）硬凑。这里在系统提示里显式点名外部能力并要求优先
+        使用，命中率明显更高。无 MCP 工具时返回空串，行为不变。
+        """
+        try:
+            grouped: dict[str, list[str]] = {}
+            for item in self._tool_registry.list_tools():
+                name = str(item.get("name", ""))
+                parts = name.split("__")
+                if len(parts) < 3 or parts[0] != "mcp":
+                    continue
+                grouped.setdefault(parts[1], []).append("__".join(parts[2:]))
+            if not grouped:
+                return ""
+            lines = [
+                "外部能力（MCP，已接入并可直接调用）——当用户的需求命中下列能力时，"
+                "**优先直接调用对应工具**，不要用网页抓取 / 命令行自己拼凑结果："
+            ]
+            for server in sorted(grouped):
+                lines.append(f"- {server}: {', '.join(sorted(grouped[server]))}")
+            lines.append("调用前按工具自身的参数说明填参；若某个外部工具一次就能拿到结果，就不要反复用网页抓取试错。")
+            return "\n".join(lines)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("渲染 MCP 能力清单失败（已降级跳过）: %s", e)
+            return ""
+
+    def _render_memory_hint(self, user_id: str = "") -> str:
         """渲染长期记忆片段作为系统提示。
 
         优雅降级：记忆服务不可用或无记忆时返回空串。
@@ -495,15 +600,13 @@ class AgentLoop:
             if not self._services.has(MemoryService):
                 return ""
             service: MemoryService = self._services.get(MemoryService)
-            return service.render_hint()
+            return service.render_hint(user_id=user_id)
         except Exception as e:
             logger.debug("渲染长期记忆失败（已降级跳过）: %s", e)
             return ""
 
     @staticmethod
-    def _merge_usage(
-        total: dict[str, Any] | None, new: dict[str, Any] | None
-    ) -> dict[str, Any] | None:
+    def _merge_usage(total: dict[str, Any] | None, new: dict[str, Any] | None) -> dict[str, Any] | None:
         """合并两次模型调用的 usage（工具迭代时需累加）。"""
         if not new:
             return total
@@ -514,15 +617,9 @@ class AgentLoop:
                 "total_tokens": 0,
                 "prompt_tokens_details": {},
             }
-        total["prompt_tokens"] = total.get("prompt_tokens", 0) + new.get(
-            "prompt_tokens", 0
-        )
-        total["completion_tokens"] = total.get("completion_tokens", 0) + new.get(
-            "completion_tokens", 0
-        )
-        total["total_tokens"] = total.get("total_tokens", 0) + new.get(
-            "total_tokens", 0
-        )
+        total["prompt_tokens"] = total.get("prompt_tokens", 0) + new.get("prompt_tokens", 0)
+        total["completion_tokens"] = total.get("completion_tokens", 0) + new.get("completion_tokens", 0)
+        total["total_tokens"] = total.get("total_tokens", 0) + new.get("total_tokens", 0)
         new_details = new.get("prompt_tokens_details") or {}
         total_details: dict[str, Any] = total.setdefault("prompt_tokens_details", {})
         for key in (
@@ -542,7 +639,7 @@ class AgentLoop:
         session_id: str = "",
         trace_id: str = "",
         allow_tools: bool = True,
-    ) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None]:
+    ) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None, str]:
         """调用模型并解析响应（带重试）。
 
         Args:
@@ -550,12 +647,10 @@ class AgentLoop:
                 强制收尾调用，逼模型只能输出文字终答）。
 
         Returns:
-            (content, tool_calls, usage)
+            (content, tool_calls, usage, reasoning)
         """
         # 准备请求
-        tool_defs = (
-            self._tool_registry.get_tool_definitions() if allow_tools else []
-        )
+        tool_defs = self._tool_registry.get_tool_definitions() if allow_tools else []
         model_request = ModelRequest(
             messages=messages,
             model=model,
@@ -575,9 +670,7 @@ class AgentLoop:
             ),
         )
         if pre_result.short_circuit:
-            raise RuntimeError(
-                f"pre_model_call 钩子短路: {pre_result.error}"
-            )
+            raise RuntimeError(f"pre_model_call 钩子短路: {pre_result.error}")
         if pre_result.data is not None and isinstance(pre_result.data, ModelRequest):
             model_request = pre_result.data
 
@@ -586,6 +679,7 @@ class AgentLoop:
         for attempt in range(self._config.max_retries):
             try:
                 content_parts: list[str] = []
+                reasoning_parts: list[str] = []
                 usage: dict[str, Any] | None = None
                 # 流式 tool_calls 分片累积：DeepSeek/OpenAI API 会将一个
                 # tool_call 的 arguments 拆成多个 SSE 块发送，必须按 index
@@ -603,6 +697,8 @@ class AgentLoop:
                         break
                     if "delta" in chunk and chunk["delta"]:
                         content_parts.append(chunk["delta"])
+                    if chunk.get("reasoning_content"):
+                        reasoning_parts.append(chunk["reasoning_content"])
                     if "tool_calls" in chunk:
                         for tc_frag in chunk["tool_calls"]:
                             idx = tc_frag.get("index", 0)
@@ -625,9 +721,7 @@ class AgentLoop:
                         usage = chunk["usage"]
 
                 content = "".join(content_parts)
-                all_tool_calls = [
-                    tool_calls_acc[i] for i in sorted(tool_calls_acc.keys())
-                ]
+                all_tool_calls = [tool_calls_acc[i] for i in sorted(tool_calls_acc.keys())]
                 model_request.response = content
                 model_request.tool_calls = all_tool_calls
 
@@ -640,9 +734,7 @@ class AgentLoop:
                         session_id=session_id,
                     ),
                 )
-                if post_result.data is not None and isinstance(
-                    post_result.data, ModelRequest
-                ):
+                if post_result.data is not None and isinstance(post_result.data, ModelRequest):
                     content = post_result.data.response or content
                     all_tool_calls = post_result.data.tool_calls or all_tool_calls
 
@@ -658,13 +750,10 @@ class AgentLoop:
                     completion_tokens=(usage or {}).get("completion_tokens", 0),
                     total_tokens=(usage or {}).get("total_tokens", 0),
                     output_preview=content[:200],
-                    tool_calls=",".join(
-                        tc.get("function", {}).get("name", "")
-                        for tc in all_tool_calls
-                    ),
+                    tool_calls=",".join(tc.get("function", {}).get("name", "") for tc in all_tool_calls),
                 )
 
-                return content, all_tool_calls, usage
+                return content, all_tool_calls, usage, "".join(reasoning_parts)
 
             except Exception as e:
                 last_error = e
@@ -680,9 +769,7 @@ class AgentLoop:
                     await asyncio.sleep(delay)
 
         # 所有重试都失败
-        raise RuntimeError(
-            f"模型调用失败（已重试 {self._config.max_retries} 次）: {last_error}"
-        )
+        raise RuntimeError(f"模型调用失败（已重试 {self._config.max_retries} 次）: {last_error}")
 
     async def _execute_tool_calls(
         self,
@@ -733,9 +820,7 @@ class AgentLoop:
                 )
                 continue
 
-            if pre_result.data is not None and isinstance(
-                pre_result.data, ToolCallContext
-            ):
+            if pre_result.data is not None and isinstance(pre_result.data, ToolCallContext):
                 tool_ctx = pre_result.data
 
             # 权限校验：拒绝 / 需人工确认 / 放行
@@ -773,10 +858,11 @@ class AgentLoop:
                 try:
                     tool = self._tool_registry.get(tool_ctx.tool_name)
                     # 需要会话上下文的工具：注入 session_id（不覆盖已有值）
-                    if getattr(tool, "needs_session", False) and "session_id" not in (
-                        tool_ctx.args or {}
-                    ):
+                    if getattr(tool, "needs_session", False) and "session_id" not in (tool_ctx.args or {}):
                         tool_ctx.args = {**tool_ctx.args, "session_id": session_id}
+                    # E12：需要用户上下文的工具：注入 user_id（不覆盖已有值）
+                    if getattr(tool, "needs_user", False) and "user_id" not in (tool_ctx.args or {}):
+                        tool_ctx.args = {**tool_ctx.args, "user_id": self._run_user}
                     tool_result = await tool.execute(tool_ctx.args)
                 except ToolNotFoundError:
                     tool_error = f"工具未找到: {tool_ctx.tool_name}"
@@ -797,9 +883,7 @@ class AgentLoop:
                     session_id=session_id,
                 ),
             )
-            if post_result.data is not None and isinstance(
-                post_result.data, ToolCallContext
-            ):
+            if post_result.data is not None and isinstance(post_result.data, ToolCallContext):
                 tool_ctx = post_result.data
 
             results.append(
@@ -819,9 +903,7 @@ class AgentLoop:
                 kind="tool",
                 status="error" if tool_ctx.error else "ok",
                 duration_ms=int((time.time() - tool_start) * 1000),
-                input_preview=json.dumps(
-                    tool_ctx.args, ensure_ascii=False, default=str
-                )[:200],
+                input_preview=json.dumps(tool_ctx.args, ensure_ascii=False, default=str)[:200],
                 output_preview=(tool_ctx.result or "")[:200],
                 error=tool_ctx.error or "",
             )
@@ -881,9 +963,7 @@ class AgentLoop:
                 # 删除孤立的 tool 消息和带 tool_calls 的 assistant 消息
                 if is_tool_msg or has_tool_calls:
                     try:
-                        db.execute(
-                            "DELETE FROM messages WHERE id = ?", (msg.id,)
-                        )
+                        db.execute("DELETE FROM messages WHERE id = ?", (msg.id,))
                         deleted += 1
                         logger.info("清理残留消息: id=%s role=%s", msg.id, msg.role)
                     except Exception as e:
@@ -907,6 +987,7 @@ class AgentLoop:
         tool_call_id: str | None = None,
         tokens: int = 0,
         attachments: list[dict[str, Any]] | None = None,
+        reasoning: str = "",
     ) -> None:
         """持久化消息（含 pre_message_persist 钩子）。"""
         from harness.modules.session_manager.service import SessionService
@@ -919,6 +1000,7 @@ class AgentLoop:
             tool_call_id=tool_call_id,
             tokens=tokens,
             attachments=attachments,
+            reasoning=reasoning,
         )
 
         # pre_message_persist 钩子
@@ -930,9 +1012,7 @@ class AgentLoop:
                 session_id=session_id,
             ),
         )
-        if pre_result.data is not None and isinstance(
-            pre_result.data, MessageRecord
-        ):
+        if pre_result.data is not None and isinstance(pre_result.data, MessageRecord):
             record = pre_result.data
         if pre_result.short_circuit:
             logger.info("pre_message_persist 钩子短路，消息未持久化")
@@ -949,4 +1029,5 @@ class AgentLoop:
             tokens=record.tokens,
             latency_ms=record.latency_ms,
             attachments=record.attachments,
+            reasoning=record.reasoning,
         )

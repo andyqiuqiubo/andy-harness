@@ -76,9 +76,7 @@ class WebSearchTool(ToolPlugin):
 
         return "\n".join(lines)
 
-    async def _search_baidu(
-        self, query: str, num: int = 5
-    ) -> list[dict[str, str]]:
+    async def _search_baidu(self, query: str, num: int = 5) -> list[dict[str, str]]:
         """通过百度搜索获取结果。
 
         使用百度搜索页面解析结果。
@@ -116,9 +114,7 @@ class WebSearchTool(ToolPlugin):
                 link = ""
 
                 # 提取标题
-                title_match = re.search(
-                    r'<h3[^>]*>(?:<a[^>]*>)?(.*?)(?:</a>)?</h3>', block, re.DOTALL
-                )
+                title_match = re.search(r"<h3[^>]*>(?:<a[^>]*>)?(.*?)(?:</a>)?</h3>", block, re.DOTALL)
                 if title_match:
                     title = re.sub(r"<[^>]+>", "", title_match.group(1)).strip()
 
@@ -137,9 +133,7 @@ class WebSearchTool(ToolPlugin):
                     snippet = re.sub(r"<[^>]+>", "", snippet_match.group(1)).strip()
 
                 if title:
-                    results.append(
-                        {"title": title, "snippet": snippet, "url": link}
-                    )
+                    results.append({"title": title, "snippet": snippet, "url": link})
 
             # 如果正则解析失败，尝试备用解析方式
             if not results:
@@ -152,9 +146,7 @@ class WebSearchTool(ToolPlugin):
                 for match in h3_matches[:num]:
                     clean = re.sub(r"<[^>]+>", "", match).strip()
                     if clean and len(clean) > 2:
-                        results.append(
-                            {"title": clean, "snippet": "", "url": ""}
-                        )
+                        results.append({"title": clean, "snippet": "", "url": ""})
 
         except Exception as e:
             logger.error("百度搜索失败: %s", e)
@@ -185,9 +177,7 @@ class WebSearchPlugin(BasePlugin):
         from harness.engine.tool_registry import ToolRegistry
 
         if not ctx.services.has(ToolRegistry):
-            ctx.services.register(
-                ToolRegistry, ToolRegistry(), owner=self.plugin_id
-            )
+            ctx.services.register(ToolRegistry, ToolRegistry(), owner=self.plugin_id)
         tool_registry = ctx.services.get(ToolRegistry)
 
         tool_registry.register(WebSearchTool(), owner=self.plugin_id)

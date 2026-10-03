@@ -39,7 +39,6 @@ def _match_topic(pattern: str, topic: str) -> bool:
             # # 匹配零或多段
             if pi == len(pattern_parts) - 1:
                 return True
-            next_p = pattern_parts[pi + 1]
             for tj in range(ti, len(topic_parts)):
                 if _match_topic(".".join(pattern_parts[pi + 1 :]), ".".join(topic_parts[tj:])):
                     return True
@@ -132,9 +131,7 @@ class EventBus:
             if inspect.isawaitable(result):
                 await result
 
-        results = await asyncio.gather(
-            *[_safe_call(h, data) for h in matched], return_exceptions=True
-        )
+        results = await asyncio.gather(*[_safe_call(h, data) for h in matched], return_exceptions=True)
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 logger.warning("事件处理器异常: %s — %s", matched[i], result)

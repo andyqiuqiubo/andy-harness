@@ -21,6 +21,7 @@ THEME_INFO = {
     "light": "亮色（白底绿字）",
 }
 
+
 class ThemeSwitcherTool(ToolPlugin):
     """主题切换工具。"""
 
@@ -60,6 +61,7 @@ class ThemeSwitcherTool(ToolPlugin):
             return f"错误: 未知主题 '{theme}'，可选: {', '.join(VALID_THEMES)}"
         desc = THEME_INFO.get(theme, theme)
         return f"__THEME__:{theme}\n已切换主题为 {desc}。"
+
 
 class ThemeSwitcherPlugin(BasePlugin):
     """Theme Switcher 插件。"""

@@ -1,0 +1,9 @@
+{
+  "name": "deepwiki",
+  "type": "streamable-http",
+  "url": "https://mcp.deepwiki.com/mcp",
+  "description": "对着 GitHub 开源仓库提问：读取仓库文档结构、正文内容，或直接问答。",
+  "enabled": true,
+  "auth_required": false,
+  "long_description": "DeepWiki MCP：把任意 GitHub 仓库变成可问答的知识库，**无需账号、无需鉴权**。\n\n工具：\n\n1. `ask_wiki_question` —— 用自然语言就某个 GitHub 仓库提问（如 owner/repo 的实现细节、用法、架构）。\n2. `read_wiki_structure` —— 先摸清某个仓库的文档目录结构，便于定位。\n3. `read_wiki_contents` —— 读取指定页面的完整内容。\n\n适用场景：查某个开源库的源码实现、API 用法、配置项含义、升级变更点。\n\n实测：握手后稳定返回以上 3 个工具。"
+}

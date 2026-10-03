@@ -10,9 +10,9 @@
   "config_schema": {
     "type": "object",
     "properties": {
-      "strategy": { "type": "string", "default": "sliding_window" },
-      "max_messages": { "type": "integer", "default": 20 },
-      "system_prompt": { "type": "string", "default": "" }
+      "strategy": { "type": "string", "default": "sliding_window", "title": "上下文压缩策略", "title_en": "Context Strategy" },
+      "max_messages": { "type": "integer", "default": 20, "title": "最大保留消息数", "title_en": "Max Messages" },
+      "system_prompt": { "type": "string", "default": "", "title": "系统提示词", "title_en": "System Prompt" }
     }
   },
   "description": "上下文管理服务插件（策略可插拔、token 预算分配、上下文快照）"

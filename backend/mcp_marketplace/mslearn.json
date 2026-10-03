@@ -1,0 +1,9 @@
+{
+  "name": "mslearn",
+  "type": "streamable-http",
+  "url": "https://learn.microsoft.com/api/mcp",
+  "description": "检索 Microsoft Learn 官方文档，覆盖 Azure、.NET、Windows、Office 等产品与 SDK 用法。",
+  "enabled": true,
+  "auth_required": false,
+  "long_description": "Microsoft Learn MCP：微软官方文档检索服务，**无需账号、无需鉴权**。\n\n适用场景：\n\n- 写 Azure / .NET / Windows 相关代码时对 API 签名没把握。\n- 查配额、配置项、最佳实践与迁移指南。\n- 定位官方示例与快速入门。\n\n微软官方托管的免鉴权端点，适合在开发类任务里随时拉取权威文档片段。\n\n实测：作为免鉴权 streamable-http 端点可被 MCP 客户端握手。"
+}

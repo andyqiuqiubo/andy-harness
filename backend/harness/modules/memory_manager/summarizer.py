@@ -137,9 +137,7 @@ class MemorySummarizer:
     def _save_state(self, state: dict[str, int]) -> None:
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            self._state_path.write_text(
-                json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            self._state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as e:
             logger.warning("写入记忆总结状态失败（忽略）: %s", e)
 
@@ -150,9 +148,7 @@ class MemorySummarizer:
             return None
         try:
             candidates = [
-                p
-                for p in self._providers.list_providers()
-                if p.get("enabled", True) and p.get("has_api_key")
+                p for p in self._providers.list_providers() if p.get("enabled", True) and p.get("has_api_key")
             ]
         except Exception as e:  # noqa: BLE001
             logger.debug("列举 provider 失败: %s", e)
@@ -162,9 +158,7 @@ class MemorySummarizer:
 
         target = None
         if self._provider_id:
-            target = next(
-                (p for p in candidates if p.get("id") == self._provider_id), None
-            )
+            target = next((p for p in candidates if p.get("id") == self._provider_id), None)
         if target is None:
             # 优先 deepseek（本项目的默认），否则取第一个可用
             target = next(
@@ -182,9 +176,7 @@ class MemorySummarizer:
 
     # ── 总结 ──────────────────────────────────────────
 
-    async def summarize_recent(
-        self, max_sessions: int | None = None, min_new_messages: int = 2
-    ) -> SummaryOutcome:
+    async def summarize_recent(self, max_sessions: int | None = None, min_new_messages: int = 2) -> SummaryOutcome:
         outcome = SummaryOutcome()
         resolved = self._resolve_provider()
         if resolved is None:
@@ -198,9 +190,9 @@ class MemorySummarizer:
             outcome.skipped_reason = f"获取会话失败: {e}"
             return outcome
 
-        sessions = sorted(
-            sessions, key=lambda s: getattr(s, "updated_at", "") or "", reverse=True
-        )[: (max_sessions or summary_max_sessions())]
+        sessions = sorted(sessions, key=lambda s: getattr(s, "updated_at", "") or "", reverse=True)[
+            : (max_sessions or summary_max_sessions())
+        ]
 
         state = self._load_state()
         for session in sessions:
@@ -209,11 +201,7 @@ class MemorySummarizer:
                 messages = self._sessions.list_messages(session.id)
             except Exception:  # noqa: BLE001
                 continue
-            visible = [
-                m
-                for m in messages
-                if m.role in ("user", "assistant") and (m.content or "").strip()
-            ]
+            visible = [m for m in messages if m.role in ("user", "assistant") and (m.content or "").strip()]
             cursor = state.get(session.id, 0)
             new_msgs = visible[cursor:]
             if len(new_msgs) < min_new_messages:
@@ -261,10 +249,7 @@ class MemorySummarizer:
         self, provider: Any, model: str, session: Any, messages: list[Any]
     ) -> list[dict[str, Any]]:
         transcript = self._render_transcript(messages)
-        prompt = (
-            f"会话标题：{getattr(session, 'title', '') or '(无)'}\n"
-            f"以下是新增的对话片段：\n\n{transcript}"
-        )
+        prompt = f"会话标题：{getattr(session, 'title', '') or '(无)'}\n以下是新增的对话片段：\n\n{transcript}"
         content = await self._call_model(provider, model, prompt)
         return self._parse_memories(content)
 

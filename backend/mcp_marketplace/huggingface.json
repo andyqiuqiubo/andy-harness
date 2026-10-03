@@ -1,0 +1,9 @@
+{
+  "name": "huggingface",
+  "type": "streamable-http",
+  "url": "https://huggingface.co/mcp",
+  "description": "检索 Hugging Face 上的模型、数据集与论文，查版本、下载量、标签与社区动态。",
+  "enabled": true,
+  "auth_required": false,
+  "long_description": "Hugging Face MCP：把全球最大的开源模型/数据集/论文枢纽接入 Agent，**无需账号、无需 API Key**。\n\n适用场景：\n\n- 选型时对比模型的任务类型、下载量、最近更新。\n- 找某个任务的公开数据集（含许可证与规模）。\n- 检索 arXiv 论文并定位相关模型/数据集。\n\n注意：该端点为 Hugging Face 官方托管的免鉴权入口；若后续需要私有仓库或写操作，再切换到带 token 的配置。\n\n实测：作为免鉴权 streamable-http 端点可被 MCP 客户端握手。"
+}

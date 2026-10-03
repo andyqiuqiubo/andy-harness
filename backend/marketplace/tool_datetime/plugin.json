@@ -1,0 +1,11 @@
+{
+  "id": "tool_datetime",
+  "name": "日期时间 DateTime",
+  "version": "0.1.0",
+  "type": "tool",
+  "entry": "plugins.tool_datetime.main:DatetimePlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": [],
+  "description": "查询/换算日期时间：获取指定时区的当前时间、Unix 时间戳与日期互转、日期加减（天/小时/分钟）。",
+  "long_description": "日期时间工具，基于 Python 标准库 `datetime` 与 `zoneinfo`，零外部依赖。\n\n支持三种操作：\n- now：返回指定时区（如 Asia/Shanghai、UTC、America/New_York，默认本地时区）的当前时间，含星期、ISO 8601、Unix 时间戳\n- from_timestamp：将 Unix 时间戳按指定时区转换为可读时间\n- add：在给定基准时间（或当前时间）上加减 天/小时/分钟\n\n适用于「现在几点」「3 天后是几号」「这个时间戳对应北京时间是多少」等时间类问题。"
+}

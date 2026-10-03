@@ -52,3 +52,4 @@ class MessageRecord:
     tokens: int = 0
     latency_ms: int | None = None
     attachments: list[dict[str, Any]] | None = None
+    reasoning: str = ""

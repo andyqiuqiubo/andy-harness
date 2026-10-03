@@ -54,9 +54,7 @@ class TracingPlugin(BasePlugin):
             db = Database()
         self._service = SpanServiceImpl(db)
         ctx.services.register(SpanService, self._service, owner=self.plugin_id)
-        self._sub_id = await ctx.events.subscribe(
-            "trace.span", self._on_trace_span, owner=self.plugin_id
-        )
+        self._sub_id = await ctx.events.subscribe("trace.span", self._on_trace_span, owner=self.plugin_id)
         ctx.logger.info("tracing 已激活（订阅 topic: trace.span）")
 
     async def deactivate(self, ctx: PluginContext) -> None:
@@ -70,6 +68,7 @@ class TracingPlugin(BasePlugin):
         if self._service is None:
             return
         try:
+
             def _int(key: str) -> int:
                 try:
                     return int(data.get(key) or 0)

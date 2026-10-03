@@ -1,0 +1,10 @@
+{
+  "id": "tool_orchestrator",
+  "name": "Orchestrator Tools",
+  "version": "0.1.0",
+  "type": "tool",
+  "entry": "plugins.tool_orchestrator.main:OrchestratorToolsPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["storage"],
+  "description": "parallel / pipeline 工具：并行执行多个独立子任务，或按角色流水线接力编排多 Agent"
+}

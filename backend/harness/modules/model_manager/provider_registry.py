@@ -67,9 +67,7 @@ class ProviderRegistry:
         self._instances.pop(provider_id, None)
         logger.info("Provider 已注销: %s", provider_id)
 
-    def get_provider(
-        self, provider_id: str, *, include_disabled: bool = False
-    ) -> OpenAICompatibleProvider:
+    def get_provider(self, provider_id: str, *, include_disabled: bool = False) -> OpenAICompatibleProvider:
         """获取 provider 实例。
 
         Args:
@@ -99,14 +97,10 @@ class ProviderRegistry:
                     encryptor = APIKeyEncryptor()
                     api_key = encryptor.decrypt(config["api_key_encrypted"])
                 except Exception as e:
-                    raise ProviderConfigError(
-                        f"Provider [{provider_id}] API Key 解密失败: {e}"
-                    ) from e
+                    raise ProviderConfigError(f"Provider [{provider_id}] API Key 解密失败: {e}") from e
 
             if not api_key:
-                raise ProviderConfigError(
-                    f"Provider [{provider_id}] 未配置 API Key"
-                )
+                raise ProviderConfigError(f"Provider [{provider_id}] 未配置 API Key")
 
             self._instances[provider_id] = provider_class(
                 api_key=api_key,
@@ -131,9 +125,7 @@ class ProviderRegistry:
             "name": config.get("name", provider_id),
             "base_url": config.get("base_url", provider_class.base_url),
             "models": config.get("models", provider_class.default_models),
-            "has_api_key": bool(
-                config.get("api_key") or config.get("api_key_encrypted")
-            ),
+            "has_api_key": bool(config.get("api_key") or config.get("api_key_encrypted")),
             "enabled": bool(enabled),
         }
 
@@ -192,9 +184,7 @@ class ProviderRegistry:
         config: dict[str, Any],
     ) -> None:
         """将 provider 配置持久化到数据库（INSERT 或 UPDATE）。"""
-        existing = db.query_one(
-            "SELECT id FROM providers WHERE id = ?", (provider_id,)
-        )
+        existing = db.query_one("SELECT id FROM providers WHERE id = ?", (provider_id,))
         enabled = 1 if config.get("enabled", True) else 0
         if existing:
             db.execute(
@@ -237,11 +227,7 @@ class ProviderRegistry:
             enabled = bool(row["enabled"])
 
             models = json.loads(row["models_json"]) if row["models_json"] else []
-            extra_params = (
-                json.loads(row["extra_params_json"])
-                if row["extra_params_json"]
-                else {}
-            )
+            extra_params = json.loads(row["extra_params_json"]) if row["extra_params_json"] else {}
             overrides: dict[str, Any] = {
                 "enabled": enabled,
                 "api_key_encrypted": row["api_key_encrypted"] or "",
@@ -271,7 +257,7 @@ class ProviderRegistry:
                 default_models = models
                 provider_name = row["name"]
 
-            config: dict[str, Any] = {
+            custom_config: dict[str, Any] = {
                 "name": row["name"],
                 "api_key_encrypted": row["api_key_encrypted"] or "",
                 "base_url": row["base_url"],
@@ -279,5 +265,5 @@ class ProviderRegistry:
                 "extra_params": extra_params,
                 "enabled": enabled,
             }
-            self.register_provider(provider_id, CustomProvider, config)
+            self.register_provider(provider_id, CustomProvider, custom_config)
             logger.info("从数据库加载 provider: %s (enabled=%s)", provider_id, enabled)

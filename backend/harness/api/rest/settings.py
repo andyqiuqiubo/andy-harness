@@ -10,17 +10,17 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+
+from harness.api.deps import require_admin
 
 logger = logging.getLogger("harness.api.settings")
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
-# 设置文件路径（与数据库同目录）
-_SETTINGS_FILE = (
-    Path(__file__).resolve().parent.parent.parent / "data" / "settings.json"
-)
+# 设置文件路径（与数据库同目录：<backend>/data/settings.json）
+_SETTINGS_FILE = Path(__file__).resolve().parent.parent.parent.parent / "data" / "settings.json"
 
 # 默认设置
 _DEFAULT_SETTINGS: dict[str, Any] = {
@@ -44,7 +44,8 @@ def _load_settings() -> dict[str, Any]:
     """从 JSON 文件加载设置。"""
     if _SETTINGS_FILE.exists():
         try:
-            return json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
+            data: dict[str, Any] = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
+            return data
         except Exception as e:
             logger.warning("加载设置文件失败: %s", e)
     return dict(_DEFAULT_SETTINGS)
@@ -53,9 +54,7 @@ def _load_settings() -> dict[str, Any]:
 def _save_settings(settings: dict[str, Any]) -> None:
     """保存设置到 JSON 文件。"""
     _SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _SETTINGS_FILE.write_text(
-        json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    _SETTINGS_FILE.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def setup_settings_routes() -> None:
@@ -65,7 +64,7 @@ def setup_settings_routes() -> None:
     async def get_settings() -> dict[str, Any]:
         return _load_settings()
 
-    @router.put("", summary="更新系统设置")
+    @router.put("", summary="更新系统设置", dependencies=[Depends(require_admin)])
     async def update_settings(req: SettingsUpdate) -> dict[str, Any]:
         settings = _load_settings()
         if req.theme is not None:

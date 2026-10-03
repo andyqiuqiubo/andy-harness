@@ -42,15 +42,9 @@ class PermissionManagerPlugin(BasePlugin):
             logger.warning("ToolRegistry 未注册，权限服务将以最保守等级工作")
 
         mode = ctx.config.get("mode", "") or MODE_CONFIRM_DANGEROUS
-        self._service = PermissionServiceImpl(
-            tool_registry=tool_registry, mode=mode
-        )
-        ctx.services.register(
-            PermissionService, self._service, owner=self.plugin_id
-        )
-        ctx.logger.info(
-            "permission-manager 已激活（策略: %s）", self._service.get_mode()
-        )
+        self._service = PermissionServiceImpl(tool_registry=tool_registry, mode=mode)
+        ctx.services.register(PermissionService, self._service, owner=self.plugin_id)
+        ctx.logger.info("permission-manager 已激活（策略: %s）", self._service.get_mode())
 
     async def deactivate(self, ctx: PluginContext) -> None:
         """停用：注销服务。"""

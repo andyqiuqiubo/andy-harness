@@ -55,9 +55,7 @@ class TodoService(ABC):
         """列出某会话的待办项。"""
 
     @abstractmethod
-    def replace_todos(
-        self, session_id: str, items: list[dict[str, Any]]
-    ) -> list[TodoItem]:
+    def replace_todos(self, session_id: str, items: list[dict[str, Any]]) -> list[TodoItem]:
         """整体覆盖某会话的待办列表（返回保存后的列表）。"""
 
     @abstractmethod
@@ -78,8 +76,7 @@ class TodoServiceImpl(TodoService):
     def list_todos(self, session_id: str) -> list[TodoItem]:
         """列出待办项（按 position 排序）。"""
         rows = self._db.query(
-            "SELECT id, content, status, position FROM todos "
-            "WHERE session_id = ? ORDER BY position, created_at",
+            "SELECT id, content, status, position FROM todos WHERE session_id = ? ORDER BY position, created_at",
             (session_id,),
         )
         return [
@@ -92,9 +89,7 @@ class TodoServiceImpl(TodoService):
             for row in rows
         ]
 
-    def replace_todos(
-        self, session_id: str, items: list[dict[str, Any]]
-    ) -> list[TodoItem]:
+    def replace_todos(self, session_id: str, items: list[dict[str, Any]]) -> list[TodoItem]:
         """整体覆盖：先清空再按序写入。"""
         self._db.execute("DELETE FROM todos WHERE session_id = ?", (session_id,))
 
@@ -109,8 +104,7 @@ class TodoServiceImpl(TodoService):
             item_id = str(raw.get("id", "")).strip() or str(uuid.uuid4())
 
             self._db.execute(
-                "INSERT INTO todos (id, session_id, content, status, position) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO todos (id, session_id, content, status, position) VALUES (?, ?, ?, ?, ?)",
                 (item_id, session_id, content, status, idx),
             )
             saved.append(TodoItem(item_id, content, status, idx))
@@ -120,9 +114,7 @@ class TodoServiceImpl(TodoService):
 
     def clear_todos(self, session_id: str) -> int:
         """清空待办列表。"""
-        rows = self._db.query(
-            "SELECT COUNT(*) AS c FROM todos WHERE session_id = ?", (session_id,)
-        )
+        rows = self._db.query("SELECT COUNT(*) AS c FROM todos WHERE session_id = ?", (session_id,))
         count = int(rows[0]["c"]) if rows else 0
         self._db.execute("DELETE FROM todos WHERE session_id = ?", (session_id,))
         return count

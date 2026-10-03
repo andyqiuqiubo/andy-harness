@@ -1,0 +1,9 @@
+{
+  "name": "cloudflare-docs",
+  "type": "streamable-http",
+  "url": "https://docs.mcp.cloudflare.com/mcp",
+  "description": "Cloudflare 官方文档检索，含 Workers / Pages 迁移指南。",
+  "enabled": true,
+  "auth_required": false,
+  "long_description": "Cloudflare Docs MCP（docs-ai-search）：官方托管的文档检索服务，**无需账号、无需鉴权**。\n\n工具：\n\n1. `search_cloudflare_documentation` —— 检索 Cloudflare 官方文档，覆盖 Workers、KV、D1、R2、Pages、Images、WAF 等产品与 SDK 用法。\n2. `migrate_pages_to_workers_guide` —— Pages 迁移到 Workers 的专项指南。\n\n适用场景：写 Worker 脚本时对 API 签名没把握、查配额与配置项、排查部署问题。\n\n实测：握手后返回以上 2 个工具。"
+}

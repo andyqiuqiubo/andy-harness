@@ -42,6 +42,11 @@ class MemorySaveTool(ToolPlugin):
         return True
 
     @property
+    def needs_user(self) -> bool:
+        """E12：记忆按用户隔离。"""
+        return True
+
+    @property
     def description(self) -> str:
         return (
             "把值得跨会话记住的事实保存为长期记忆（用户偏好、项目约定、"
@@ -92,6 +97,7 @@ class MemorySaveTool(ToolPlugin):
 
         scope = str(args.get("scope") or SCOPE_GLOBAL)
         session_id = str(args.get("session_id") or "")
+        user_id = str(args.get("user_id") or "")
         if scope == SCOPE_SESSION and not session_id:
             return "错误: session 作用域需要当前会话（未注入 session_id）"
 
@@ -101,11 +107,9 @@ class MemorySaveTool(ToolPlugin):
             scope=scope,
             session_id=session_id,
             tags=args.get("tags"),
+            user_id=user_id,
         )
-        return (
-            f"已记住（{record.scope}）: {record.key} = {record.value}"
-            f"（id={record.id}）"
-        )
+        return f"已记住（{record.scope}）: {record.key} = {record.value}（id={record.id}）"
 
 
 class MemorySearchTool(ToolPlugin):
@@ -121,6 +125,11 @@ class MemorySearchTool(ToolPlugin):
     @property
     def risk_level(self) -> str:
         return "read"
+
+    @property
+    def needs_user(self) -> bool:
+        """E12：记忆按用户隔离。"""
+        return True
 
     @property
     def description(self) -> str:
@@ -153,11 +162,12 @@ class MemorySearchTool(ToolPlugin):
         service: MemoryService = self._services.get(MemoryService)
 
         query = str(args.get("query") or "")
+        user_id = str(args.get("user_id") or "")
         try:
             limit = int(args.get("limit") or 10)
         except (TypeError, ValueError):
             limit = 10
-        results = service.search(query, limit=max(1, min(limit, 50)))
+        results = service.search(query, limit=max(1, min(limit, 50)), user_id=user_id)
         if not results:
             return "未找到相关记忆。"
 

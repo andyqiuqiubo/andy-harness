@@ -1,0 +1,11 @@
+{
+  "id": "tool_hash_encode",
+  "name": "哈希与编码 Hash/Encode",
+  "version": "0.1.0",
+  "type": "tool",
+  "entry": "plugins.tool_hash_encode.main:HashEncodePlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": [],
+  "description": "文本哈希与编码：md5 / sha1 / sha256 / sha512 摘要，以及 base64 / base64url 的编码与解码。",
+  "long_description": "哈希与编码工具，基于 Python 标准库 `hashlib` 与 `base64`，零外部依赖。\n\n支持操作：\n- md5 / sha1 / sha256 / sha512：生成文本摘要（十六进制）\n- base64-encode / base64-decode：标准 Base64\n- base64url-encode / base64url-decode：URL 安全 Base64\n\n适用于『给这段字符串算个 sha256』『把这段文本 base64 编码』『解码这段 base64』等场景。"
+}

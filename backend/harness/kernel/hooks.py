@@ -36,18 +36,14 @@ class HookManager:
     def unregister(self, hook_name: str, handler: HookHandler) -> None:
         """注销指定钩子处理器。"""
         if hook_name in self._hooks:
-            self._hooks[hook_name] = [
-                (h, o) for h, o in self._hooks[hook_name] if h != handler
-            ]
+            self._hooks[hook_name] = [(h, o) for h, o in self._hooks[hook_name] if h != handler]
             if not self._hooks[hook_name]:
                 del self._hooks[hook_name]
 
     def unregister_all(self, owner: str) -> None:
         """注销某 owner 注册的所有钩子。"""
         for hook_name in list(self._hooks.keys()):
-            self._hooks[hook_name] = [
-                (h, o) for h, o in self._hooks[hook_name] if o != owner
-            ]
+            self._hooks[hook_name] = [(h, o) for h, o in self._hooks[hook_name] if o != owner]
             if not self._hooks[hook_name]:
                 del self._hooks[hook_name]
 
@@ -89,9 +85,7 @@ class HookManager:
                 current_metadata.update(result.metadata)
 
             if result.short_circuit:
-                logger.info(
-                    "钩子短路: %s (error=%s)", hook_name, result.error
-                )
+                logger.info("钩子短路: %s (error=%s)", hook_name, result.error)
                 return result
 
         # 把管线中累积的 metadata 一并回传给调用方

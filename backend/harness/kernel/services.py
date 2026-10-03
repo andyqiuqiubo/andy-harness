@@ -62,9 +62,7 @@ class ServiceRegistry:
 
             stack = self._stacks[interface]
             # 移除该 owner 的所有实现
-            self._stacks[interface] = [
-                (impl, own) for impl, own in stack if own != owner
-            ]
+            self._stacks[interface] = [(impl, own) for impl, own in stack if own != owner]
 
             if not self._stacks[interface]:
                 del self._stacks[interface]

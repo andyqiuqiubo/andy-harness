@@ -99,9 +99,7 @@ class PluginLoader:
 
         valid_types = {t.value for t in PluginType}
         if raw["type"] not in valid_types:
-            raise PluginValidationError(
-                plugin_id, f"无效的 type: {raw['type']}，应为 {valid_types}"
-            )
+            raise PluginValidationError(plugin_id, f"无效的 type: {raw['type']}，应为 {valid_types}")
 
         # core_api 兼容性检查
         core_api = raw.get("core_api", ">=0.1.0 <1.0.0")
@@ -231,9 +229,7 @@ class PluginLoader:
 
         # 核心插件保护
         if manifest.core:
-            raise PluginDeactivateError(
-                plugin_id, "核心插件不可停用（core: true）"
-            )
+            raise PluginDeactivateError(plugin_id, "核心插件不可停用（core: true）")
 
         await plugin.deactivate(ctx)
 
@@ -266,14 +262,10 @@ class PluginLoader:
 
         manifest = self._loaded[plugin_id][1]
         if manifest.core:
-            raise PluginDeactivateError(
-                plugin_id, "核心插件不可卸载（core: true）"
-            )
+            raise PluginDeactivateError(plugin_id, "核心插件不可卸载（core: true）")
 
         if plugin_id in self._activated:
-            raise PluginDeactivateError(
-                plugin_id, "请先停用插件再卸载"
-            )
+            raise PluginDeactivateError(plugin_id, "请先停用插件再卸载")
 
         del self._loaded[plugin_id]
         logger.info("插件已卸载: %s", plugin_id)
@@ -329,9 +321,7 @@ class PluginLoader:
 
     # ── 一键加载 ──────────────────────────────────────
 
-    async def load_and_activate_all(
-        self, plugins_dir: str | Path
-    ) -> list[str]:
+    async def load_and_activate_all(self, plugins_dir: str | Path) -> list[str]:
         """发现并加载激活所有插件，返回成功激活的 plugin_id 列表。"""
         manifest_paths = self.discover(plugins_dir)
         activated: list[str] = []

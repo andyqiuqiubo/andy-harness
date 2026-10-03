@@ -1,0 +1,11 @@
+{
+  "id": "tool_calculator",
+  "name": "计算器 Calculator",
+  "version": "0.1.0",
+  "type": "tool",
+  "entry": "plugins.tool_calculator.main:CalculatorPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": [],
+  "description": "安全计算数学表达式：加减乘除、幂、括号，以及 sqrt/abs/round/sin/cos/tan/log/floor/ceil/factorial 等常用函数，支持 pi、e 常量。",
+  "long_description": "计算器是一个零依赖、沙箱化的数学表达式求值工具。\n\n- 运算符：+ - * / **(幂) //(整除) %(取模) 与括号\n- 函数：sqrt / abs / round / floor / ceil / sin / cos / tan / log / log10 / log2 / exp / pow / factorial\n- 常量：pi / e / tau\n\n实现上通过 Python `ast` 模块白名单解析，禁止任意代码执行、属性访问与名称引用，比 `eval` 安全得多。适用于算数、公式求值、批量数值计算等场景。"
+}

@@ -9,8 +9,20 @@
   "config_schema": {
     "type": "object",
     "properties": {
-      "timeout": { "type": "integer", "default": 30 },
-      "max_output": { "type": "integer", "default": 10000 }
+      "backend": {
+        "type": "string",
+        "enum": ["local", "docker"],
+        "default": "local",
+        "title": "沙箱后端",
+        "title_en": "Sandbox Backend",
+        "description": "local=本机子进程；docker=一次性容器（需安装并启动 Docker）"
+      },
+      "timeout": { "type": "integer", "default": 30, "title": "执行超时（秒）", "title_en": "Execution Timeout (s)" },
+      "max_output": { "type": "integer", "default": 10000, "title": "输出最大字符数", "title_en": "Max Output Chars" },
+      "docker_image": { "type": "string", "default": "python:3.12-slim", "title": "Docker 镜像", "title_en": "Docker Image" },
+      "docker_network": { "type": "boolean", "default": false, "title": "容器允许联网", "title_en": "Allow Network" },
+      "docker_memory": { "type": "string", "default": "512m", "title": "容器内存上限", "title_en": "Memory Limit" },
+      "docker_cpus": { "type": "number", "default": 1.0, "title": "容器 CPU 上限", "title_en": "CPU Limit" }
     }
   },
   "description": "代码执行工具插件，执行 Python/Shell 代码，返回 stdout/stderr/exit_code"

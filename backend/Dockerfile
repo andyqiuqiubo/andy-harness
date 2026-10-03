@@ -13,6 +13,10 @@ RUN uv sync --no-dev
 # 复制源码
 COPY harness/ ./harness/
 COPY plugins/ ./plugins/
+COPY marketplace/ ./marketplace/
+COPY skill_marketplace/ ./skill_marketplace/
+COPY mcp_marketplace/ ./mcp_marketplace/
+COPY skills/ ./skills/
 COPY requirements-sandbox.txt ./
 
 # 创建数据目录

@@ -38,20 +38,12 @@ class SkillManagerPlugin(BasePlugin):
         extra_roots_raw = ctx.config.get("extra_roots", "")
         roots = default_skill_roots()
         if isinstance(extra_roots_raw, str) and extra_roots_raw.strip():
-            roots = roots + [
-                Path(p.strip())
-                for p in extra_roots_raw.split(";")
-                if p.strip()
-            ]
+            roots = roots + [Path(p.strip()) for p in extra_roots_raw.split(";") if p.strip()]
 
-        self._service = SkillServiceImpl(
-            roots=roots, plugin_dirs=default_plugin_dirs()
-        )
+        self._service = SkillServiceImpl(roots=roots, plugin_dirs=default_plugin_dirs())
         ctx.services.register(SkillService, self._service, owner=self.plugin_id)
 
-        ctx.logger.info(
-            "skill-manager 已激活，发现 %d 个 Skill", len(self._service.list_skills())
-        )
+        ctx.logger.info("skill-manager 已激活，发现 %d 个 Skill", len(self._service.list_skills()))
 
     async def deactivate(self, ctx: PluginContext) -> None:
         """停用：注销服务。"""

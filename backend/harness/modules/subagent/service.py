@@ -20,7 +20,8 @@ from harness.kernel.hooks import HookManager
 from harness.kernel.services import ServiceRegistry
 
 # 子代理不可用的工具（避免递归派生 / 干扰主会话规划）
-_EXCLUDED_TOOLS = {"task"}
+# E10：parallel / pipeline 同样会派生代理，一并排除防无限递归。
+_EXCLUDED_TOOLS = {"task", "parallel", "pipeline"}
 
 DEFAULT_MAX_ITERATIONS = 6
 
@@ -67,9 +68,7 @@ class SubagentServiceImpl(SubagentService):
     def services(self) -> ServiceRegistry:
         return self._services
 
-    def _build_registry(
-        self, allow_tools: list[str] | None, base: ToolRegistry | None
-    ) -> ToolRegistry:
+    def _build_registry(self, allow_tools: list[str] | None, base: ToolRegistry | None) -> ToolRegistry:
         """构建子代理的受限工具集。"""
         registry = ToolRegistry()
         source = base
@@ -111,9 +110,7 @@ class SubagentServiceImpl(SubagentService):
         used_model = model or (runtime.model if runtime else None) or "gpt-4o"
         budget = runtime.budget if runtime else 4096
 
-        tool_registry = self._build_registry(
-            allow_tools, runtime.tool_registry if runtime else None
-        )
+        tool_registry = self._build_registry(allow_tools, runtime.tool_registry if runtime else None)
 
         # 独立临时会话（用完即删），保证主上下文干净
         from harness.modules.session_manager.service import SessionService
@@ -123,8 +120,16 @@ class SubagentServiceImpl(SubagentService):
         except Exception:
             return SubagentResult(error="会话服务不可用，无法创建子代理上下文")
 
+        # E12：子代理会话继承父会话归属用户，保证数据隔离与记忆按用户。
+        owner_id = ""
+        parent_id = runtime.session_id if runtime else ""
+        if parent_id:
+            parent_session = session_service.get_session(parent_id)
+            if parent_session is not None:
+                owner_id = getattr(parent_session, "user_id", "") or ""
+
         child_title = f"[子代理] {prompt.strip()[:40] or 'task'}"
-        child = session_service.create_session(title=child_title)
+        child = session_service.create_session(title=child_title, user_id=owner_id)
 
         config = AgentLoopConfig(
             model=used_model,
@@ -144,6 +149,7 @@ class SubagentServiceImpl(SubagentService):
                 provider=used_provider,
                 model=used_model,
                 budget=budget,
+                user_id=owner_id,
             )
             return SubagentResult(
                 content=result.content or "",

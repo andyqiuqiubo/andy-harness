@@ -86,9 +86,7 @@ class DeepSeekProviderPlugin(BasePlugin):
             "models": DeepSeekProvider.default_models,
         }
 
-        self._provider_registry.register_provider(
-            "deepseek", DeepSeekProvider, config
-        )
+        self._provider_registry.register_provider("deepseek", DeepSeekProvider, config)
 
         # 注册组合式 TokenCounter（动态委托到正确的 provider）
         if not ctx.services.has(TokenCounter):

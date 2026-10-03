@@ -145,9 +145,7 @@ class APIKeyEncryptor:
         try:
             return self._fernet.decrypt(ciphertext.encode("utf-8")).decode("utf-8")
         except InvalidToken as e:
-            raise CryptoError(
-                "API Key 解密失败——machine key 可能已变更，请重新输入 API Key"
-            ) from e
+            raise CryptoError("API Key 解密失败——machine key 可能已变更，请重新输入 API Key") from e
 
 
 def mask_api_key(api_key: str) -> str:

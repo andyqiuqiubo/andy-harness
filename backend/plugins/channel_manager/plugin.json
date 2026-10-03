@@ -1,0 +1,11 @@
+{
+  "id": "channel_manager",
+  "name": "Channel Manager",
+  "version": "0.1.0",
+  "type": "service",
+  "entry": "plugins.channel_manager.main:ChannelManagerPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["storage", "network"],
+  "core": false,
+  "description": "多渠道接入：Webhook / Telegram 等外部消息统一接入 AgentLoop，按渠道用户映射会话"
+}

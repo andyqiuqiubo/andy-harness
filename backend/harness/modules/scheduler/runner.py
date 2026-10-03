@@ -86,10 +86,7 @@ class ScopedUseSkillTool(ToolPlugin):
         name = str(args.get("name") or "").strip()
         if name and name not in self._allowed:
             allowed = "、".join(sorted(self._allowed)) or "（无）"
-            return (
-                f"错误: 本定时任务只允许使用这些 Skill：{allowed}。"
-                f"不允许加载 '{name}'。"
-            )
+            return f"错误: 本定时任务只允许使用这些 Skill：{allowed}。不允许加载 '{name}'。"
         result = await self._inner.execute(args)
         return result if isinstance(result, str) else str(result)
 
@@ -130,11 +127,7 @@ class TaskRunner:
         if registry is None:
             return None
         try:
-            candidates = [
-                p
-                for p in registry.list_providers()
-                if p.get("enabled", True) and p.get("has_api_key")
-            ]
+            candidates = [p for p in registry.list_providers() if p.get("enabled", True) and p.get("has_api_key")]
         except Exception as e:  # noqa: BLE001
             logger.warning("列举 provider 失败: %s", e)
             return None
@@ -143,9 +136,7 @@ class TaskRunner:
 
         target = None
         if task.provider_id:
-            target = next(
-                (p for p in candidates if p.get("id") == task.provider_id), None
-            )
+            target = next((p for p in candidates if p.get("id") == task.provider_id), None)
         if target is None:
             target = next(
                 (p for p in candidates if "deepseek" in str(p.get("id", ""))),
@@ -184,9 +175,7 @@ class TaskRunner:
 
             if name == "use_skill":
                 if task.skills:
-                    registry.register(
-                        ScopedUseSkillTool(tool, task.skills), owner="schedule"
-                    )
+                    registry.register(ScopedUseSkillTool(tool, task.skills), owner="schedule")
                     allowed.append(name)
                 continue
 
@@ -206,9 +195,7 @@ class TaskRunner:
         lines.append(f"当前时间：{_to_iso(_now_local())}")
         if task.mcp_servers:
             lines.append(f"可用 MCP 数据源：{'、'.join(task.mcp_servers)}")
-        lines.append(
-            "完成后请给出**简明的结果摘要**（会记录到任务的运行历史中供用户查看）。"
-        )
+        lines.append("完成后请给出**简明的结果摘要**（会记录到任务的运行历史中供用户查看）。")
         return "\n".join(lines)
 
     # ── 执行 ──────────────────────────────────────────
@@ -237,11 +224,7 @@ class TaskRunner:
                     system_prompt=self._system_prompt(task),
                     skill_allowlist=list(task.skills),
                 )
-                hook_manager = (
-                    self._services.get(HookManager)
-                    if self._services.has(HookManager)
-                    else HookManager()
-                )
+                hook_manager = self._services.get(HookManager) if self._services.has(HookManager) else HookManager()
                 loop = AgentLoop(
                     services=self._services,
                     hooks=hook_manager,
@@ -249,9 +232,7 @@ class TaskRunner:
                     config=config,
                 )
 
-                async def _auto_approve(
-                    tool_name: str, args: dict[str, Any], risk: str, reason: str
-                ) -> bool:
+                async def _auto_approve(tool_name: str, args: dict[str, Any], risk: str, reason: str) -> bool:
                     # 预授权：注册表里只有任务勾选的工具
                     return tool_name in allowed
 
@@ -280,8 +261,7 @@ class TaskRunner:
                     if outcome.status == "ok" and not outcome.summary:
                         # 正常结束却无终答（如收尾调用也未能产出文本）
                         outcome.summary = (
-                            f"运行完成（{result.iterations} 次迭代）但未生成"
-                            "最终回答，请查看会话中的工具执行记录。"
+                            f"运行完成（{result.iterations} 次迭代）但未生成最终回答，请查看会话中的工具执行记录。"
                         )
         except Exception as e:  # noqa: BLE001
             logger.exception("定时任务执行异常: %s", task.name)
@@ -298,9 +278,7 @@ class TaskRunner:
                     summary=outcome.summary,
                     error=outcome.error,
                 )
-                scheduler.record_task_result(
-                    task, status=outcome.status, error=outcome.error
-                )
+                scheduler.record_task_result(task, status=outcome.status, error=outcome.error)
             except Exception as e:  # noqa: BLE001
                 logger.warning("记录任务运行结果失败: %s", e)
 

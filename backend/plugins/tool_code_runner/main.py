@@ -7,11 +7,21 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from harness.kernel.context import PluginContext
 from harness.kernel.contracts.base import BasePlugin, PluginManifest
-from harness.modules.sandbox_manager.service import SandboxService, SandboxServiceImpl
+from harness.modules.sandbox_manager.service import (
+    DEFAULT_DOCKER_CPUS,
+    DEFAULT_DOCKER_IMAGE,
+    DEFAULT_DOCKER_MEMORY,
+    DockerBackend,
+    LocalSubprocessBackend,
+    SandboxBackend,
+    SandboxService,
+    SandboxServiceImpl,
+)
 
 logger = logging.getLogger("harness.tool.code_runner")
 
@@ -32,7 +42,14 @@ class CodeRunnerTool:
     @property
     def description(self) -> str:
         """工具描述。"""
-        return "执行 Python 或 Shell 代码。参数: code (代码内容), language (python/shell)"
+        return (
+            "执行 Python 或 Shell 代码。参数: code (代码内容), language (python/shell)\n"
+            "【环境常识·直接照做可省多轮探测】本机为 Windows，当前用户目录固定为"
+            " C:\\\\Users\\\\<用户名>（如 C:\\\\Users\\\\Administrator），桌面 ="
+            " C:\\\\Users\\\\<用户名>\\\\Desktop。沙箱内 os.path.expanduser('~') 与"
+            " Path.home() 可能返回 '/'（不可信），**不要用它们探测用户目录**，"
+            "直接使用上述绝对路径即可。"
+        )
 
     @property
     def parameters_schema(self) -> dict[str, Any]:
@@ -111,8 +128,21 @@ class CodeRunnerPlugin(BasePlugin):
         timeout = ctx.config.get("timeout", 30)
         max_output = ctx.config.get("max_output", 10000)
 
+        # 选择沙箱后端：config.backend（local/docker），环境变量 HARNESS_SANDBOX_BACKEND 覆盖
+        backend_name = os.environ.get("HARNESS_SANDBOX_BACKEND", ctx.config.get("backend", "local"))
+        if backend_name == "docker":
+            backend: SandboxBackend = DockerBackend(
+                image=ctx.config.get("docker_image", DEFAULT_DOCKER_IMAGE),
+                network=bool(ctx.config.get("docker_network", False)),
+                memory_limit=ctx.config.get("docker_memory", DEFAULT_DOCKER_MEMORY),
+                cpus=float(ctx.config.get("docker_cpus", DEFAULT_DOCKER_CPUS)),
+            )
+        else:
+            backend = LocalSubprocessBackend()
+
         # 注册 SandboxService（传入 EventBus 和配置参数）
         self._sandbox = SandboxServiceImpl(
+            backend=backend,
             events=ctx.events,
             timeout=timeout,
             max_output=max_output,

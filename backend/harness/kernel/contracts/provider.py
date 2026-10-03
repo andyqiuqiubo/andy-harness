@@ -13,7 +13,7 @@ class ModelProviderPlugin(BasePlugin):
     """大模型 Provider 插件契约。"""
 
     @abstractmethod
-    async def chat(
+    def chat(
         self,
         messages: list[dict[str, str]],
         model: str,

@@ -25,9 +25,7 @@ logger = logging.getLogger("harness.jev_manager")
 class JevManager:
     """Jev 决策服务，封装三种原语的 API 调用。"""
 
-    def __init__(
-        self, api_key: str = "", base_url: str = "https://api.typesafe.ai/v1"
-    ) -> None:
+    def __init__(self, api_key: str = "", base_url: str = "https://api.typesafe.ai/v1") -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
 
@@ -139,9 +137,7 @@ class JevManagerPlugin(BasePlugin):
         import os
 
         api_key = ctx.config.get("api_key", "") or os.getenv("JEV_API_KEY", "")
-        base_url = ctx.config.get(
-            "base_url", "https://api.typesafe.ai/v1"
-        )
+        base_url = ctx.config.get("base_url", "https://api.typesafe.ai/v1")
         self._manager = JevManager(api_key=api_key, base_url=base_url)
         ctx.services.register(JevManager, self._manager, owner=self.plugin_id)
 

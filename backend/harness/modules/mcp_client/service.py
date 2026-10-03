@@ -38,6 +38,10 @@ STDIO = "stdio"
 SSE = "sse"
 _HTTP_LIKE = {SSE, "http", "streamable-http", "streamable_http"}
 
+# 等待服务端下发 SSE endpoint 的最长时间（超时后退回直接 POST 模式）。
+# 抽成模块常量便于测试把它调小，无需真的等 20 秒。
+_OPEN_ENDPOINT_TIMEOUT = 20.0
+
 
 def _default_config_paths() -> tuple[str, ...]:
     """配置路径：优先使用环境变量 MCP_CONFIG_PATH（支持多个以 ; 分隔）。"""
@@ -137,7 +141,7 @@ class BaseMCPConnection(ABC):
             {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "andy-harness", "version": "0.1.0"},
+                "clientInfo": {"name": "andy-harness", "version": "1.0.0"},
             },
         )
         # 发送 initialized 通知（无需响应）
@@ -161,17 +165,14 @@ class BaseMCPConnection(ABC):
                     server=self.config.name,
                     name=str(t.get("name", "")),
                     description=str(t.get("description", "")),
-                    input_schema=t.get("inputSchema")
-                    or {"type": "object", "properties": {}},
+                    input_schema=t.get("inputSchema") or {"type": "object", "properties": {}},
                 )
             )
         return specs
 
     async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
         """调用远端工具，返回拼接后的文本内容。"""
-        result = await self._request(
-            "tools/call", {"name": tool_name, "arguments": arguments or {}}
-        )
+        result = await self._request("tools/call", {"name": tool_name, "arguments": arguments or {}})
         if not isinstance(result, dict):
             return str(result)
         if result.get("isError"):
@@ -215,9 +216,7 @@ class BaseMCPConnection(ABC):
                 return await asyncio.wait_for(future, timeout=60)
             except TimeoutError as e:
                 self._pending.pop(req_id, None)
-                raise RuntimeError(
-                    f"MCP 请求超时（{method}，server={self.config.name}）"
-                ) from e
+                raise RuntimeError(f"MCP request timeout: {method} server={self.config.name}") from e
 
     async def _notify(self, method: str, params: dict[str, Any]) -> None:
         """发送通知（无需响应）。
@@ -362,6 +361,10 @@ class MCPSSEConnection(BaseMCPConnection):
         self._read_task: asyncio.Task[None] | None = None
         self._post_url: str | None = None
         self._endpoint_ready = asyncio.Event()
+        # 是否处于「直接 POST」模式（服务端不支持 GET 建流的 streamable-http）
+        self._direct_post = False
+        # streamable-http 会话 ID（initialize 响应下发，后续请求需回传）
+        self._session_id: str | None = None
 
     @property
     def _connected(self) -> bool:
@@ -386,12 +389,22 @@ class MCPSSEConnection(BaseMCPConnection):
         self._read_task = asyncio.ensure_future(self._read_sse())
         # 等服务器下发 POST 端点（最多 20s）
         try:
-            await asyncio.wait_for(self._endpoint_ready.wait(), timeout=20.0)
-        except TimeoutError as e:
+            await asyncio.wait_for(self._endpoint_ready.wait(), timeout=_OPEN_ENDPOINT_TIMEOUT)
+        except TimeoutError:
+            # GET 事件流已建立但始终没有 endpoint 事件 —— 这是 streamable-http
+            # server 的典型行为（GET 只用于服务端推送，请求一律走 POST）。
+            # 不报错，直接退回「直接 POST」模式；原事件流任务保留，仍可接收通知。
+            logger.info(
+                "MCP server '%s' 未在 %ss 内下发 SSE endpoint，改用直接 POST 模式",
+                cfg.name,
+                _OPEN_ENDPOINT_TIMEOUT,
+            )
+            self._direct_post = True
+            self._post_url = cfg.url
+        if not self._post_url:
+            # 兜底：极端情况下仍无可用端点
             await self.disconnect()
-            raise RuntimeError(
-                f"MCP server '{cfg.name}' 未在 20s 内下发 SSE endpoint"
-            ) from e
+            raise RuntimeError(f"MCP server '{cfg.name}' 未获得可用的 POST endpoint")
 
     def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         headers: dict[str, str] = {
@@ -404,6 +417,8 @@ class MCPSSEConnection(BaseMCPConnection):
 
     async def _read_sse(self) -> None:
         assert self._client is not None
+        import httpx
+
         cfg = self.config
         try:
             async with self._client.stream(
@@ -411,7 +426,20 @@ class MCPSSEConnection(BaseMCPConnection):
                 cfg.url,
                 headers=self._headers({"Accept": "text/event-stream"}),
             ) as resp:
-                resp.raise_for_status()
+                try:
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    # 服务端不支持 GET 建流（纯 streamable-http 的 server 会回 405）
+                    # → 退回「直接 POST」模式：把配置里的 URL 直接当 JSON-RPC 端点。
+                    # 这样同一份配置既能连旧版 SSE server，也能连新版 streamable-http server。
+                    logger.info(
+                        "MCP server '%s' 不支持 GET 事件流(HTTP %s)，退回直接 POST 模式",
+                        cfg.name,
+                        e.response.status_code,
+                    )
+                    self._direct_post = True
+                    self._post_url = cfg.url
+                    return
                 event: str | None = None
                 data_lines: list[str] = []
                 async for line in resp.aiter_lines():
@@ -444,9 +472,7 @@ class MCPSSEConnection(BaseMCPConnection):
             target = data.strip()
             if target:
                 self._post_url = urljoin(self.config.url, target)
-                logger.info(
-                    "MCP SSE endpoint（server=%s）: %s", self.config.name, self._post_url
-                )
+                logger.info("MCP SSE endpoint（server=%s）: %s", self.config.name, self._post_url)
             self._endpoint_ready.set()
             return
         if event in ("ping", "keepalive"):
@@ -466,22 +492,28 @@ class MCPSSEConnection(BaseMCPConnection):
         post_url = self._post_url
         if not post_url:
             raise RuntimeError("MCP SSE 尚未获得 POST endpoint")
+        post_headers = self._headers(
+            {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                # 强制每请求新连接：避免复用 keep-alive 连接导致网关会话失效
+                "Connection": "close",
+            }
+        )
+        # streamable-http：会话 ID 需在后续请求中回传
+        if self._session_id:
+            post_headers["Mcp-Session-Id"] = self._session_id
         resp = await self._client.post(
             post_url,
             json=payload,
-            headers=self._headers(
-                {
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
-                    # 强制每请求新连接：避免复用 keep-alive 连接导致网关会话失效
-                    "Connection": "close",
-                }
-            ),
+            headers=post_headers,
         )
         if resp.status_code >= 400:
-            raise RuntimeError(
-                f"MCP SSE POST 失败（{resp.status_code}）: {resp.text[:200]}"
-            )
+            raise RuntimeError(f"MCP SSE POST 失败（{resp.status_code}）: {resp.text[:200]}")
+        # 记录会话 ID（标准头为 Mcp-Session-Id，大小写不敏感读取）
+        session_id = resp.headers.get("mcp-session-id")
+        if session_id:
+            self._session_id = session_id
         # 兼容 streamable-http：POST 直接返回 JSON-RPC 响应
         ctype = resp.headers.get("content-type", "")
         if "application/json" in ctype:
@@ -491,6 +523,37 @@ class MCPSSEConnection(BaseMCPConnection):
                 msg = None
             if isinstance(msg, dict) and ("result" in msg or "error" in msg):
                 await self._dispatch(msg)
+            return
+        # streamable-http 另一种常见形态：POST 响应体本身就是 SSE 事件流
+        # （`event: message` + `data: {...}`），需就地解析并分发。
+        body = resp.text
+        if "text/event-stream" in ctype or body.lstrip().startswith(("event:", "data:")):
+            await self._parse_inline_sse(body)
+
+    async def _parse_inline_sse(self, body: str) -> None:
+        """解析 POST 响应体内的 SSE 文本并分发其中的 JSON-RPC 消息。"""
+        event: str | None = None
+        data_lines: list[str] = []
+
+        async def flush() -> None:
+            nonlocal event, data_lines
+            if event is not None or data_lines:
+                await self._handle_event(event, "\n".join(data_lines))
+            event = None
+            data_lines = []
+
+        for raw_line in body.splitlines():
+            line = raw_line.rstrip("\r")
+            if line == "":
+                await flush()
+                continue
+            if line.startswith(":"):
+                continue  # 注释/心跳
+            if line.startswith("event:"):
+                event = line[len("event:") :].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[len("data:") :].lstrip())
+        await flush()
 
     async def disconnect(self) -> None:
         self._closed = True
@@ -508,6 +571,8 @@ class MCPSSEConnection(BaseMCPConnection):
                 pass
             self._client = None
         self._post_url = None
+        self._direct_post = False
+        self._session_id = None
 
 
 def make_connection(config: MCPServerConfig) -> BaseMCPConnection:
@@ -691,9 +756,7 @@ class MCPClientService:
             tools.extend(conn.tools)
         return tools
 
-    async def call_tool(
-        self, server_name: str, tool_name: str, arguments: dict[str, Any]
-    ) -> str:
+    async def call_tool(self, server_name: str, tool_name: str, arguments: dict[str, Any]) -> str:
         conn = self._servers.get(server_name)
         if conn is None:
             raise RuntimeError(f"MCP server '{server_name}' 未连接")

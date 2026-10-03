@@ -6,15 +6,23 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from harness.api.errors import register_error_handlers
+from harness.api.middleware.auth import AuthMiddleware
 from harness.api.rest.artifacts import router as artifacts_router
 from harness.api.rest.artifacts import setup_artifact_routes
 from harness.api.rest.attachments import router as attachments_router
 from harness.api.rest.attachments import setup_attachment_routes
+from harness.api.rest.auth import router as auth_router
+from harness.api.rest.auth import setup_auth_routes
+from harness.api.rest.channels import router as channels_router
+from harness.api.rest.channels import setup_channel_routes
 from harness.api.rest.mcp import router as mcp_router
 from harness.api.rest.mcp import setup_mcp_routes
 from harness.api.rest.memories import router as memories_router
@@ -27,6 +35,8 @@ from harness.api.rest.plugins import router as plugins_router
 from harness.api.rest.plugins import setup_plugin_routes
 from harness.api.rest.providers import router as providers_router
 from harness.api.rest.providers import setup_provider_routes
+from harness.api.rest.runs import router as runs_router
+from harness.api.rest.runs import setup_runs_routes
 from harness.api.rest.schedules import router as schedules_router
 from harness.api.rest.schedules import setup_schedule_routes
 from harness.api.rest.sessions import router as sessions_router
@@ -71,6 +81,16 @@ async def _init_components() -> None:
 
     db = Database()
     _services.register(Database, db, owner="kernel")
+
+    # E12：认证与多用户（默认关闭；启用后按用户隔离会话与记忆）。
+    from harness.modules.auth_manager.service import (
+        AuthService,
+        AuthServiceImpl,
+    )
+
+    auth_service = AuthServiceImpl(db)
+    auth_service.bootstrap()
+    _services.register(AuthService, auth_service, owner="auth_manager")
 
     from harness.modules.session_manager.service import (
         SessionService,
@@ -129,7 +149,7 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
             except Exception as e:
                 logger.warning("停用插件 %s 失败: %s", plugin_info["id"], e)
     try:
-        db = _services.get(Database)  # type: ignore[assignment]
+        db = _services.get(Database)
         db.close()
     except Exception:
         pass
@@ -139,8 +159,41 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
 app = FastAPI(
     title="andy-harness",
     description="插件化 Agent Harness 智能体底座",
-    version="0.1.0",
+    version="1.0.0",
     lifespan=lifespan,
+)
+
+
+# E12：认证中间件（须在 CORS 之前加入，使 CORS 位于最外层，
+# 预检 / 401 仍带正确的 CORS 头）。认证未启用时直接放行。
+def _resolve_auth_service() -> Any:
+    from harness.modules.auth_manager.service import AuthService
+
+    if not _services.has(AuthService):
+        return None
+    return _services.get(AuthService)
+
+
+app.add_middleware(AuthMiddleware, get_auth_service=_resolve_auth_service)
+
+# E11：Tauri 桌面壳以自定义协议源（tauri://localhost / http://tauri.localhost）
+# 直接访问后端，属于跨源；开发期 Vite 走代理不需要 CORS，直连也一并放行。
+# 可用 HARNESS_ALLOWED_ORIGINS（逗号分隔）追加来源。
+_DEFAULT_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+]
+_extra_origins = [o.strip() for o in os.environ.get("HARNESS_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[*_DEFAULT_ORIGINS, *_extra_origins],
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # 注册错误处理
@@ -160,6 +213,9 @@ setup_memory_routes(_services)
 setup_trace_routes(_services)
 setup_schedule_routes(_services)
 setup_attachment_routes(_services)
+setup_runs_routes(_services, _hooks, _tool_registry)
+setup_channel_routes(_services)
+setup_auth_routes(_services)
 
 app.include_router(sessions_router)
 app.include_router(providers_router)
@@ -174,6 +230,9 @@ app.include_router(memories_router)
 app.include_router(traces_router)
 app.include_router(schedules_router)
 app.include_router(attachments_router)
+app.include_router(runs_router)
+app.include_router(channels_router)
+app.include_router(auth_router)
 
 # 注册 WebSocket 路由
 setup_ws_routes(_services, _hooks, _tool_registry)

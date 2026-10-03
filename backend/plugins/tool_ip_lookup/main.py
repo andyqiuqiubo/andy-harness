@@ -13,6 +13,7 @@ from harness.kernel.contracts.tool import ToolPlugin
 
 logger = logging.getLogger("harness.tools.ip_lookup")
 
+
 class IpLookupTool(ToolPlugin):
     @property
     def tool_name(self) -> str:
@@ -24,10 +25,7 @@ class IpLookupTool(ToolPlugin):
 
     @property
     def description(self) -> str:
-        return (
-            "查询 IP 地址的地理位置和运营商信息。"
-            "当用户询问某个 IP 归属地、IP 定位时使用。"
-        )
+        return "查询 IP 地址的地理位置和运营商信息。当用户询问某个 IP 归属地、IP 定位时使用。"
 
     @property
     def parameters_schema(self) -> dict[str, Any]:
@@ -63,6 +61,7 @@ class IpLookupTool(ToolPlugin):
         except Exception as e:
             return f"查询失败: {e}"
 
+
 class IpLookupPlugin(BasePlugin):
     manifest: PluginManifest
     _ctx: PluginContext | None = None
@@ -73,6 +72,7 @@ class IpLookupPlugin(BasePlugin):
     async def activate(self, ctx: PluginContext) -> None:
         self._ctx = ctx
         from harness.engine.tool_registry import ToolRegistry
+
         if not ctx.services.has(ToolRegistry):
             ctx.services.register(ToolRegistry, ToolRegistry(), owner=self.plugin_id)
         ctx.services.get(ToolRegistry).register(IpLookupTool(), owner=self.plugin_id)
@@ -80,6 +80,7 @@ class IpLookupPlugin(BasePlugin):
 
     async def deactivate(self, ctx: PluginContext) -> None:
         from harness.engine.tool_registry import ToolRegistry
+
         try:
             ctx.services.get(ToolRegistry).unregister_all(self.plugin_id)
         except Exception:

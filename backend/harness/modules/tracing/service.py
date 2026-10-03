@@ -175,7 +175,10 @@ class SpanService(ABC):
 
     @abstractmethod
     def list_traces(
-        self, session_id: str | None = None, limit: int = 50
+        self,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        limit: int = 50,
     ) -> list[TraceSummary]:
         """列出 trace 汇总（最近优先）。"""
 
@@ -186,6 +189,10 @@ class SpanService(ABC):
     @abstractmethod
     def delete_trace(self, trace_id: str) -> int:
         """删除一条 trace，返回删除的 span 数。"""
+
+    @abstractmethod
+    def delete_by_session(self, session_id: str) -> int:
+        """删除某会话的全部轨迹，返回删除的 span 数。"""
 
 
 class SpanServiceImpl(SpanService):
@@ -249,38 +256,44 @@ class SpanServiceImpl(SpanService):
         if maxn <= 0:
             return
         self._db.execute(
-            "DELETE FROM spans WHERE rowid IN ("
-            "SELECT rowid FROM spans ORDER BY rowid DESC LIMIT -1 OFFSET ?)",
+            "DELETE FROM spans WHERE rowid IN (SELECT rowid FROM spans ORDER BY rowid DESC LIMIT -1 OFFSET ?)",
             (maxn,),
         )
 
     def list_spans(self, trace_id: str) -> list[Span]:
-        rows = self._db.query(
-            "SELECT * FROM spans WHERE trace_id = ? ORDER BY rowid ASC", (trace_id,)
-        )
+        rows = self._db.query("SELECT * FROM spans WHERE trace_id = ? ORDER BY rowid ASC", (trace_id,))
         return [Span.from_row(r) for r in rows]
 
     def list_traces(
-        self, session_id: str | None = None, limit: int = 50
+        self,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        limit: int = 50,
     ) -> list[TraceSummary]:
         params: list[Any] = []
+        joins = ""
         where = ""
-        if session_id:
-            where = "WHERE session_id = ?"
+        if user_id:
+            # E12：仅返回归属当前用户的会话下的 trace（两跳：spans.session_id → sessions.user_id）。
+            joins = "JOIN sessions s ON p.session_id = s.id"
+            where = "WHERE s.user_id = ?"
+            params.append(user_id)
+        elif session_id:
+            where = "WHERE p.session_id = ?"
             params.append(session_id)
         sql = (
-            "SELECT trace_id, "
-            "  MAX(session_id) AS session_id, "
-            "  MAX(CASE WHEN kind = 'run' THEN name END) AS name, "
-            "  MIN(created_at) AS started_at, "
-            "  MAX(duration_ms) AS duration_ms, "
+            "SELECT p.trace_id, "
+            "  MAX(p.session_id) AS session_id, "
+            "  MAX(CASE WHEN p.kind = 'run' THEN p.name END) AS name, "
+            "  MIN(p.created_at) AS started_at, "
+            "  MAX(p.duration_ms) AS duration_ms, "
             "  COUNT(*) AS span_count, "
-            "  SUM(CASE WHEN kind = 'run' THEN 0 ELSE 1 END) AS step_count, "
-            "  SUM(total_tokens) AS total_tokens, "
-            "  SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_count "
-            f"FROM spans {where} "
-            "GROUP BY trace_id "
-            "ORDER BY started_at DESC, trace_id DESC LIMIT ?"
+            "  SUM(CASE WHEN p.kind = 'run' THEN 0 ELSE 1 END) AS step_count, "
+            "  SUM(p.total_tokens) AS total_tokens, "
+            "  SUM(CASE WHEN p.status = 'error' THEN 1 ELSE 0 END) AS error_count "
+            f"FROM spans p {joins} {where} "
+            "GROUP BY p.trace_id "
+            "ORDER BY started_at DESC, p.trace_id DESC LIMIT ?"
         )
         params.append(max(1, limit))
         result: list[TraceSummary] = []
@@ -337,10 +350,12 @@ class SpanServiceImpl(SpanService):
         }
 
     def delete_trace(self, trace_id: str) -> int:
-        rows = self._db.query(
-            "SELECT COUNT(*) AS n FROM spans WHERE trace_id = ?", (trace_id,)
-        )
+        rows = self._db.query("SELECT COUNT(*) AS n FROM spans WHERE trace_id = ?", (trace_id,))
         count = int(rows[0]["n"]) if rows else 0
         if count:
             self._db.execute("DELETE FROM spans WHERE trace_id = ?", (trace_id,))
         return count
+
+    def delete_by_session(self, session_id: str) -> int:
+        cursor = self._db.execute("DELETE FROM spans WHERE session_id = ?", (session_id,))
+        return int(cursor.rowcount or 0)

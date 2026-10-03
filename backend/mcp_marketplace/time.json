@@ -1,0 +1,10 @@
+{
+  "name": "time",
+  "type": "stdio",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-time"],
+  "description": "官方参考 MCP：获取当前时间与指定时区时间，解决模型「不知道现在几点」的问题。无需账号、无需密钥（首次运行会自动下载包）。",
+  "enabled": true,
+  "auth_required": false,
+  "long_description": "Time MCP（@modelcontextprotocol/server-time）：Anthropic 官方维护的参考服务器，提供当前时间查询与时区转换。\n\n- 无需账号、无需 API Key。\n- 以 stdio 方式本地启动，首次运行会经 npx 自动拉取包（需本机有 Node.js 与网络）。\n- 典型用途：让模型回答「现在几点」「纽约现在是几号」「距离某个时间还有多久」。\n\n注意：若本机网络无法下载 npx 包，安装后连接会失败，但配置仍会保留，联网环境就绪后可重连。"
+}

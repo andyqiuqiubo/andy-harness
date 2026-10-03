@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from harness.api.errors import APIError
@@ -22,6 +22,14 @@ from harness.modules.memory_manager.service import (
 logger = logging.getLogger("harness.api.memories")
 
 router = APIRouter(prefix="/api/memories", tags=["memories"])
+
+
+def _current_user_id(request: Request) -> str:
+    """E12：当前用户 id；未启用认证时返回 ""。"""
+    user = getattr(request.state, "user", None)
+    if not isinstance(user, dict):
+        return ""
+    return str(user.get("id") or "")
 
 
 class MemoryCreate(BaseModel):
@@ -83,13 +91,12 @@ def setup_memory_routes(registry: ServiceRegistry) -> None:
             summarizer = registry.get(MemorySummarizer)
         except Exception as e:
             raise APIError("MEMORY_SUMMARIZER_UNAVAILABLE", "记忆总结器未启用", 503) from e
-        outcome = await summarizer.summarize_recent(
-            max_sessions=max_sessions or None
-        )
+        outcome = await summarizer.summarize_recent(max_sessions=max_sessions or None)
         return {"ok": not outcome.skipped_reason, **outcome.to_dict()}
 
     @router.get("", summary="列出 / 检索记忆")
     async def list_memories(
+        request: Request,
         scope: str | None = None,
         session_id: str | None = None,
         query: str | None = None,
@@ -99,11 +106,15 @@ def setup_memory_routes(registry: ServiceRegistry) -> None:
         if svc is None:
             return {"available": False, "memories": [], "count": 0}
         limit = max(1, min(limit, 500))
+        user_id = _current_user_id(request)
         if query:
-            items = svc.search(query, scope=scope, limit=limit)
+            items = svc.search(query, scope=scope, limit=limit, user_id=user_id)
         else:
             items = svc.list_memories(
-                scope=scope, session_id=session_id, limit=limit
+                scope=scope,
+                session_id=session_id,
+                limit=limit,
+                user_id=user_id,
             )
         return {
             "available": True,
@@ -112,7 +123,7 @@ def setup_memory_routes(registry: ServiceRegistry) -> None:
         }
 
     @router.post("", summary="保存记忆（相同 key 覆盖）")
-    async def create_memory(body: MemoryCreate) -> dict[str, Any]:
+    async def create_memory(request: Request, body: MemoryCreate) -> dict[str, Any]:
         svc = _get_service(registry)
         if svc is None:
             raise APIError("MEMORY_UNAVAILABLE", "长期记忆服务未启用", 503)
@@ -126,27 +137,29 @@ def setup_memory_routes(registry: ServiceRegistry) -> None:
             scope=body.scope,
             session_id=body.session_id,
             tags=body.tags,
+            user_id=_current_user_id(request),
         )
         return {"memory": record.to_dict()}
 
     @router.patch("/{memory_id}", summary="更新记忆")
-    async def update_memory(memory_id: str, body: MemoryUpdate) -> dict[str, Any]:
+    async def update_memory(request: Request, memory_id: str, body: MemoryUpdate) -> dict[str, Any]:
         svc = _get_service(registry)
         if svc is None:
             raise APIError("MEMORY_UNAVAILABLE", "长期记忆服务未启用", 503)
         record = svc.update(
             memory_id,
             **body.model_dump(exclude_none=True),
+            user_id=_current_user_id(request),
         )
         if record is None:
             raise APIError("MEMORY_NOT_FOUND", f"未找到记忆 {memory_id}", 404)
         return {"memory": record.to_dict()}
 
     @router.delete("/{memory_id}", summary="删除记忆")
-    async def delete_memory(memory_id: str) -> dict[str, Any]:
+    async def delete_memory(request: Request, memory_id: str) -> dict[str, Any]:
         svc = _get_service(registry)
         if svc is None:
             raise APIError("MEMORY_UNAVAILABLE", "长期记忆服务未启用", 503)
-        if not svc.delete(memory_id):
+        if not svc.delete(memory_id, user_id=_current_user_id(request)):
             raise APIError("MEMORY_NOT_FOUND", f"未找到记忆 {memory_id}", 404)
         return {"removed": memory_id}

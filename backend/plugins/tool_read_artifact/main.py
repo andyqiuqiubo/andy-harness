@@ -69,9 +69,7 @@ class ReadArtifactTool(ToolPlugin):
 
     async def execute(self, args: dict[str, Any]) -> str:
         """读取工件内容。"""
-        artifact_id = str(
-            args.get("artifact_id") or args.get("id") or ""
-        ).strip()
+        artifact_id = str(args.get("artifact_id") or args.get("id") or "").strip()
         if not artifact_id:
             return "错误: 缺少 artifact_id 参数"
 
@@ -109,8 +107,7 @@ class ReadArtifactTool(ToolPlugin):
         )
         truncated = offset + len(chunk) < record.char_count
         footer = (
-            f"\n…（还有 {record.char_count - offset - len(chunk)} 字符未读出，"
-            f"可增大 offset 继续读取）"
+            f"\n…（还有 {record.char_count - offset - len(chunk)} 字符未读出，可增大 offset 继续读取）"
             if truncated
             else ""
         )

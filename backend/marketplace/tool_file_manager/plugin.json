@@ -1,0 +1,21 @@
+{
+  "id": "tool_file_manager",
+  "name": "文件管理 File Manager",
+  "version": "0.1.0",
+  "type": "tool",
+  "entry": "plugins.tool_file_manager.main:FileManagerPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["filesystem"],
+  "description": "在受控目录内管理文件：列出目录、读取、写入/新建、创建文件夹、删除。所有路径被限制在 base_dir 内，杜绝越权访问。",
+  "long_description": "文件管理工具，在『受控根目录（base_dir）』内安全地操作文件。\n\n- list：列出目录内容（含文件/文件夹与大小）\n- read：读取文本文件内容（超大文件截断到 20000 字符）\n- write：写入/覆盖文本文件（自动创建父目录）\n- mkdir：创建文件夹\n- delete：删除文件或空文件夹\n\n安全围栏：所有相对路径都在 base_dir 内解析，且会拦截跨越 base_dir 的 `..` 越权访问。base_dir 默认是服务运行目录，可在插件配置的 base_dir 中改为指定路径（如项目工作目录）。",
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "base_dir": {
+        "type": "string",
+        "description": "文件操作的根目录（绝对路径或相对路径），所有操作被限制在此目录内。留空则使用服务运行目录。",
+        "default": ""
+      }
+    }
+  }
+}

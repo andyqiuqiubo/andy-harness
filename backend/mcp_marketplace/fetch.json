@@ -1,0 +1,10 @@
+{
+  "name": "fetch",
+  "type": "stdio",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-fetch"],
+  "description": "官方参考 MCP：把网页 URL 抓取并转换为干净的 Markdown，供模型阅读。无需账号、无需密钥（首次运行会自动下载包）。",
+  "enabled": true,
+  "auth_required": false,
+  "long_description": "Fetch MCP（@modelcontextprotocol/server-fetch）：Anthropic 官方维护的参考服务器，把任意网页抓成模型易读的 Markdown。\n\n- 无需账号、无需 API Key。\n- 以 stdio 方式本地启动，首次运行会经 npx 自动拉取包（需本机有 Node.js 与网络）。\n- 典型用途：让模型「打开这个链接读一下」「把网页内容总结成要点」。\n\n注意：若本机网络无法下载 npx 包，安装后连接会失败，但配置仍会保留，联网环境就绪后可重连。"
+}

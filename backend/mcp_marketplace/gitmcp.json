@@ -1,0 +1,9 @@
+{
+  "name": "gitmcp",
+  "type": "streamable-http",
+  "url": "https://gitmcp.io/docs",
+  "description": "检索任意 GitHub 仓库的文档与源码；也可换成 https://gitmcp.io/<owner>/<repo> 锁定单个仓库。",
+  "enabled": true,
+  "auth_required": false,
+  "long_description": "GitMCP：把任意 GitHub 仓库的文档与源码开放给模型检索，**无需账号、无需鉴权**。\n\n默认端点 `/docs` 是通用入口；想固定某个仓库，把 url 改成 `https://gitmcp.io/<owner>/<repo>` 即可\n（实测 `https://gitmcp.io/facebook/react` 同样可用，便于在会话中约定单一数据源）。\n\n工具：\n\n1. `fetch_generic_documentation` —— 拉取指定仓库的文档正文。\n2. `search_generic_documentation` —— 在仓库文档中做关键词检索。\n3. `search_generic_code` —— 在仓库源码中检索（定位实现、函数签名、配置项）。\n4. `fetch_generic_url_content` —— 抓取任意 URL 内容（当前网站/GitHub 直链都行）。\n5. `match_common_libs_owner_repo_mapping` —— 把常见库名映射到其 owner/repo，省去手查仓库地址。\n\n适用场景：查源码实现细节、确认某个 API 的真实行为、读第三方库未转 Markdown 的原始文档。\n\n实测：`/docs` 握手后返回以上 5 个工具。"
+}

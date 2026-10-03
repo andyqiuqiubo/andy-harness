@@ -1,0 +1,9 @@
+{
+  "name": "usefulai",
+  "type": "streamable-http",
+  "url": "https://api.usefulai.fun/mcp",
+  "description": "340+ 即用工具集合：单位换算、文本处理、数据解析、编码、数学、密码学等，无需鉴权。",
+  "enabled": true,
+  "auth_required": false,
+  "long_description": "UsefulAI MCP：一个持续扩充的「实用工具箱」远程服务，**无需账号、无需 API Key**，公开端点直接可用。\n\n工具覆盖：\n\n- 单位换算（长度/重量/温度/时间等）\n- 文本处理（大小写、计数、格式化）\n- 数据解析（JSON / CSV / 编码识别）\n- 编码与校验（Base64、哈希、十六进制）\n- 数学与密码学小工具\n\n适合把日常的小工具需求交给 Agent 直接调用，免去为每件小事写脚本。\n\n实测：作为免鉴权 streamable-http 端点可被 MCP 客户端握手。"
+}
