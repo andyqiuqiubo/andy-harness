@@ -31,9 +31,7 @@ class TestDeepSeekPlugin:
         from plugins.provider_deepseek.main import DeepSeekProviderPlugin
 
         plugin = DeepSeekProviderPlugin()
-        plugin.manifest = type(
-            "M", (), {"id": "provider_deepseek", "core": False}
-        )()  # type: ignore[attr-defined]
+        plugin.manifest = type("M", (), {"id": "provider_deepseek", "core": False})()  # type: ignore[attr-defined]
 
         # 设置配置
         ctx.config.set("api_key", "sk-test-deepseek")
@@ -53,9 +51,7 @@ class TestDeepSeekPlugin:
         from plugins.provider_deepseek.main import DeepSeekProviderPlugin
 
         plugin = DeepSeekProviderPlugin()
-        plugin.manifest = type(
-            "M", (), {"id": "provider_deepseek", "core": False}
-        )()  # type: ignore[attr-defined]
+        plugin.manifest = type("M", (), {"id": "provider_deepseek", "core": False})()  # type: ignore[attr-defined]
 
         ctx.config.set("api_key", "sk-test-deepseek")
         await plugin.activate(ctx)
@@ -74,9 +70,7 @@ class TestDeepSeekPlugin:
         from plugins.provider_deepseek.main import DeepSeekProviderPlugin
 
         plugin = DeepSeekProviderPlugin()
-        plugin.manifest = type(
-            "M", (), {"id": "provider_deepseek", "core": False}
-        )()  # type: ignore[attr-defined]
+        plugin.manifest = type("M", (), {"id": "provider_deepseek", "core": False})()  # type: ignore[attr-defined]
 
         ctx.config.set("api_key", "sk-test-deepseek")
         await plugin.activate(ctx)
@@ -106,9 +100,7 @@ class TestQwenPlugin:
         )
 
         plugin = QwenProviderPlugin()
-        plugin.manifest = type(
-            "M", (), {"id": "provider_qwen", "core": False}
-        )()  # type: ignore[attr-defined]
+        plugin.manifest = type("M", (), {"id": "provider_qwen", "core": False})()  # type: ignore[attr-defined]
 
         ctx.config.set("api_key", "sk-test-qwen")
         await plugin.activate(ctx)
@@ -137,9 +129,7 @@ class TestDoubaoPlugin:
         )
 
         plugin = DoubaoProviderPlugin()
-        plugin.manifest = type(
-            "M", (), {"id": "provider_doubao", "core": False}
-        )()  # type: ignore[attr-defined]
+        plugin.manifest = type("M", (), {"id": "provider_doubao", "core": False})()  # type: ignore[attr-defined]
 
         ctx.config.set("api_key", "sk-test-doubao")
         await plugin.activate(ctx)
@@ -168,9 +158,7 @@ class TestTokenCounterViaServiceRegistry:
         )
 
         plugin = DeepSeekProviderPlugin()
-        plugin.manifest = type(
-            "M", (), {"id": "provider_deepseek", "core": False}
-        )()  # type: ignore[attr-defined]
+        plugin.manifest = type("M", (), {"id": "provider_deepseek", "core": False})()  # type: ignore[attr-defined]
 
         ctx.config.set("api_key", "sk-test")
         await plugin.activate(ctx)

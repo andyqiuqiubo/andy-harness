@@ -54,9 +54,7 @@ class TestProviderRegistry:
     def test_unregister(self) -> None:
         """注销 provider。"""
         registry = ProviderRegistry()
-        registry.register_provider(
-            "test", TestProviderImpl, {"api_key": "sk-test"}
-        )
+        registry.register_provider("test", TestProviderImpl, {"api_key": "sk-test"})
         assert registry.has_provider("test")
 
         registry.unregister_provider("test")
@@ -74,11 +72,13 @@ class TestProviderRegistry:
         """列出所有 provider。"""
         registry = ProviderRegistry()
         registry.register_provider(
-            "test", TestProviderImpl,
+            "test",
+            TestProviderImpl,
             {"name": "Test", "api_key": "sk-test"},
         )
         registry.register_provider(
-            "custom", CustomProvider,
+            "custom",
+            CustomProvider,
             {"name": "Custom", "api_key": "sk-custom"},
         )
 
@@ -96,7 +96,8 @@ class TestProviderRegistry:
         """已停用的 provider 不可获取实例（除非 include_disabled）。"""
         registry = ProviderRegistry()
         registry.register_provider(
-            "test", TestProviderImpl,
+            "test",
+            TestProviderImpl,
             {"api_key": "sk-test", "enabled": False},
         )
 
@@ -111,7 +112,8 @@ class TestProviderRegistry:
         """更新配置后清除实例缓存。"""
         registry = ProviderRegistry()
         registry.register_provider(
-            "test", TestProviderImpl,
+            "test",
+            TestProviderImpl,
             {"api_key": "sk-old", "base_url": "https://old.example.com/v1"},
         )
 
@@ -137,13 +139,15 @@ class TestCustomProvider:
 
         # 注册内置 provider
         registry.register_provider(
-            "builtin", TestProviderImpl,
+            "builtin",
+            TestProviderImpl,
             {"name": "Builtin", "api_key": "sk-builtin"},
         )
 
         # 注册自定义 provider
         registry.register_provider(
-            "custom", CustomProvider,
+            "custom",
+            CustomProvider,
             {
                 "name": "Custom",
                 "api_key": "sk-custom",

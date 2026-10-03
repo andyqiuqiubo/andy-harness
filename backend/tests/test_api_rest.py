@@ -63,9 +63,7 @@ class TestSessionsAPI:
         create_resp = client.post("/api/sessions", json={"title": "旧名"})
         session_id = create_resp.json()["id"]
 
-        response = client.patch(
-            f"/api/sessions/{session_id}", json={"title": "新名"}
-        )
+        response = client.patch(f"/api/sessions/{session_id}", json={"title": "新名"})
         assert response.status_code == 200
         assert response.json()["title"] == "新名"
 
@@ -74,9 +72,7 @@ class TestSessionsAPI:
         create_resp = client.post("/api/sessions", json={"title": "待归档"})
         session_id = create_resp.json()["id"]
 
-        response = client.patch(
-            f"/api/sessions/{session_id}", json={"archived": True}
-        )
+        response = client.patch(f"/api/sessions/{session_id}", json={"archived": True})
         assert response.status_code == 200
 
         # 归档后不出现在默认列表中

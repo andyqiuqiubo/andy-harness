@@ -53,11 +53,13 @@ class TestCodeRunnerPlugin:
         tool_registry = ctx.services.get(ToolRegistry)
         tool = tool_registry.get("code_runner")
 
-        result = await tool.execute({
-            "code": "print(2 + 3)",
-            "language": "python",
-            "session_id": "test-session",
-        })
+        result = await tool.execute(
+            {
+                "code": "print(2 + 3)",
+                "language": "python",
+                "session_id": "test-session",
+            }
+        )
 
         assert "5" in result
         assert "exit_code" in result
@@ -77,11 +79,13 @@ class TestCodeRunnerPlugin:
         tool_registry = ctx.services.get(ToolRegistry)
         tool = tool_registry.get("code_runner")
 
-        result = await tool.execute({
-            "code": "rm -rf /",
-            "language": "shell",
-            "session_id": "test-blocked",
-        })
+        result = await tool.execute(
+            {
+                "code": "rm -rf /",
+                "language": "shell",
+                "session_id": "test-blocked",
+            }
+        )
 
         assert "被拦截" in result
 

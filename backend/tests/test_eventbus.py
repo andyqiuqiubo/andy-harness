@@ -39,9 +39,7 @@ async def test_wildcard_subscription() -> None:
     bus = EventBus()
     received: list[str] = []
 
-    await bus.subscribe(
-        "model.*", lambda data: received.append(data.get("topic", ""))
-    )
+    await bus.subscribe("model.*", lambda data: received.append(data.get("topic", "")))
     await bus.publish("model.request", {"topic": "model.request"})
     await bus.publish("model.delta", {"topic": "model.delta"})
     await bus.publish("session.created", {"topic": "session.created"})

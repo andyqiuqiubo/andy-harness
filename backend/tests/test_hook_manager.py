@@ -18,9 +18,7 @@ async def test_single_hook_executes() -> None:
 
     mgr.register("pre_model_call", handler, owner="plugin-x")
 
-    result = await mgr.execute(
-        "pre_model_call", HookContext(hook_name="pre_model_call", data="original")
-    )
+    result = await mgr.execute("pre_model_call", HookContext(hook_name="pre_model_call", data="original"))
     assert called == [True]
     assert result.data == "original"
 
@@ -42,9 +40,7 @@ async def test_multiple_hooks_in_order() -> None:
     mgr.register("pre_model_call", handler1, owner="plugin-a")
     mgr.register("pre_model_call", handler2, owner="plugin-b")
 
-    result = await mgr.execute(
-        "pre_model_call", HookContext(hook_name="pre_model_call", data="start")
-    )
+    result = await mgr.execute("pre_model_call", HookContext(hook_name="pre_model_call", data="start"))
     assert order == ["first", "second"]
     assert result.data == "start -> first -> second"
 
@@ -66,9 +62,7 @@ async def test_short_circuit() -> None:
     mgr.register("pre_model_call", handler1, owner="plugin-a")
     mgr.register("pre_model_call", handler2, owner="plugin-b")
 
-    result = await mgr.execute(
-        "pre_model_call", HookContext(hook_name="pre_model_call", data="start")
-    )
+    result = await mgr.execute("pre_model_call", HookContext(hook_name="pre_model_call", data="start"))
     assert called == ["first"]  # second 未执行
     assert result.data == "start -> first"
     assert result.short_circuit is True
@@ -89,12 +83,8 @@ async def test_unregister_all_by_owner() -> None:
 
     mgr.unregister_all("plugin-a")
 
-    await mgr.execute(
-        "pre_model_call", HookContext(hook_name="pre_model_call", data="x")
-    )
-    await mgr.execute(
-        "post_model_call", HookContext(hook_name="post_model_call", data="x")
-    )
+    await mgr.execute("pre_model_call", HookContext(hook_name="pre_model_call", data="x"))
+    await mgr.execute("post_model_call", HookContext(hook_name="post_model_call", data="x"))
     assert called == []  # 已注销，未执行
 
 
@@ -102,8 +92,6 @@ async def test_unregister_all_by_owner() -> None:
 async def test_no_handlers_returns_data_unchanged() -> None:
     """无处理器时返回原始数据。"""
     mgr = HookManager()
-    result = await mgr.execute(
-        "nonexistent", HookContext(hook_name="nonexistent", data="original")
-    )
+    result = await mgr.execute("nonexistent", HookContext(hook_name="nonexistent", data="original"))
     assert result.data == "original"
     assert result.short_circuit is False

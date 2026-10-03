@@ -91,18 +91,14 @@ class TestSlidingWindowStrategy:
     def test_short_messages_not_truncated(self) -> None:
         """短消息列表不被截断。"""
         strategy = SlidingWindowStrategy(max_messages=10)
-        messages = [
-            {"role": "user", "content": f"消息{i}"} for i in range(5)
-        ]
+        messages = [{"role": "user", "content": f"消息{i}"} for i in range(5)]
         result = strategy.apply(messages, None, "test", 4096, set())
         assert len(result) == 5
 
     def test_long_messages_truncated(self) -> None:
         """长消息列表被截断到 max_messages。"""
         strategy = SlidingWindowStrategy(max_messages=3)
-        messages = [
-            {"role": "user", "content": f"消息{i}"} for i in range(10)
-        ]
+        messages = [{"role": "user", "content": f"消息{i}"} for i in range(10)]
         result = strategy.apply(messages, None, "test", 4096, set())
         assert len(result) == 3
         # 保留最近 3 条
@@ -137,9 +133,7 @@ class TestSummaryCompressionStrategy:
         # 应被压缩（摘要 + 部分消息）
         assert len(result) <= 3
         # 应包含摘要
-        has_summary = any(
-            "摘要" in m.get("content", "") for m in result if m["role"] == "system"
-        )
+        has_summary = any("摘要" in m.get("content", "") for m in result if m["role"] == "system")
         assert has_summary
 
 

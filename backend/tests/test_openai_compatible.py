@@ -24,11 +24,7 @@ class TestStreamParsing:
     def test_parse_content_delta(self) -> None:
         """解析普通 content delta。"""
         provider = TestProvider(api_key="sk-test")
-        data = {
-            "choices": [
-                {"delta": {"content": "hello"}}
-            ]
-        }
+        data = {"choices": [{"delta": {"content": "hello"}}]}
         result = provider._parse_stream_chunk(data)
         assert result is not None
         assert result["delta"] == "hello"
@@ -36,11 +32,7 @@ class TestStreamParsing:
     def test_parse_tool_calls(self) -> None:
         """解析 tool_calls。"""
         provider = TestProvider(api_key="sk-test")
-        data = {
-            "choices": [
-                {"delta": {"tool_calls": [{"id": "call-1", "function": {"name": "calc"}}]}}
-            ]
-        }
+        data = {"choices": [{"delta": {"tool_calls": [{"id": "call-1", "function": {"name": "calc"}}]}}]}
         result = provider._parse_stream_chunk(data)
         assert result is not None
         assert "tool_calls" in result
@@ -62,11 +54,7 @@ class TestStreamParsing:
     def test_parse_reasoning_content(self) -> None:
         """解析 reasoning_content（DeepSeek 特有）。"""
         provider = TestProvider(api_key="sk-test")
-        data = {
-            "choices": [
-                {"delta": {"reasoning_content": "thinking..."}}
-            ]
-        }
+        data = {"choices": [{"delta": {"reasoning_content": "thinking..."}}]}
         result = provider._parse_stream_chunk(data)
         assert result is not None
         assert result["reasoning_content"] == "thinking..."

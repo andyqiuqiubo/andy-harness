@@ -115,11 +115,7 @@ class TestPluginLoaderIntegration:
         from plugins.hello_plugin.main import HelloService
 
         loader = PluginLoader()
-        raw = json.loads(
-            (Path(plugins_dir) / "hello_plugin" / "plugin.json").read_text(
-                encoding="utf-8"
-            )
-        )
+        raw = json.loads((Path(plugins_dir) / "hello_plugin" / "plugin.json").read_text(encoding="utf-8"))
         manifest = loader.validate_manifest(raw)
         loader.load(manifest, plugins_dir)
         await loader.activate(PLUGIN_ID)
@@ -137,11 +133,7 @@ class TestPluginLoaderIntegration:
         from plugins.hello_plugin.main import HelloService
 
         loader = PluginLoader()
-        raw = json.loads(
-            (Path(plugins_dir) / "hello_plugin" / "plugin.json").read_text(
-                encoding="utf-8"
-            )
-        )
+        raw = json.loads((Path(plugins_dir) / "hello_plugin" / "plugin.json").read_text(encoding="utf-8"))
         manifest = loader.validate_manifest(raw)
         loader.load(manifest, plugins_dir)
         await loader.activate(PLUGIN_ID)
@@ -157,11 +149,7 @@ class TestPluginLoaderIntegration:
     async def test_event_unsubscribed_after_deactivate(self, plugins_dir: str) -> None:
         """停用后事件订阅自动注销。"""
         loader = PluginLoader()
-        raw = json.loads(
-            (Path(plugins_dir) / "hello_plugin" / "plugin.json").read_text(
-                encoding="utf-8"
-            )
-        )
+        raw = json.loads((Path(plugins_dir) / "hello_plugin" / "plugin.json").read_text(encoding="utf-8"))
         manifest = loader.validate_manifest(raw)
         loader.load(manifest, plugins_dir)
         await loader.activate(PLUGIN_ID)
@@ -219,7 +207,10 @@ class TestServiceOverride:
 
         class PluginA(BasePlugin):
             manifest = PluginManifest(
-                id="plugin-a", name="A", version="0.1.0", type="service",
+                id="plugin-a",
+                name="A",
+                version="0.1.0",
+                type="service",
                 entry="main:PluginA",
             )
 
@@ -231,7 +222,10 @@ class TestServiceOverride:
 
         class PluginB(BasePlugin):
             manifest = PluginManifest(
-                id="plugin-b", name="B", version="0.1.0", type="service",
+                id="plugin-b",
+                name="B",
+                version="0.1.0",
+                type="service",
                 entry="main:PluginB",
             )
 
@@ -244,7 +238,9 @@ class TestServiceOverride:
         loader = PluginLoader()
 
         ctx_a = PluginContext(
-            "plugin-a", events=loader.events, services=loader.services,
+            "plugin-a",
+            events=loader.events,
+            services=loader.services,
             hooks=loader.hooks,
         )
         loader._loaded["plugin-a"] = (PluginA(), PluginA.manifest, ctx_a)
@@ -252,7 +248,9 @@ class TestServiceOverride:
         assert loader.services.get(MyService) == "impl-a"
 
         ctx_b = PluginContext(
-            "plugin-b", events=loader.events, services=loader.services,
+            "plugin-b",
+            events=loader.events,
+            services=loader.services,
             hooks=loader.hooks,
         )
         loader._loaded["plugin-b"] = (PluginB(), PluginB.manifest, ctx_b)

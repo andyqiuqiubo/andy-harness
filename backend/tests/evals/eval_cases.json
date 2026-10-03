@@ -1,0 +1,33 @@
+{
+  "name": "seed-eval",
+  "description": "种子评测集：覆盖纯对话、工具调用、工具约束等基础维度。可在线对真实模型运行，也可在测试中用脚本化 provider 确定性回归。",
+  "cases": [
+    {
+      "id": "chat-greeting",
+      "prompt": "你好，请用一句话介绍你自己。",
+      "expect_keywords": ["你好"],
+      "keyword_mode": "all",
+      "tags": ["basic", "chat"]
+    },
+    {
+      "id": "tool-calculator",
+      "prompt": "请用计算器算一下 123*456 等于多少。",
+      "expect_keywords": ["56088"],
+      "expect_tools": ["calculator"],
+      "tags": ["basic", "tool", "math"]
+    },
+    {
+      "id": "tool-current-time",
+      "prompt": "现在是什么时间？",
+      "expect_tools": ["current_time"],
+      "tags": ["basic", "tool"]
+    },
+    {
+      "id": "tool-calculator-forbidden",
+      "prompt": "请直接回答 7 加 8 等于几，不要使用任何工具。",
+      "expect_keywords": ["15"],
+      "forbid_tools": ["calculator"],
+      "tags": ["basic", "constraint"]
+    }
+  ]
+}

@@ -90,9 +90,7 @@ class TestMessageAppend:
     def test_append_message(self, service: SessionServiceImpl) -> None:
         """追加消息到会话。"""
         session = service.create_session("测试")
-        msg = service.append_message(
-            session.id, role="user", content="你好", tokens=10
-        )
+        msg = service.append_message(session.id, role="user", content="你好", tokens=10)
         assert msg.session_id == session.id
         assert msg.role == "user"
         assert msg.content == "你好"
@@ -115,9 +113,7 @@ class TestMessageAppend:
         """带 tool_calls 的消息。"""
         session = service.create_session("测试")
         tool_calls = [{"id": "call-1", "function": {"name": "calc", "arguments": "{}"}}]
-        msg = service.append_message(
-            session.id, role="assistant", content="", tool_calls=tool_calls
-        )
+        msg = service.append_message(session.id, role="assistant", content="", tool_calls=tool_calls)
         assert msg.tool_calls == tool_calls
 
 

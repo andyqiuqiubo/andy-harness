@@ -1,5 +1,7 @@
 """沙箱管理测试。"""
 
+import asyncio
+import sys
 import tempfile
 from pathlib import Path
 
@@ -14,9 +16,7 @@ from harness.modules.sandbox_manager.service import (
 @pytest.fixture
 def sandbox() -> SandboxServiceImpl:
     """创建沙箱服务。"""
-    backend = LocalSubprocessBackend(
-        base_workspaces_dir=str(Path(tempfile.gettempdir()) / "test_harness_sandbox")
-    )
+    backend = LocalSubprocessBackend(base_workspaces_dir=str(Path(tempfile.gettempdir()) / "test_harness_sandbox"))
     return SandboxServiceImpl(backend=backend)
 
 
@@ -62,8 +62,10 @@ class TestPythonExecution:
         """文件创建被检测到。"""
         # 清理可能存在的旧工作区
         from harness.modules.sandbox_manager.service import LocalSubprocessBackend
+
         if isinstance(sandbox._backend, LocalSubprocessBackend):
             import shutil
+
             ws = sandbox._backend.get_workspace("test-file-creation")
             shutil.rmtree(ws, ignore_errors=True)
         result = await sandbox.execute(
@@ -149,8 +151,10 @@ class TestSineWavePlot:
         """绘制正弦曲线，图片落工作区。"""
         # 清理可能存在的旧工作区
         from harness.modules.sandbox_manager.service import LocalSubprocessBackend
+
         if isinstance(sandbox._backend, LocalSubprocessBackend):
             import shutil
+
             ws = sandbox._backend.get_workspace("test-sine-fresh")
             shutil.rmtree(ws, ignore_errors=True)
         code = """
@@ -201,3 +205,48 @@ class TestNoLeak:
         # 验证工作区已清理（使用 _workspace_exists 不创建目录）
         backend = sandbox._backend
         assert all(not backend._workspace_exists(f"test-leak-{i}") for i in range(20))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="仅 Windows 验证进程树终止")
+class TestWindowsProcessTreeKill:
+    """Windows 进程树终止验证（修复孙进程残留）。"""
+
+    @pytest.mark.asyncio
+    async def test_grandchild_killed_on_timeout(self, sandbox: SandboxServiceImpl) -> None:
+        """超时后，脚本派生的孙进程也被一并终止（taskkill /T 覆盖整棵树）。"""
+        assert isinstance(sandbox._backend, LocalSubprocessBackend)
+        ws = Path(sandbox._backend.get_workspace("test-tree-kill"))
+        # 父进程派生子进程，子进程再派生孙进程（均长时间 sleep）
+        code = (
+            "import subprocess, sys, os, time\n"
+            "gp = subprocess.Popen([sys.executable, '-c',\n"
+            '    \'import time,os; open("GRANDCHILD_PID","w").write(str(os.getpid())); time.sleep(600)\'])\n'
+            "open('CHILD_PID','w').write(str(os.getpid()))\n"
+            "time.sleep(600)\n"
+        )
+        result = await sandbox.execute(
+            code=code,
+            language="python",
+            session_id="test-tree-kill",
+            timeout=2,
+        )
+        assert result.timed_out is True
+
+        grandchild_pid = (ws / "GRANDCHILD_PID").read_text(encoding="utf-8").strip()
+
+        # 轮询确认孙进程 PID 已不存在（taskkill /T 已杀掉整棵树）
+        killed = False
+        for _ in range(10):
+            proc = await asyncio.create_subprocess_exec(
+                "tasklist",
+                "/FI",
+                f"PID eq {grandchild_pid}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, _ = await proc.communicate()
+            if grandchild_pid not in out.decode("gbk", errors="replace"):
+                killed = True
+                break
+            await asyncio.sleep(0.5)
+        assert killed, f"孙进程 {grandchild_pid} 在超时后仍存活（进程树未彻底终止）"
