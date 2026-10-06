@@ -84,6 +84,11 @@ backend/scripts/
 backend/mcp.smoke.json
 frontend/.dev_*.txt
 
+# 本地下载缓存 / 工具产物（严禁上传）
+.downloads/
+.zcodeignore
+/*.zip
+
 # MCP 配置（可能含鉴权 header，不入库；示例见 mcp.example.json）
 mcp.json
 backend/mcp.json

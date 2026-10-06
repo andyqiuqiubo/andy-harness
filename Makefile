@@ -1,5 +1,12 @@
 .PHONY: install backend frontend dev test lint format clean
 
+# 飞书 CLI 等 Go 子进程需要 HTTPS_PROXY/HTTP_PROXY 环境变量才能出网。
+# 若启动终端未注入代理，可在 backend/.env.local 填写（已被 .gitignore 忽略，不入库）。
+ifneq (,$(wildcard backend/.env.local))
+include backend/.env.local
+export HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY https_proxy http_proxy all_proxy no_proxy
+endif
+
 # 一键安装前后端依赖
 install:
 	cd backend && uv sync --extra dev

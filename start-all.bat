@@ -60,6 +60,18 @@ if not errorlevel 1 goto port5173busy
 echo Ports are free. Starting services ...
 echo.
 
+rem ---- Outbound proxy injection for Feishu CLI (Go subprocess reads HTTPS_PROXY/HTTP_PROXY) ----
+rem Read proxy lines from backend\.env.local (git-ignored; fill once locally).
+rem If the launching terminal already exported a proxy, we do NOT override it.
+rem Regardless, ensure NO_PROXY contains the loopback addresses.
+set "PROXY_FILE=%~dp0backend\.env.local"
+if exist "%PROXY_FILE%" (
+  for /f "usebackq delims=" %%L in (`findstr /i /b "HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= NO_PROXY=" "%PROXY_FILE%" 2^>nul`) do set "%%L"
+)
+if not defined NO_PROXY (set "NO_PROXY=localhost,127.0.0.1") else (echo %NO_PROXY% | findstr /i "127.0.0.1" >nul || set "NO_PROXY=%NO_PROXY%,localhost,127.0.0.1")
+echo   Backend proxy: HTTPS_PROXY=%HTTPS_PROXY%  NO_PROXY=%NO_PROXY%
+echo.
+
 echo [1/2] Starting backend  - http://localhost:8000 ...
 start "andy-harness-backend" cmd /k "cd /d %~dp0backend && .venv\Scripts\python.exe -m uvicorn harness.main:app --reload --host 127.0.0.1 --port 8000"
 
