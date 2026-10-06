@@ -238,3 +238,171 @@ class TestMockTokenCounterIndependent:
 
         db.close()
         os.unlink(path)
+
+
+class TestReasoningContentEcho:
+    """DeepSeek 思考模式多轮回传：assistant 消息须携带 reasoning_content。
+
+    回归场景：重新回答 / 多轮对话时，DeepSeek 思考模型要求请求中的
+    assistant 消息（尤其带 tool_calls 的）回传其 reasoning_content，
+    否则 400: "The reasoning_content in the thinking mode must be passed
+    back to the API"。
+    """
+
+    def test_assistant_reasoning_echoed(self, context_service: ContextServiceImpl, services: ServiceRegistry) -> None:
+        """带 reasoning 的 assistant 消息构建上下文时回传 reasoning_content。"""
+        session_service = services.get(SessionService)
+        session = session_service.create_session("回传测试")
+        session_service.append_message(session.id, "user", "你好")
+        session_service.append_message(session.id, "assistant", "你好！", reasoning="思考过程")
+
+        messages = context_service.build(session.id, budget=4096, model="deepseek-v4-flash")
+        assistant = [m for m in messages if m["role"] == "assistant"]
+        assert len(assistant) == 1
+        assert assistant[0].get("reasoning_content") == "思考过程"
+
+    def test_tool_call_turn_keeps_reasoning_content(
+        self, context_service: ContextServiceImpl, services: ServiceRegistry
+    ) -> None:
+        """含工具调用的轮次：assistant(tool_calls) 消息同样回传 reasoning_content。"""
+        session_service = services.get(SessionService)
+        session = session_service.create_session("工具轮回传")
+        session_service.append_message(session.id, "user", "搜索一下")
+        session_service.append_message(
+            session.id,
+            "assistant",
+            "",
+            tool_calls=[{"id": "c1", "type": "function", "function": {"name": "web_search", "arguments": "{}"}}],
+            reasoning="第一轮思考",
+        )
+        session_service.append_message(session.id, "tool", "结果", tool_call_id="c1")
+        session_service.append_message(session.id, "assistant", "搜索结果如下", reasoning="第二轮思考")
+
+        messages = context_service.build(session.id, budget=4096, model="deepseek-v4-flash")
+        assistants = [m for m in messages if m["role"] == "assistant"]
+        assert len(assistants) == 2
+        # 带 tool_calls 的中间消息必须有 reasoning_content（400 触发点）
+        with_tc = [m for m in assistants if m.get("tool_calls")]
+        assert len(with_tc) == 1
+        assert with_tc[0].get("reasoning_content") == "第一轮思考"
+        assert assistants[-1].get("reasoning_content") == "第二轮思考"
+
+    def test_regenerate_collapse_keeps_latest_version_only(
+        self, context_service: ContextServiceImpl, services: ServiceRegistry
+    ) -> None:
+        """版本折叠：同一提问存在多个答案版本时，上下文只保留最新版本。
+
+        否则模型会把旧答案当作「已发生的事实」做总结，而不是重新作答。
+        """
+        session_service = services.get(SessionService)
+        session = session_service.create_session("版本折叠")
+        user_msg = session_service.append_message(session.id, "user", "你好")
+        session_service.append_message(
+            session.id, "assistant", "第一次回答", reasoning="第一次思考", parent_id=user_msg.id
+        )
+        session_service.append_message(
+            session.id, "assistant", "第二次回答", reasoning="第二次思考", parent_id=user_msg.id
+        )
+
+        messages = context_service.build(session.id, budget=4096, model="deepseek-v4-flash")
+        assistants = [m for m in messages if m["role"] == "assistant"]
+        assert len(assistants) == 1
+        assert assistants[0]["content"] == "第二次回答"
+        assert assistants[0].get("reasoning_content") == "第二次思考"
+
+    def test_regenerate_target_drops_all_versions(
+        self, context_service: ContextServiceImpl, services: ServiceRegistry
+    ) -> None:
+        """重新回答：目标提问的全部历史答案版本不进入上下文（从头重新作答）。"""
+        session_service = services.get(SessionService)
+        session = session_service.create_session("重新回答目标")
+        user_msg = session_service.append_message(session.id, "user", "明天天气如何")
+        session_service.append_message(session.id, "assistant", "旧答案", reasoning="旧思考", parent_id=user_msg.id)
+
+        messages = context_service.build(
+            session.id,
+            budget=4096,
+            model="deepseek-v4-flash",
+            regenerate_of_message_id=user_msg.id,
+        )
+        roles = [m["role"] for m in messages]
+        assert "assistant" not in roles
+        assert messages[-1]["role"] == "user"
+        assert messages[-1]["content"] == "明天天气如何"
+
+    def test_collapse_keeps_intermediate_process_of_latest_version(
+        self, context_service: ContextServiceImpl, services: ServiceRegistry
+    ) -> None:
+        """最新版本的过程消息（带 tool_calls 的 assistant，含过渡文字）必须保留。"""
+        session_service = services.get(SessionService)
+        session = session_service.create_session("过程保留")
+        user_msg = session_service.append_message(session.id, "user", "查天气")
+        session_service.append_message(
+            session.id,
+            "assistant",
+            "我先查一下天气",
+            tool_calls=[{"id": "c1", "type": "function", "function": {"name": "weather", "arguments": "{}"}}],
+            parent_id=user_msg.id,
+        )
+        session_service.append_message(session.id, "tool", "晴", tool_call_id="c1")
+        session_service.append_message(session.id, "assistant", "明天晴", reasoning="思考", parent_id=user_msg.id)
+
+        messages = context_service.build(session.id, budget=4096, model="deepseek-v4-flash")
+        contents = [str(m.get("content") or "") for m in messages]
+        assert "我先查一下天气" in contents
+        assert "明天晴" in contents
+        assert any(m.get("tool_call_id") == "c1" for m in messages)
+
+    def test_run_message_ids_bypass_collapse_for_in_flight_turn(
+        self, context_service: ContextServiceImpl, services: ServiceRegistry
+    ) -> None:
+        """重新回答的工具迭代中途：本次运行的新消息须在上下文中，旧版本不出现。"""
+        session_service = services.get(SessionService)
+        session = session_service.create_session("迭代中途")
+        user_msg = session_service.append_message(session.id, "user", "查天气")
+        # 旧版本（完整）：上一次的回答
+        session_service.append_message(session.id, "assistant", "旧答案", reasoning="旧思考", parent_id=user_msg.id)
+        # 本次运行进行中的消息：模型刚调了天气工具，结果已落库，等待下一轮迭代
+        in_flight_tc = session_service.append_message(
+            session.id,
+            "assistant",
+            "",
+            tool_calls=[{"id": "c2", "type": "function", "function": {"name": "weather", "arguments": "{}"}}],
+            reasoning="新一轮思考",
+            parent_id=user_msg.id,
+        )
+        in_flight_tool = session_service.append_message(session.id, "tool", "晴 25 度", tool_call_id="c2")
+
+        messages = context_service.build(
+            session.id,
+            budget=4096,
+            model="deepseek-v4-flash",
+            regenerate_of_message_id=user_msg.id,
+            run_message_ids=[in_flight_tc.id, in_flight_tool.id],
+        )
+        contents = [str(m.get("content") or "") for m in messages]
+        assert "旧答案" not in contents
+        assert "晴 25 度" in contents
+        # 消息顺序：提问之后紧跟本轮的工具调用与结果
+        assert contents[-2] == "" and contents[-1] == "晴 25 度"
+        in_flight = next(m for m in messages if m["role"] == "assistant" and m.get("tool_calls"))
+        assert in_flight.get("reasoning_content") == "新一轮思考"
+
+    def test_collapse_keeps_interrupted_partial_for_continue(
+        self, context_service: ContextServiceImpl, services: ServiceRegistry
+    ) -> None:
+        """普通轮次尾部无终答的进行中片段（中断后待继续）不被折叠丢弃。"""
+        session_service = services.get(SessionService)
+        session = session_service.create_session("中断续跑")
+        session_service.append_message(session.id, "user", "查天气")
+        session_service.append_message(
+            session.id,
+            "assistant",
+            "",
+            tool_calls=[{"id": "c1", "type": "function", "function": {"name": "weather", "arguments": "{}"}}],
+        )
+        session_service.append_message(session.id, "tool", "晴", tool_call_id="c1")
+
+        messages = context_service.build(session.id, budget=4096, model="deepseek-v4-flash")
+        contents = [str(m.get("content") or "") for m in messages]
+        assert "晴" in contents

@@ -499,3 +499,188 @@ class TestAgentLoopErrorHandling:
         assert len(result.tool_calls_made) == 1
         assert result.tool_calls_made[0]["error"] is not None
         assert "工具执行异常" in result.tool_calls_made[0]["error"]
+
+
+class TestReasoningPersistence:
+    """思维链持久化：DeepSeek 思考模式要求每条 assistant 消息回传它自己的 reasoning_content。
+
+    回归场景：中间 assistant(tool_calls) 消息不存当轮思维链时，
+    重新回答 / 工具迭代的后继请求会被 DeepSeek 以
+    400 "The reasoning_content in the thinking mode must be passed back
+    to the API" 拒绝。
+    """
+
+    @pytest.mark.asyncio
+    async def test_tool_call_message_persists_own_reasoning(
+        self, services: ServiceRegistry, tool_registry: ToolRegistry
+    ) -> None:
+        """中间 assistant(tool_calls) 消息存当轮思维链；终答只存产出它的那次思维链。"""
+        session_service = services.get(SessionService)
+        session = session_service.create_session("思维链持久化")
+
+        provider = MockProvider(
+            responses=[
+                [
+                    {
+                        "reasoning_content": "第一轮思考",
+                        "tool_calls": [{"function": {"name": "calculator", "arguments": '{"expression": "1+1"}'}}],
+                    }
+                ],
+                [{"reasoning_content": "第二轮思考", "delta": "1+1=2"}],
+            ]
+        )
+
+        loop = AgentLoop(services=services, hooks=HookManager(), tool_registry=tool_registry)
+        result = await loop.run(session_id=session.id, user_message="算一下 1+1", provider=provider)
+
+        assert result.content == "1+1=2"
+        messages = session_service.list_messages(session.id)
+        tool_call_msgs = [m for m in messages if m.role == "assistant" and m.tool_calls]
+        assert len(tool_call_msgs) == 1
+        # 关键断言：中间消息必须携带当轮思维链（400 触发点）
+        assert tool_call_msgs[0].reasoning == "第一轮思考"
+        finals = [m for m in messages if m.role == "assistant" and (m.content or "").strip()]
+        assert len(finals) == 1
+        # 终答只带产出它的那次调用的思维链，不重复拼接前几轮
+        assert finals[0].reasoning == "第二轮思考"
+
+    @pytest.mark.asyncio
+    async def test_regenerate_keeps_history_and_appends_version(
+        self, services: ServiceRegistry, tool_registry: ToolRegistry
+    ) -> None:
+        """重新回答：不新建 user 消息，历史问答对保留，新答案 parent_id 指向原提问。"""
+        session_service = services.get(SessionService)
+        session = session_service.create_session("重新回答")
+
+        provider1 = MockProvider(responses=[[{"reasoning_content": "第一次思考", "delta": "第一次回答"}]])
+        loop = AgentLoop(services=services, hooks=HookManager(), tool_registry=tool_registry)
+        await loop.run(session_id=session.id, user_message="你好", provider=provider1)
+
+        messages = session_service.list_messages(session.id)
+        user_msg = messages[0]
+        assert user_msg.role == "user"
+        first_answer = messages[1]
+        assert first_answer.content == "第一次回答"
+        assert first_answer.reasoning == "第一次思考"
+
+        # 重新回答：parent_message_id 指向原提问，同一提问再生成一条新答案
+        provider2 = MockProvider(responses=[[{"reasoning_content": "第二次思考", "delta": "第二次回答"}]])
+        await loop.run(
+            session_id=session.id,
+            user_message="你好",
+            provider=provider2,
+            parent_message_id=user_msg.id,
+        )
+
+        messages = session_service.list_messages(session.id)
+        # 只有一条 user 消息（不新建提问），历史答案保留
+        user_msgs = [m for m in messages if m.role == "user"]
+        assert len(user_msgs) == 1
+        answers = [m for m in messages if m.role == "assistant" and (m.content or "").strip()]
+        assert len(answers) == 2
+        assert answers[0].content == "第一次回答"
+        assert answers[1].content == "第二次回答"
+        # 两条答案的 parent_id 都指向同一提问
+        assert answers[0].parent_id == user_msg.id
+        assert answers[1].parent_id == user_msg.id
+
+        # 常规请求上下文：版本折叠后只保留最新答案（且带 reasoning_content 回传）
+        ctx_service = services.get(ContextService)
+        context_msgs = ctx_service.build(session.id, budget=4096, model="deepseek-v4-flash")
+        assistants = [m for m in context_msgs if m["role"] == "assistant"]
+        assert len(assistants) == 1
+        assert assistants[0]["content"] == "第二次回答"
+        assert assistants[0].get("reasoning_content") == "第二次思考"
+
+        # 重新回答请求上下文：目标提问的历史答案全部不可见（模型从头重新作答）
+        regen_msgs = ctx_service.build(
+            session.id,
+            budget=4096,
+            model="deepseek-v4-flash",
+            regenerate_of_message_id=user_msg.id,
+        )
+        assert not [m for m in regen_msgs if m["role"] == "assistant"]
+        assert regen_msgs[-1]["content"] == "你好"
+
+    @pytest.mark.asyncio
+    async def test_regenerate_with_tools_reanswers_fresh(
+        self, services: ServiceRegistry, tool_registry: ToolRegistry
+    ) -> None:
+        """重新回答带工具的提问：首次调用看不到旧答案；迭代中能看到本轮工具结果。
+
+        回归场景：旧实现把历史答案留在上下文里且以旧答案结尾，
+        模型对「重新回答」只做总结分析，而不是重新调工具重新作答。
+        """
+        session_service = services.get(SessionService)
+        session = session_service.create_session("重新回答-工具轮")
+
+        # 第一次回答：调计算器 + 终答（mock 的 tool_calls 带 id，与真实 API 一致）
+        provider1 = MockProvider(
+            responses=[
+                [
+                    {
+                        "reasoning_content": "旧思考",
+                        "tool_calls": [
+                            {
+                                "id": "call_old",
+                                "type": "function",
+                                "function": {"name": "calculator", "arguments": '{"expression": "40+2"}'},
+                            }
+                        ],
+                    }
+                ],
+                [{"reasoning_content": "旧终答思考", "delta": "旧答案：42"}],
+            ]
+        )
+        loop = AgentLoop(services=services, hooks=HookManager(), tool_registry=tool_registry)
+        await loop.run(session_id=session.id, user_message="算 40+2", provider=provider1)
+
+        user_msg = session_service.list_messages(session.id)[0]
+
+        # 重新回答：记录每次模型调用看到的上下文
+        seen: list[list[dict[str, Any]]] = []
+
+        class RecordingProvider(MockProvider):
+            async def chat(
+                self, messages: Any, model: str, stream: bool = True, **kwargs: Any
+            ) -> AsyncIterator[dict[str, Any]]:
+                seen.append(list(messages))
+                async for c in super().chat(messages, model, stream, **kwargs):
+                    yield c
+
+        provider2 = RecordingProvider(
+            responses=[
+                [
+                    {
+                        "reasoning_content": "新思考",
+                        "tool_calls": [
+                            {
+                                "id": "call_new",
+                                "type": "function",
+                                "function": {"name": "calculator", "arguments": '{"expression": "40+2"}'},
+                            }
+                        ],
+                    }
+                ],
+                [{"reasoning_content": "新终答思考", "delta": "新答案：42"}],
+            ]
+        )
+        result = await loop.run(
+            session_id=session.id,
+            user_message="算 40+2",
+            provider=provider2,
+            parent_message_id=user_msg.id,
+        )
+        assert result.content == "新答案：42"
+
+        assert len(seen) == 2
+        # 首次迭代：以提问结尾，旧答案与旧思维链完全不可见
+        first_contents = [str(m.get("content") or "") for m in seen[0]]
+        assert "旧答案：42" not in first_contents
+        assert first_contents[-1] == "算 40+2"
+        assert all(m.get("reasoning_content") != "旧思考" for m in seen[0])
+        # 第二次迭代：能看到本轮的工具结果与新思维链，旧答案依旧不可见
+        second_contents = [str(m.get("content") or "") for m in seen[1]]
+        assert "旧答案：42" not in second_contents
+        assert any("42" in c for c in second_contents)
+        assert any(m.get("reasoning_content") == "新思考" for m in seen[1])

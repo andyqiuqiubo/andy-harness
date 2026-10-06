@@ -17,6 +17,10 @@ def isolated_test_db(tmp_path_factory: pytest.TempPathFactory) -> None:
     import os
 
     os.environ["HARNESS_DB_PATH"] = str(tmp_path_factory.mktemp("test-db") / "test.db")
+    # 权限状态文件同样隔离：否则用户运行时在 data/permission.json 里设置的
+    # 覆盖（如 code_runner=auto）会压过默认策略，确认链路测试收不到
+    # confirm_request 帧。
+    os.environ["HARNESS_PERMISSION_STATE_FILE"] = str(tmp_path_factory.mktemp("test-permissions") / "permission.json")
     # 大工具输出落盘目录也隔离，避免测试把工件写进项目的 workspace/artifacts
     os.environ["HARNESS_ARTIFACTS_DIR"] = str(tmp_path_factory.mktemp("test-artifacts") / "artifacts")
     # 会话附件落盘目录也隔离（否则附件测试会把文件写进真实的 data/attachments）

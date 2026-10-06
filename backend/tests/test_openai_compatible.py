@@ -169,3 +169,108 @@ class TestBuildRequestBody:
         headers = provider._headers()
         assert headers["Authorization"] == "Bearer sk-test-key"
         assert headers["Content-Type"] == "application/json"
+
+
+class TestReasoningContentPassthrough:
+    """测试 assistant 消息的 reasoning_content 回传行为（DeepSeek 多轮要求）。"""
+
+    def test_strip_reasoning_content_when_unsupported(self) -> None:
+        """不支持 reasoning_content 的 provider 应剥离该字段，避免 400。"""
+        provider = TestProvider(api_key="sk-test")
+        assert provider.supports_reasoning_content is False
+        messages = [
+            {"role": "user", "content": "你好"},
+            {"role": "assistant", "content": "你好！", "reasoning_content": "思考过程"},
+        ]
+        body = provider._build_request_body(messages=messages, model="test-model-1")
+        assert "reasoning_content" not in body["messages"][1]
+
+    def test_keep_reasoning_content_when_supported(self) -> None:
+        """支持 reasoning_content 的 provider（如 DeepSeek）应保留该字段。"""
+
+        class ReasoningProvider(TestProvider):
+            supports_reasoning_content = True
+
+        provider = ReasoningProvider(api_key="sk-test")
+        messages = [
+            {"role": "user", "content": "你好"},
+            {"role": "assistant", "content": "你好！", "reasoning_content": "思考过程"},
+        ]
+        body = provider._build_request_body(messages=messages, model="test-model-1")
+        assert body["messages"][1].get("reasoning_content") == "思考过程"
+
+    def test_non_assistant_reasoning_content_untouched(self) -> None:
+        """仅剥离 assistant 角色上的 reasoning_content，其他角色不误伤。"""
+        provider = TestProvider(api_key="sk-test")
+        messages = [
+            {"role": "user", "content": "你好"},
+            {"role": "assistant", "content": "你好！", "reasoning_content": "思考过程"},
+        ]
+        body = provider._build_request_body(messages=messages, model="test-model-1")
+        assert body["messages"][0] == {"role": "user", "content": "你好"}
+
+    def test_tool_call_assistant_gets_empty_reasoning_content_when_supported(self) -> None:
+        """DeepSeek 思考模式：带 tool_calls 的 assistant 消息缺 rc 时补空串。
+
+        实测（deepseek v4 系列，2026-10）：tool_calls 消息不带 reasoning_content
+        会 400 "The reasoning_content in the thinking mode must be passed back
+        to the API"，空字符串即可通过；普通 assistant 消息无需该字段。
+        历史消息（旧版落库 / 模型未输出思考链）由此兜底，重新回答不再报 400。
+        """
+
+        class ReasoningProvider(TestProvider):
+            supports_reasoning_content = True
+
+        provider = ReasoningProvider(api_key="sk-test")
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "r"},
+            # 普通 assistant 消息缺 rc：无需填充
+            {"role": "assistant", "content": "plain answer"},
+        ]
+        body = provider._build_request_body(messages=messages, model="m1")
+        assert body["messages"][1]["reasoning_content"] == ""
+        assert "reasoning_content" not in body["messages"][3]
+
+    def test_tool_call_assistant_with_reasoning_content_untouched(self) -> None:
+        """已有 rc 的 tool_calls 消息保持原值，不被覆盖。"""
+
+        class ReasoningProvider(TestProvider):
+            supports_reasoning_content = True
+
+        provider = ReasoningProvider(api_key="sk-test")
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "已存思维链",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}},
+                ],
+            },
+        ]
+        body = provider._build_request_body(messages=messages, model="m1")
+        assert body["messages"][0]["reasoning_content"] == "已存思维链"
+
+    def test_unsupported_provider_strips_even_on_tool_calls(self) -> None:
+        """不支持的 provider：tool_calls 消息上的 rc 一律剥离（维持原有行为）。"""
+        provider = TestProvider(api_key="sk-test")
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "x",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}},
+                ],
+            },
+        ]
+        body = provider._build_request_body(messages=messages, model="m1")
+        assert "reasoning_content" not in body["messages"][0]

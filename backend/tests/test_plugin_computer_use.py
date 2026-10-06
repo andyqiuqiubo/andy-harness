@@ -41,7 +41,7 @@ def _base_config(tmp_path: Path) -> ComputerUseConfig:
     return ComputerUseConfig(
         api_key="test-key",
         base_url="https://api.deepseek.com",
-        model="deepseek-v4-flash",
+        model="deepseek-flash",
         max_iterations=10,
         overall_timeout=300.0,
         step_timeout=5.0,
@@ -86,7 +86,7 @@ def test_config_defaults_no_hardcode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "fallback-key")
     cfg = load_computer_use_config(PluginConfig())
     assert cfg.api_key == "fallback-key"
-    assert cfg.model == "deepseek-v4-flash"  # 默认值（非硬编码魔法字符串散落各处）
+    assert cfg.model == "deepseek-flash"  # 默认值（非硬编码魔法字符串散落各处）
     assert cfg.max_iterations == 15  # 默认值下调为 15（P0：缩小默认动作循环上限）
     assert cfg.max_llm_calls == 15  # 模型调用次数硬预算，未单独配置时回退到 max_iterations
     assert cfg.plan_first is True  # P1：计划先行默认开启
