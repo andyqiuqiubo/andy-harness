@@ -6,6 +6,7 @@ Skill 服务不可用时返回空列表而非 503，保证前端可用（优雅�
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 from pathlib import Path
@@ -180,7 +181,9 @@ async def install_external_skill(req: ExternalInstallRequest) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="Skill 服务不可用")
 
     installer = PackageInstaller()
-    res = installer.materialize(req.source, req.kind, ref=req.ref, subdir=req.subdir)
+    res = await asyncio.to_thread(
+        installer.materialize, req.source, req.kind, ref=req.ref, subdir=req.subdir
+    )
     if not res.success:
         raise HTTPException(status_code=400, detail=res.error)
 

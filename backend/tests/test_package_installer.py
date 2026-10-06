@@ -153,13 +153,28 @@ def test_materialize_git_local(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(not shutil.which("git"), reason="git 不可用")
 def test_materialize_git_clone_failure(tmp_path: Path) -> None:
-    """克隆不存在的仓库应失败。"""
+    """克隆不存在的仓库应失败且不挂起（显式短超时避免整批卡死）。"""
     from harness.modules.package_installer.service import PackageInstaller
 
-    inst = PackageInstaller(workdir=tmp_path / "work")
+    inst = PackageInstaller(workdir=tmp_path / "work", timeout=2)
     res = inst.materialize_git(str(tmp_path / "no-such-repo"))
     assert not res.success
     assert "git 拉取失败" in res.error
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="git 不可用")
+def test_materialize_git_timeout_is_bounded(tmp_path: Path) -> None:
+    """不可达的 git 源必须在超时内返回失败，绝不能无限挂起（B5 回归）。"""
+    import time
+
+    from harness.modules.package_installer.service import PackageInstaller
+
+    inst = PackageInstaller(workdir=tmp_path / "work", timeout=2)
+    start = time.monotonic()
+    res = inst.materialize_git(str(tmp_path / "no-such-repo"))
+    elapsed = time.monotonic() - start
+    assert elapsed < 30, f"git 拉取未在超时内返回（耗时 {elapsed:.1f}s）"
+    assert not res.success
 
 
 # ── REST 集成 ────────────────────────────────────────

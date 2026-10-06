@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -17,6 +18,25 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 logger = logging.getLogger("harness.package_installer")
+
+#: git / HTTP 拉取的默认超时（秒）。源不可达时必须能自限，否则会永久挂起。
+DEFAULT_TIMEOUT = 120.0
+
+
+def _resolve_timeout(timeout: float | None) -> float:
+    """解析超时：显式参数 > 环境变量 HARNESS_PKG_INSTALL_TIMEOUT > 默认值。"""
+    if timeout is not None:
+        try:
+            return max(1.0, float(timeout))
+        except (TypeError, ValueError):
+            return DEFAULT_TIMEOUT
+    raw = os.environ.get("HARNESS_PKG_INSTALL_TIMEOUT", "").strip()
+    if raw:
+        try:
+            return max(1.0, float(raw))
+        except ValueError:
+            return DEFAULT_TIMEOUT
+    return DEFAULT_TIMEOUT
 
 
 @dataclass
@@ -73,25 +93,50 @@ def resolve_package_root(pkg_dir: Path, subdir: str | None = None) -> Path:
 class PackageInstaller:
     """从 zip / git 拉取外部包到本地临时工作区。"""
 
-    def __init__(self, workdir: Path | None = None) -> None:
+    def __init__(
+        self,
+        workdir: Path | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> None:
         self._workdir = workdir or (Path(tempfile.gettempdir()) / "harness_pkg_install")
         self._workdir.mkdir(parents=True, exist_ok=True)
+        # 网络/子进程必须有超时：git clone 与 HTTP 下载在源不可达（离线、
+        # 代理 502、私有仓库等待凭据）时会无限期阻塞，进而把 REST 请求线程
+        # 与单元测试一起挂死。可用 HARNESS_PKG_INSTALL_TIMEOUT 覆盖。
+        self._timeout = _resolve_timeout(timeout)
 
     def _stage(self, prefix: str) -> Path:
         """在 workdir 下创建一个临时阶段目录。"""
         return Path(tempfile.mkdtemp(prefix=prefix + "_", dir=str(self._workdir)))
 
     def _download(self, url: str, dest: Path) -> None:
-        """下载远程 zip 到本地（仅 http/https）。"""
+        """下载远程 zip 到本地（仅 http/https，带超时）。"""
         import urllib.request
 
         logger.info("下载外部包: %s", url)
-        urllib.request.urlretrieve(url, dest)  # noqa: S310
+        with urllib.request.urlopen(url, timeout=self._timeout) as resp:  # noqa: S310
+            with open(dest, "wb") as fh:
+                shutil.copyfileobj(resp, fh)
 
     def _run_git(self, cmd: list[str]) -> None:
-        """执行 git 命令（浅克隆等）。"""
+        """执行 git 命令（浅克隆等），带超时且禁止交互式凭据提示。"""
         logger.info("执行 git: %s", " ".join(cmd))
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        env = dict(os.environ)
+        # 非交互场景：禁止 git 弹出终端凭据提示（否则会静默等待输入而挂死）
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        try:
+            subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self._timeout,
+                stdin=subprocess.DEVNULL,
+                env=env,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError(f"git 命令超时（{self._timeout:g}s）: {' '.join(cmd)}") from e
 
     def materialize_zip(self, source: str, *, subdir: str | None = None) -> MaterializeResult:
         """解压 zip（本地路径或 http(s) URL）。"""
