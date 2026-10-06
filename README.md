@@ -1,6 +1,6 @@
 # andy-harness
 
-> 插件化 Agent Harness（智能体底座）开源项目：提供对话 GUI、多模型接入（DeepSeek / Qwen / Doubao / 自定义）、会话文件传输（文档/图片多模态）、会话管理与分支、上下文管理、MCP 客户端（stdio / SSE 接入远程工具）、定时任务、长期记忆、子代理委派、运行轨迹 Tracing、Skills 技能系统、技能市场（SKILL.md 一键安装）、工具权限与人工确认、任务清单，以及沙箱与系统设置；并提供 **Computer Use 桌面操控**（截图 / 鼠标 / 键盘 / 命令执行等通用原语，安全围栏 + 截图降本策略，依赖可选 `desktop` extra）与 **MCP 市场**（libgen / deepwiki / context7 等免鉴权公开服务一键接入）；还提供 **桌面壳（Tauri）**（一个原生窗口内跑齐前后端、双击即用，退出自动回收后端进程树）、**多 Agent 编排**（并行任务 / 角色流水线）、**多渠道接入**（Webhook / Telegram）、**会话与消息搜索**、**Docker 沙箱**、**向量记忆检索**、**Checkpoint 断点续跑**、**Eval 回归评测**、**插件 / 技能外部分发安装（zip / git）** 与**可选认证 / 多用户**。所有功能以插件形式构建，模块间完全解耦，对齐 Claude Code / Codex / Cline / Goose 等主流 Agent 的最佳实践，面向开发者学习与二次开发。敬请下载使用！
+> 插件化 Agent Harness（智能体底座）开源项目：提供对话 GUI、多模型接入（DeepSeek / Qwen / Doubao / 自定义）、会话文件传输（文档/图片多模态）、会话管理与分支、上下文管理、MCP 客户端（stdio / SSE 接入远程工具）、定时任务、长期记忆、子代理委派、运行轨迹 Tracing、Skills 技能系统、技能市场（SKILL.md 一键安装）、工具权限与人工确认、任务清单，以及沙箱与系统设置；并提供 **Computer Use 桌面操控**（截图 / 鼠标 / 键盘 / 命令执行等通用原语，安全围栏 + 截图降本策略，依赖可选 `desktop` extra）与 **MCP 市场**（libgen / deepwiki / context7 等免鉴权公开服务一键接入）；还提供 **桌面壳（Tauri）**（一个原生窗口内跑齐前后端、双击即用，退出自动回收后端进程树）、**多 Agent 编排**（并行任务 / 角色流水线）、**多渠道接入**（Webhook / Telegram）、**会话与消息搜索**、**Docker 沙箱**、**向量记忆检索**、**Checkpoint 断点续跑**、**Eval 回归评测**、**插件 / 技能外部分发安装（zip / git）** 与**可选认证 / 多用户**；1.0.x 已增量落地 **工作流编排（Workflow Studio，Dify 风格可视化画布）**、**模板分享中心（Template Hub）**、**洞察看板（Insights Dashboard）**、**评测实验室（Eval Lab）**、**插件开发者工作台（DevKit）**、**集成中心（飞书 api / cli / channel 三模式）** 与**权限审计与审计日志**。所有功能以插件形式构建，模块间完全解耦，对齐 Claude Code / Codex / Cline / Goose 等主流 Agent 的最佳实践，面向开发者学习与二次开发。敬请下载使用！
 
 [![CI](https://github.com/andyqiuqiubo/andy-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/andyqiuqiubo/andy-harness/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -12,12 +12,12 @@
 
 ## 项目状态
 
-- **当前版本：v1.0.0（开发者预览版）** —— 首个对外版本号，完整变更见 [CHANGELOG](CHANGELOG.md) 与 [发布清单](docs/RELEASE-v1.0.0.md)。
+- **当前版本：v1.0.0（开发者预览版）** —— 首个对外版本号，完整变更见 [CHANGELOG](CHANGELOG.md) 与 [发布清单](docs/RELEASE-v1.0.0.md)；1.0.0 之后已增量落地**工作流编排 / 模板分享中心 / 洞察看板 / 评测实验室 / 插件开发者工作台 / 集成中心（飞书）/ 权限审计**等新能力（见 CHANGELOG「未发布」节）。
 - 上手请先读 [用户使用手册](docs/andy-harness-v1.0.0用户使用手册.md)（图文、含 16 张界面截图）。
 - 本仓库由作者在 **Windows 10** 个人 PC 下创建与开发，**尚未在 macOS / Linux 等其他操作系统上验证**，跨平台运行存在未知风险。
 - 目前仅对 **DeepSeek `deepseek-v4-flash`** 模型做了深度调试与联调；Qwen / Doubao 等其它模型尚未充分验证，实际使用时可能遇到预期外的问题。
 - 部分能力后端已实现但**暂无界面入口**（渠道 / Computer Use / Jev / 断点续跑 / 用户管理），具体见手册第 10 节与下方功能特性中的标注。
-- **质量门禁现状（2026-10-01 实测）**：后端 `ruff check` / `ruff format --check` / `mypy --strict`（104 个源文件）/ `pytest`（593 passed、2 skipped）全通过；前端 `eslint` / `vitest`（43 用例）/ `vue-tsc` / `vite build` 全通过。CI 两个 job 均为绿。仍存的预览版限制（前端包体未分包、5 个能力无 UI 入口、Docker 前端未配反向代理、仅 Windows + 仅 DeepSeek 联调）见[发布前全项目分析报告](docs/ANALYSIS-v1.0.0-2026-10-01.md)。
+- **质量门禁现状（2026-10-07 实测）**：后端 `ruff check` / `ruff format --check` / `mypy --strict`（125 个源文件）/ `pytest`（742 passed、2 skipped）全通过；前端 `eslint` / `vitest`（57 用例）/ `vue-tsc` / `vite build` 全通过。CI 两个 job 均为绿。仍存的预览版限制（前端包体未分包、渠道 / Computer Use / Jev / 断点续跑 / 用户管理无 UI 入口、Docker 前端未配反向代理、仅 Windows + 仅 DeepSeek 联调）见[发布前全项目分析报告](docs/ANALYSIS-v1.0.0-2026-10-01.md)。
 
 ---
 
@@ -41,7 +41,7 @@
 - **定时任务**：按「每天固定时间 / 每周 / 固定间隔 / 一次性」自动执行提示词；每个任务可多选 **MCP 服务器、Skills、其他工具**（未勾选的一律不开放），在新建的隔离会话里运行并记录运行历史，设置页「定时任务」标签页可视化配置
 - **插件化架构**：一切皆插件，内核零业务逻辑，工具/Provider/服务/UI 均可插件化
 - **插件市场**：内置插件市场，一键安装与说明查看，卸载后可随时重装，系统插件不可删除
-- **外部分发安装（zip / git）**：除内置市场外，插件与技能均支持从 **zip 归档（本地路径或 http(s) URL）** 或 **git 仓库** 安装第三方包（`POST /api/plugins/install-external`、`POST /api/skills/install-external`），打通生态分发；安装器对 zip 做路径穿越防御、自动剥除外层包裹目录
+- **外部分发安装（zip / git）**：除内置市场外，插件与技能均支持从 **zip 归档（本地路径或 http(s) URL）** 或 **git 仓库** 安装第三方包（`POST /api/plugins/install-external`、`POST /api/skills/install-external`），打通生态分发；安装器对 zip 做路径穿越防御、自动剥除外层包裹目录，git / HTTP 拉取内置 120s 超时（`HARNESS_PKG_INSTALL_TIMEOUT` 可调），源不可达不再挂起请求
 - **元气宠物**：全局悬浮的养成系宠物，自由走动、悬停卖萌、喂食玩耍，作为市场插件安装后立即可用
 - **前后端插件联动**：UI 插件通过 backend_plugin_id 与后端插件联动，启用/停用实时同步
 - **会话管理**：多轮对话持久化、自动生成标题、归档/删除；存在空会话时点击"新建"自动跳转并提示
@@ -68,6 +68,13 @@
 - **Checkpoint 断点续跑**：AgentLoop 在运行开始 / 每轮迭代后 / 终答 / 异常四处 best-effort 写入 `agent_runs` 检查点，`POST /api/runs/{run_id}/resume` 可基于已持久化上下文让模型继续（会话历史即完整状态快照，不重放内存态）（**断点续跑暂无界面按钮，需调用 REST API 触发**）
 - **Eval 回归框架**：任务级客观评测——按「答案关键词 + 期望工具 + 禁用工具 + 迭代 / 耗时上限 + 无错误」逐项打分，聚合通过率、耗时、工具使用分布，`python -m harness.eval --cases <file>` 可导出 JSON / Markdown 报告，失败退出码 1 可直接做 CI 门槛
 - **可选认证与多用户**：默认本地单用户、**行为零变化**；`HARNESS_AUTH=1` 后 `/api/**` 强制 Bearer token（PBKDF2 口令哈希 + HMAC 签名，默认 12h），会话与长期记忆按 `user_id` 隔离，WS 支持 `?token=`（无效关闭 1008），前端自动出现登录页并在 401 时回到登录页；开启认证后，插件 / 技能 / MCP 的安装卸载、权限与设置写入等**状态变更类端点需管理员身份**（`require_admin` 服务端校验），普通用户仅可调只读接口（**多用户仅提供登录门，用户 / 权限的创建与管理暂无界面入口，仅 REST API**）
+- **工作流编排（Workflow Studio）**：Dify 风格可视化画布——开始 / 结束 / LLM / 代码 / 条件分支（多条件 AND/OR）/ HTTP 请求 / 模板转换 / 变量赋值八类节点，拖拽连线、平移缩放画布、整流运行并在运行面板逐节点回看结果；LLM / HTTP 节点对齐 Dify 能力（温度等参数 / 重试间隔 / 超时 / SSL 校验 / 推理输出分离），旧结构图加载时自动迁移；入口 `/workflows`
+- **模板分享中心（Template Hub）**：提示词 / 技能 / 工作流 / 会话包等模板集中管理与一键导入使用，入口 `/templates`
+- **评测实验室（Eval Lab）**：模型 × 提示词 A/B 对比评测的图形界面，任务级客观打分（关键词 / 期望工具 / 禁用工具 / 迭代与耗时上限），入口 `/evals`；配套 `python -m harness.eval` CLI 可直接当 CI 门槛
+- **洞察看板（Insights Dashboard）**：会话 / 消息 / Token / 工具调用等内置指标 + 插件自定义指标聚合展示，入口 `/insights`
+- **插件开发者工作台（DevKit）**：面向二次开发者的插件脚手架与开发辅助工具，入口 `/devkit`
+- **集成中心（Integration Hub）**：飞书三模式接入——`api`（app_id/app_secret 直调开放接口）/ `cli`（lark-cli 子进程）/ `channel`（WebSocket 长连，群里 @机器人即答，可选 `feishu` extra：`lark-oapi>=1.7.0`）；出网代理经 `backend/.env.local` 注入（已 git-ignore，启动脚本与后端统一读取）
+- **权限审计与审计日志**：管理员校验（`require_admin`）之上记录状态变更审计事件，设置页「审计日志」标签可查询操作流水
 
 > 想了解本项目相对业界Harness的能力差距与后续规划，见 [能力增强清单](ENHANCEMENTS.md)。
 
@@ -522,7 +529,7 @@ andy-harness/
 │   │   ├── infra/     # L5 SQLite / 加密 / Repository / 安全原语
 │   │   ├── eval/      # 回归评测框架（python -m harness.eval）
 │   │   └── cli/       # 命令行入口
-│   ├── plugins/       # 34 个内置插件（自动扫描，含 provider / tool / service / channel）
+│   ├── plugins/       # 36 个内置插件（自动扫描，含 provider / tool / service / channel）
 │   ├── marketplace/   # 插件市场的可安装包（6 个）
 │   ├── skill_marketplace/  # 技能市场（6 个 SKILL.md 技能包）
 │   ├── mcp_marketplace/    # MCP 市场（5 个免鉴权公开服务配置）

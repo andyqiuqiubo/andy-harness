@@ -7,6 +7,27 @@
 
 ---
 
+## [未发布（1.0.x 增量）] - 2026-10-07
+
+### 新增
+- **工作流编排（Workflow Studio）**：Dify 风格可视化画布（开始/结束/LLM/代码/条件分支/HTTP/模板/变量赋值八类节点），拖拽连线、整流运行、逐节点结果回看；引擎对齐 Dify 节点能力，旧图自动迁移；REST `/api/workflows/**` + 前端 `/workflows`。
+- **模板分享中心（Template Hub）**：提示词 / 技能 / 工作流 / 会话包模板集中管理与一键导入；REST `/api/templates/**` + 前端 `/templates`。
+- **评测实验室（Eval Lab）**：模型 × 提示词 A/B 对比评测界面（任务级客观打分）；REST `/api/evals-lab/**` + 前端 `/evals`，配套 `python -m harness.eval` CLI。
+- **洞察看板（Insights Dashboard）**：会话 / 消息 / Token / 工具调用等内置指标 + 插件自定义指标聚合；REST `/api/insights/**` + 前端 `/insights`。
+- **插件开发者工作台（DevKit）**：插件脚手架与开发辅助；REST `/api/devkit/**` + 前端 `/devkit`。
+- **集成中心（Integration Hub 插件）**：飞书三模式接入——`api`（app_id/app_secret 直调）/ `cli`（lark-cli 子进程）/ `channel`（WebSocket 长连群聊 @机器人即答，可选 `feishu` extra：`lark-oapi>=1.7.0`）；出网代理可经 `backend/.env.local` 注入（Makefile / start-all.bat / main.py 统一支持）。
+- **权限审计与审计日志**：状态变更端点审计事件记录与查询（`/api/permission-audit/**`），设置页「审计日志」标签可视化。
+
+### 变更
+- 后端依赖新增 `jinja2>=3.1.0`；`uv.lock` 同步（100 条 OpenAPI 路径、36 个内置插件）。
+- 测试规模：pytest 593 → **742 passed, 2 skipped**（新增 11 个测试模块）；前端 vitest 43 → **57 用例**。
+- 工作流编辑器动态图结构暂以 `any` 承载（文件级 eslint 豁免 + TODO，计划 1.1 引入判别联合类型）。
+
+### 修复
+- **外部分发安装器超时防护**：git clone 与 HTTP 下载增加默认 120s 超时（可用 `HARNESS_PKG_INSTALL_TIMEOUT` 覆盖）——源不可达（离线 / 代理 502 / 私有仓库等凭据）时不再无限期挂起 REST 请求线程。
+
+---
+
 ## [1.0.0] - 2026-10-03（开发者预览版）
 
 首个对外版本号。自 `v0.0.9` 起积累了 0.0.10 ~ 0.0.48 共 39 个补丁版本的演进，
