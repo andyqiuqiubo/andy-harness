@@ -46,6 +46,7 @@ class EvalRunner:
         default_model: 默认模型名。
         extra_tools: 所有 case 额外注册的工具（ToolPlugin 实例）。
         db_path: 评测数据库路径（None 用临时库，跑完删除）。
+        system_prompt: 注入每次运行的系统提示词（评测矩阵的提示词维度）。
     """
 
     def __init__(
@@ -54,11 +55,13 @@ class EvalRunner:
         default_model: str = "eval-model",
         extra_tools: Sequence[Any] | None = None,
         db_path: str | Path | None = None,
+        system_prompt: str = "",
     ) -> None:
         self._provider_factory = provider_factory
         self._default_model = default_model
         self._extra_tools = list(extra_tools or [])
         self._db_path = str(db_path) if db_path else None
+        self._system_prompt = system_prompt
 
     async def run(self, cases: Sequence[EvalCase]) -> EvalReport:
         """运行一批 case，返回汇总报告。"""
@@ -111,6 +114,7 @@ class EvalRunner:
         config = AgentLoopConfig(
             model=case.model or self._default_model,
             max_tool_iterations=case.max_iterations,
+            system_prompt=self._system_prompt,
         )
         loop = AgentLoop(
             services=registry,

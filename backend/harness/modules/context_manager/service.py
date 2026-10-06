@@ -252,7 +252,14 @@ class StructuredCompactionStrategy(ContextStrategy):
 class ContextService(Protocol):
     """上下文服务接口。"""
 
-    def build(self, session_id: str, budget: int = 4096, model: str = "gpt-4o") -> list[dict[str, Any]]: ...
+    def build(
+        self,
+        session_id: str,
+        budget: int = 4096,
+        model: str = "gpt-4o",
+        regenerate_of_message_id: str | None = None,
+        run_message_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]: ...
 
     def get_snapshot(self, session_id: str) -> Any: ...
 
@@ -261,6 +268,62 @@ class ContextService(Protocol):
 
 class ContextServiceImpl:
     """上下文服务实现。"""
+
+    def _collapse_answer_versions(
+        self,
+        messages: list[Any],
+        regenerate_of_message_id: str | None = None,
+    ) -> list[Any]:
+        """把同一提问下的多个回答版本折叠，只保留最新版本。
+
+        背景：重新回答会在同一 user 消息下追加多条答案（parent_id 指向该提问），
+        线性历史里同一问题出现多份答案会让模型拿旧答案做总结，也撑大上下文。
+
+        规则（按 DB 时间序遍历）：
+        - user 消息开启一个「轮次」，其后的 assistant/tool 消息归属该轮次；
+        - 轮次内以「终答」（无 tool_calls 的 assistant 消息）为界切分版本段；
+        - 普通轮次：只保留最后一个版本段——完整版本取最新一份；
+          尾部无终答的进行中片段（工具轮被中断后等待继续）原样保留；
+        - 重新回答的目标轮次（user.id == regenerate_of_message_id）：
+          丢弃全部历史版本段，只保留提问本身——模型从提问开始重新作答。
+          （本运行进行中的消息由 run_message_ids 通道单独追加，不经过本方法。）
+        """
+        groups: list[tuple[Any | None, list[Any]]] = [(None, [])]  # (user 消息, 轮次尾随消息)
+        current_tail: list[Any] = groups[0][1]
+        for m in messages:
+            if m.role == "user":
+                current_tail = []
+                groups.append((m, current_tail))
+            else:
+                current_tail.append(m)
+
+        result: list[Any] = []
+        for user_msg, tail in groups:
+            if user_msg is not None:
+                result.append(user_msg)
+            if not tail:
+                continue
+            if user_msg is None:
+                # 首条 user 消息之前的零散消息（历史脏数据）：原样保留
+                result.extend(tail)
+                continue
+            is_target = regenerate_of_message_id is not None and user_msg.id == regenerate_of_message_id
+            if is_target:
+                continue
+            # 以「终答」为界切分版本段
+            segments: list[list[Any]] = []
+            current_seg: list[Any] = []
+            for m in tail:
+                current_seg.append(m)
+                if m.role == "assistant" and not m.tool_calls:
+                    segments.append(current_seg)
+                    current_seg = []
+            if current_seg:
+                # 尾部进行中片段（无终答）：中断后等待继续的完整工具流，保留
+                result.extend(current_seg)
+            elif segments:
+                result.extend(segments[-1])
+        return result
 
     @staticmethod
     def _drop_orphan_tool_messages(
@@ -371,13 +434,25 @@ class ContextServiceImpl:
         except Exception:
             return None
 
-    def build(self, session_id: str, budget: int = 4096, model: str = "gpt-4o") -> list[dict[str, Any]]:
+    def build(
+        self,
+        session_id: str,
+        budget: int = 4096,
+        model: str = "gpt-4o",
+        regenerate_of_message_id: str | None = None,
+        run_message_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """构建上下文消息列表。
 
         Args:
             session_id: 会话 ID
             budget: token 预算
             model: 模型名称
+            regenerate_of_message_id: 重新回答的目标 user 消息 id。设置后该提问的
+                全部历史答案版本不进入上下文（模型从提问开始重新作答）。
+            run_message_ids: 本次运行已持久化的消息 id。这些消息绕过版本折叠、
+                按原顺序追加在上下文末尾——工具迭代中途重建上下文时，模型必须
+                仍能看到本轮刚产出的工具调用与结果。
 
         Returns:
             装配好的消息列表（含系统提示词 + 上下文消息）
@@ -386,6 +461,20 @@ class ContextServiceImpl:
 
         session_service = self._services.get(SessionService)
         messages = session_service.list_messages(session_id)
+
+        # 本次运行已持久化的新消息（工具迭代中途重建上下文时）：先从折叠输入中
+        # 摘出，折叠后按原顺序追加到末尾——模型必须仍能看到本轮刚产出的
+        # 工具调用与结果，且它们不受目标提问版本丢弃的影响。
+        run_msgs: list[Any] = []
+        if run_message_ids:
+            idset = set(run_message_ids)
+            run_msgs = [m for m in messages if m.id in idset]
+            messages = [m for m in messages if m.id not in idset]
+
+        # 回答版本折叠：同一提问只保留最新答案版本；重新回答的目标提问
+        # 只保留提问本身（避免模型拿旧答案做总结而不是重新作答）。
+        messages = self._collapse_answer_versions(messages, regenerate_of_message_id=regenerate_of_message_id)
+        messages = messages + run_msgs
 
         # 转换为 {role, content} 格式，保留 tool_call_id 和 tool_calls
         # 过滤掉缺少 tool_call_id 的 tool 消息（旧数据兼容）
@@ -406,6 +495,12 @@ class ContextServiceImpl:
             # 携带附件元信息（仅 user 消息可能带），供后续渲染为多模态内容
             if m.attachments:
                 msg["attachments"] = m.attachments
+            # DeepSeek 思维链回传：重新回答/多轮时，必须将原 assistant 消息的
+            # reasoning_content（思考链）原样回传给 DeepSeek 推理模型，否则会报
+            # 400: "The reasoning_content in the thinking mode must be passed back to the API"。
+            # 非 DeepSeek provider 会在 OpenAICompatibleProvider._build_request_body 中剥离该字段。
+            if m.role == "assistant" and getattr(m, "reasoning", ""):
+                msg["reasoning_content"] = m.reasoning
             raw_messages.append(msg)
 
         # 验证 tool 消息的完整性：每条 tool 消息前必须有对应的带 tool_calls

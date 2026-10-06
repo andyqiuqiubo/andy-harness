@@ -1,0 +1,19 @@
+{
+  "id": "tool_greeter",
+  "name": "tool_greeter",
+  "version": "0.1.0",
+  "type": "tool",
+  "entry": "plugins.tool_greeter.main:GreeterPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "description": "tool_greeter",
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "greeting": {
+        "type": "string",
+        "default": "hello",
+        "description": "示例配置项"
+      }
+    }
+  }
+}

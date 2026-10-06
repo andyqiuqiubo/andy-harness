@@ -53,6 +53,8 @@ class PluginLoader:
         self._loaded: dict[str, tuple[BasePlugin, PluginManifest, PluginContext]] = {}
         # 已激活的插件: plugin_id -> True
         self._activated: set[str] = set()
+        # 最近一次加载所用的插件目录（用于配置持久化定位 plugin.json）
+        self._plugins_dir: str | None = None
 
     @property
     def events(self) -> EventBus:
@@ -163,6 +165,8 @@ class PluginLoader:
             parent_path = str(Path(plugins_dir).resolve().parent)
             if parent_path not in sys.path:
                 sys.path.insert(0, parent_path)
+            # 记录插件目录，供 set_plugin_config 持久化使用
+            self._plugins_dir = str(Path(plugins_dir).resolve())
 
             module = importlib.import_module(module_path)
             plugin_class = getattr(module, class_name)
@@ -181,6 +185,9 @@ class PluginLoader:
                 for key, prop in properties.items():
                     if "default" in prop:
                         config.set(key, prop["default"])
+            # 叠加已持久化的配置（热重载/重启后保留用户修改，覆盖默认值）
+            for key, value in (manifest.config or {}).items():
+                config.set(key, value)
 
             ctx = PluginContext(
                 plugin_id=manifest.id,
@@ -312,12 +319,31 @@ class PluginLoader:
         }
 
     def set_plugin_config(self, plugin_id: str, config: dict[str, Any]) -> None:
-        """更新插件配置。"""
+        """更新插件配置，并持久化到 plugin.json（重载/重启后保留）。"""
         if plugin_id not in self._loaded:
             raise PluginNotLoadedError(plugin_id)
         _plugin, manifest, ctx = self._loaded[plugin_id]
         for key, value in config.items():
             ctx.config.set(key, value)
+        # 持久化：写回 plugin.json 的 "config" 键，使下次 load（热重载/重启）能恢复。
+        self._persist_config(plugin_id, ctx.config.as_dict())
+
+    def _persist_config(self, plugin_id: str, config_dict: dict[str, Any]) -> None:
+        """把配置写回插件目录下的 plugin.json（best-effort，失败仅记录）。"""
+        if not self._plugins_dir:
+            return
+        pj = Path(self._plugins_dir) / plugin_id / "plugin.json"
+        if not pj.is_file():
+            return
+        try:
+            raw = json.loads(pj.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return
+        raw["config"] = config_dict
+        try:
+            pj.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("持久化插件配置失败 %s: %s", plugin_id, e)
 
     # ── 一键加载 ──────────────────────────────────────
 

@@ -349,11 +349,33 @@ class SchedulerService:
 
     # ── 增删改 ────────────────────────────────────────
 
+    @staticmethod
+    def validate_schedule(spec: ScheduleSpec, *, enabled: bool = True) -> None:
+        """校验调度规格，重点堵住「一次性任务永不执行」的静默失败。
+
+        `once` 任务在未设置 `run_at` 或 `run_at` 已过期时，`compute_next_run`
+        返回空串，而 `due_tasks` 要求 `next_run_at != ''`——结果是任务显示为
+        已启用却永远不会执行，且没有任何提示。这里在创建/更新时直接拒绝，
+        把问题暴露在配置阶段。
+        """
+        if spec.type != ONCE or not enabled:
+            return
+        raw = (spec.run_at or "").strip()
+        if not raw:
+            raise ValueError("一次性任务必须设置运行时间（run_at）")
+        target = _parse_datetime(raw)
+        if target is None:
+            raise ValueError(f"一次性任务的运行时间格式无效: {raw}（应为 YYYY-MM-DD HH:MM）")
+        if target <= _now_local():
+            raise ValueError(f"一次性任务的运行时间必须晚于当前时间: {raw}")
+
     def create_task(self, data: dict[str, Any]) -> ScheduledTask:
         task_id = f"task_{uuid.uuid4().hex[:12]}"
         schedule = ScheduleSpec.from_dict(data.get("schedule"))
+        enabled = bool(data.get("enabled", True))
+        self.validate_schedule(schedule, enabled=enabled)
         now = _to_iso(_now_local())
-        next_run = compute_next_run(schedule) if data.get("enabled", True) else ""
+        next_run = compute_next_run(schedule) if enabled else ""
         self._db.execute(
             "INSERT INTO scheduled_tasks "
             "(id, name, description, enabled, schedule_type, schedule_json, prompt, "
@@ -391,6 +413,8 @@ class SchedulerService:
 
         enabled = bool(data.get("enabled", task.enabled))
         schedule = ScheduleSpec.from_dict(data.get("schedule")) if "schedule" in data else task.schedule
+        if "schedule" in data or "enabled" in data:
+            self.validate_schedule(schedule, enabled=enabled)
 
         sets: list[str] = []
         params: list[Any] = []
@@ -498,6 +522,10 @@ class SchedulerService:
         enabled = task.enabled
         if status == "ok":
             fail_count = 0
+        elif status == "skipped":
+            # 跳过（如无可用 provider）属配置/环境问题，不是任务本身执行失败。
+            # 计入 fail_count 会让失败率虚高，也会误伤基于此的告警与重试判断。
+            fail_count = task.fail_count
         else:
             fail_count = task.fail_count + 1
         # once 任务跑完（无论成败）自动停用

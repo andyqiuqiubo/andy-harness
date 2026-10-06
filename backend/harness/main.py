@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
@@ -23,12 +24,17 @@ from harness.api.rest.auth import router as auth_router
 from harness.api.rest.auth import setup_auth_routes
 from harness.api.rest.channels import router as channels_router
 from harness.api.rest.channels import setup_channel_routes
+from harness.api.rest.devkit import router as devkit_router
+from harness.api.rest.evals_lab import router as evals_lab_router
+from harness.api.rest.insights import router as insights_router
+from harness.api.rest.integrations import router as integrations_router
 from harness.api.rest.mcp import router as mcp_router
 from harness.api.rest.mcp import setup_mcp_routes
 from harness.api.rest.memories import router as memories_router
 from harness.api.rest.memories import setup_memory_routes
 from harness.api.rest.models import router as models_router
 from harness.api.rest.models import setup_model_routes
+from harness.api.rest.permission_audit import router as permission_audit_router
 from harness.api.rest.permissions import router as permissions_router
 from harness.api.rest.permissions import setup_permission_routes
 from harness.api.rest.plugins import router as plugins_router
@@ -45,8 +51,10 @@ from harness.api.rest.settings import router as settings_router
 from harness.api.rest.settings import setup_settings_routes
 from harness.api.rest.skills import router as skills_router
 from harness.api.rest.skills import setup_skill_routes
+from harness.api.rest.templates_hub import router as templates_hub_router
 from harness.api.rest.traces import router as traces_router
 from harness.api.rest.traces import setup_trace_routes
+from harness.api.rest.workflows import router as workflows_router
 from harness.api.ws.chat import router as ws_router
 from harness.api.ws.chat import setup_ws_routes
 from harness.engine.tool_registry import ToolRegistry
@@ -57,6 +65,85 @@ from harness.kernel.loader import PluginLoader
 from harness.kernel.services import ServiceRegistry
 
 logger = logging.getLogger("harness.main")
+
+
+def _apply_local_proxy_env() -> None:
+    """后端启动时注入出网代理配置（飞书 CLI 等 Go 子进程依赖环境变量）。
+
+    飞书官方 CLI 是 Go 二进制，只认 ``HTTPS_PROXY`` / ``HTTP_PROXY`` 等环境变量，
+    不读取 Windows 系统代理；而后端子进程（lark-cli）继承后端进程的环境，
+    因此只要后端进程有这些变量，CLI 即可出网。
+
+    读取 ``backend/.env.local``（已被 ``.gitignore`` 忽略，可本地持久化填写、不入库）：:
+
+        HTTPS_PROXY=http://127.0.0.1:7890
+        HTTP_PROXY=http://127.0.0.1:7890
+        NO_PROXY=localhost,127.0.0.1
+
+    仅当对应变量在进程环境中尚不存在时才写入（启动终端已 ``export`` 的优先级更高）。
+    无论是否读到文件，都会确保 ``NO_PROXY`` 含 ``localhost`` / ``127.0.0.1``，
+    避免本机环回、MCP、健康检查等内部调用被误送外部代理。
+    """
+    backend_dir = Path(__file__).resolve().parent.parent
+    local_env = backend_dir / ".env.local"
+    proxy_keys = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY")
+
+    if local_env.is_file():
+        try:
+            for raw in local_env.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or line.startswith(";"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key, value = key.strip(), value.strip().strip('"').strip("'")
+                if not key or key not in proxy_keys:
+                    continue
+                # 不覆盖已存在的变量：shell 中显式 export 的优先级更高
+                if key not in os.environ and key.lower() not in os.environ:
+                    os.environ[key] = value
+                    if key.isupper() and key.lower() not in os.environ:
+                        os.environ[key.lower()] = value
+                    logger.info("从 .env.local 注入代理变量 %s", key)
+        except OSError as e:
+            logger.warning("读取 .env.local 失败: %s", e)
+
+    # 确保环回地址不走代理（内部 / MCP / 健康检查等）
+    no_proxy = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+    if "127.0.0.1" not in no_proxy:
+        no_proxy = (no_proxy + "," if no_proxy else "") + "localhost,127.0.0.1"
+        os.environ["NO_PROXY"] = no_proxy
+        os.environ["no_proxy"] = no_proxy
+
+    effective = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or "(未设置)"
+    logger.info("后端出网代理: HTTPS_PROXY=%s, NO_PROXY=%s", effective, os.environ.get("NO_PROXY"))
+
+
+def _ensure_cli_home_env() -> None:
+    """确保 USERPROFILE / HOME 存在（飞书 CLI 定位配置文件的依据）。
+
+    lark-cli 是 Go 二进制，按 ``USERPROFILE``（Windows）/ ``HOME``（类 Unix）查找
+    配置文件（``.lark-cli/config.json``）。某些受限启动环境（如精简沙箱）会缺失
+    这些变量，导致 CLI 找不到配置而报 ``not_configured``。
+
+    用 ``Path.home()`` 推算真实用户主目录（不依赖环境变量本身），缺失时补上，
+    使后端拉起的 CLI 子进程始终能定位到同一份配置。
+    """
+    try:
+        home = str(Path.home())
+    except Exception as e:  # pragma: no cover - 极少见
+        logger.warning("无法确定用户主目录: %s", e)
+        return
+    if not home:
+        return
+    if not os.environ.get("USERPROFILE"):
+        os.environ["USERPROFILE"] = home
+        logger.info("补充 USERPROFILE=%s（供 lark-cli 定位配置）", home)
+    if not os.environ.get("HOME"):
+        os.environ["HOME"] = home
+        logger.info("补充 HOME=%s（供 lark-cli 定位配置）", home)
+
 
 # 全局组件
 _services = ServiceRegistry()
@@ -81,6 +168,15 @@ async def _init_components() -> None:
 
     db = Database()
     _services.register(Database, db, owner="kernel")
+
+    # Insights 插件指标扩展点：注册内置贡献者，否则
+    # GET /api/insights/plugins 恒返回空数组（扩展点定义了却没接线）。
+    try:
+        from harness.modules.insights.builtin_metrics import register_builtin_contributors
+
+        register_builtin_contributors()
+    except Exception as e:  # noqa: BLE001 —— 指标是旁路能力，失败不影响启动
+        logger.warning("注册内置 Insights 指标贡献者失败: %s", e)
 
     # E12：认证与多用户（默认关闭；启用后按用户隔离会话与记忆）。
     from harness.modules.auth_manager.service import (
@@ -128,6 +224,12 @@ async def _init_components() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     """应用生命周期管理。"""
+    # 先补齐用户主目录环境变量（lark-cli 定位配置用），再注入出网代理
+    # （lark-cli 等 Go 子进程依赖环境变量），最后初始化组件并加载插件，
+    # 保证任何后续子进程都能拿到正确的网络出口与配置文件。
+    _ensure_cli_home_env()
+    _apply_local_proxy_env()
+
     await _init_components()
 
     # 加载并激活所有插件
@@ -224,6 +326,12 @@ app.include_router(plugins_router)
 app.include_router(settings_router)
 app.include_router(skills_router)
 app.include_router(permissions_router)
+app.include_router(permission_audit_router)
+app.include_router(insights_router)
+app.include_router(evals_lab_router)
+app.include_router(templates_hub_router)
+app.include_router(workflows_router)
+app.include_router(devkit_router)
 app.include_router(mcp_router)
 app.include_router(artifacts_router)
 app.include_router(memories_router)
@@ -233,6 +341,7 @@ app.include_router(attachments_router)
 app.include_router(runs_router)
 app.include_router(channels_router)
 app.include_router(auth_router)
+app.include_router(integrations_router)
 
 # 注册 WebSocket 路由
 setup_ws_routes(_services, _hooks, _tool_registry)

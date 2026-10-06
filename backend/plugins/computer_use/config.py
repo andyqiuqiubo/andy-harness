@@ -52,7 +52,7 @@ class ComputerUseConfig:
 
     api_key: str = ""
     base_url: str = "https://api.deepseek.com"
-    model: str = "deepseek-v4-flash"  # 对应 DeepSeek V4.1 Flash
+    model: str = "deepseek-flash"  # 对应 DeepSeek V4.1 Flash（API 模型名 deepseek-flash）
     max_iterations: int = 15  # 历史字段：单次任务的动作循环次数，现由 max_llm_calls 兜底
     max_llm_calls: int = 15  # 模型调用次数硬预算（每次 complete 都计费，超此即中止）
     plan_first: bool = True  # 计划先行：执行前先用一次调用产出步骤清单
@@ -136,7 +136,7 @@ def load_computer_use_config(cfg: Any) -> ComputerUseConfig:
     return ComputerUseConfig(
         api_key=api_key,
         base_url=_resolve("base_url", cfg, "https://api.deepseek.com"),
-        model=_resolve("model", cfg, "deepseek-v4-flash"),
+        model=_resolve("model", cfg, "deepseek-flash"),
         max_iterations=max_iter,
         max_llm_calls=max_llm,
         plan_first=_coerce_bool(_resolve("plan_first", cfg, True)),

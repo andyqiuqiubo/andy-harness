@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from harness.api.deps import require_admin
 from harness.api.errors import APIError
 from harness.kernel.services import ServiceRegistry
 
@@ -103,6 +104,34 @@ def setup_provider_routes(registry: ServiceRegistry) -> None:
             pr.register_provider(provider_id, CustomProvider, config)
 
         return cast("dict[str, Any]", pr.get_provider_info(provider_id))
+
+    @router.get("/{provider_id}/api-key", summary="取回已存储的 API Key（编辑对话框回填用）")
+    async def get_provider_api_key(
+        provider_id: str,
+        _admin: dict[str, Any] | None = Depends(require_admin),
+    ) -> dict[str, Any]:
+        """解密并返回当前存储的 API Key。
+
+        本机单用户桌面应用（后端默认仅监听 127.0.0.1），Key 与数据库同机存储，
+        回填给同一管理员属可接受风险；启用认证时仅管理员可调用。
+        未配置 Key 时返回空串。
+        """
+        from harness.infra.crypto import APIKeyEncryptor
+
+        pr = _get_provider_registry(registry)
+        if not pr.has_provider(provider_id):
+            raise APIError("PROVIDER_NOT_FOUND", f"Provider 不存在: {provider_id}", 404)
+        config = pr.get_provider_config(provider_id) or {}
+        encrypted = config.get("api_key_encrypted")
+        if not encrypted:
+            if config.get("api_key"):
+                # 旧数据：明文 Key 直接返回
+                return {"api_key": str(config["api_key"])}
+            return {"api_key": ""}
+        try:
+            return {"api_key": APIKeyEncryptor().decrypt(str(encrypted))}
+        except Exception as e:  # noqa: BLE001
+            raise APIError("PROVIDER_KEY_DECRYPT_FAIL", f"API Key 解密失败: {e}", 500)
 
     @router.patch("/{provider_id}", summary="更新 provider")
     async def update_provider(provider_id: str, req: ProviderUpdate) -> dict[str, Any]:

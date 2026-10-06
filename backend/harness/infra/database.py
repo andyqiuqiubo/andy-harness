@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS messages (
     tokens INTEGER NOT NULL DEFAULT 0,
     latency_ms INTEGER,
     attachments TEXT NOT NULL DEFAULT '[]',
+    reasoning TEXT NOT NULL DEFAULT '',
+    parent_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
@@ -191,6 +193,69 @@ CREATE TABLE IF NOT EXISTS scheduled_task_runs (
 );
 """
 
+# 评测实验室（方案三/P1）：数据集与对比运行
+_CREATE_EVAL_DATASETS = """
+CREATE TABLE IF NOT EXISTS eval_datasets (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    cases_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+_CREATE_EVAL_RUNS = """
+CREATE TABLE IF NOT EXISTS eval_runs (
+    id TEXT PRIMARY KEY,
+    dataset_id TEXT NOT NULL,
+    matrix_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'pending',
+    results_json TEXT NOT NULL DEFAULT '[]',
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at TEXT
+);
+"""
+
+# 模板分享中心（方案五/P3）
+_CREATE_TEMPLATES = """
+CREATE TABLE IF NOT EXISTS templates (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    vars_schema_json TEXT NOT NULL DEFAULT '{}',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    source_session_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+# 工作流编排（方案二/P4）
+_CREATE_WORKFLOWS = """
+CREATE TABLE IF NOT EXISTS workflows (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    vars_json TEXT NOT NULL DEFAULT '[]',
+    steps_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+_CREATE_WORKFLOW_RUNS = """
+CREATE TABLE IF NOT EXISTS workflow_runs (
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL,
+    vars_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending',
+    steps_json TEXT NOT NULL DEFAULT '[]',
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at TEXT
+);
+"""
+
 # 运行检查点（断点续跑）：记录每次 AgentLoop 运行的状态与迭代数，
 # 服务重启 / 崩溃后可据此从会话已持久化的上下文续跑。
 _CREATE_AGENT_RUNS = """
@@ -227,6 +292,34 @@ CREATE TABLE IF NOT EXISTS users (
     is_admin INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+"""
+
+# 权限审计日志（EPIC 首期切片：全链路审计，谁/何时/调了什么/如何裁决/最终是否执行）。
+# 零组织模型依赖，沿用本项目「CREATE TABLE IF NOT EXISTS + 朴素列类型」约定，旧库自动升级。
+_CREATE_PERMISSION_AUDIT = """
+CREATE TABLE IF NOT EXISTS permission_audit (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at    TEXT    NOT NULL,   -- UTC ISO 带偏移
+    user_id       TEXT,              -- 关联 users.id；未登录/系统调用记 'system'
+    session_id    TEXT,              -- 关联 sessions.id
+    agent_run_id  TEXT,              -- 关联 agent_runs.id（可选）
+    tool_name     TEXT    NOT NULL,
+    risk          TEXT    NOT NULL,  -- read / write / dangerous
+    action        TEXT    NOT NULL,  -- 策略裁决：allow / confirm / deny
+    stage         TEXT    NOT NULL,  -- decision（策略判定）/ resolved（人类最终裁决）
+    outcome       TEXT,              -- decision 阶段=action；resolved 阶段=executed/rejected
+    reason        TEXT,              -- 策略原因原文
+    policy_mode   TEXT,              -- 决策时刻的全局策略快照
+    decided_by    TEXT,              -- policy / override / human
+    trace_id      TEXT               -- 关联 spans.trace_id
+);
+"""
+
+_CREATE_INDEX_AUDIT = """
+CREATE INDEX IF NOT EXISTS idx_audit_created   ON permission_audit(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_user      ON permission_audit(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_session   ON permission_audit(session_id);
+CREATE INDEX IF NOT EXISTS idx_audit_tool      ON permission_audit(tool_name, created_at);
 """
 
 _CREATE_INDEX_MESSAGES_SESSION = """
@@ -285,6 +378,13 @@ class Database:
             + _CREATE_AGENT_RUNS
             + _CREATE_CHANNEL_LINKS
             + _CREATE_USERS
+            + _CREATE_PERMISSION_AUDIT
+            + _CREATE_EVAL_DATASETS
+            + _CREATE_EVAL_RUNS
+            + _CREATE_TEMPLATES
+            + _CREATE_WORKFLOWS
+            + _CREATE_WORKFLOW_RUNS
+            + _CREATE_INDEX_AUDIT
             + _CREATE_INDEX_MESSAGES_SESSION
             + _CREATE_INDEX_SNAPSHOTS_SESSION
             + "CREATE INDEX IF NOT EXISTS idx_todos_session ON todos(session_id, position);"
@@ -304,6 +404,14 @@ class Database:
             self._conn.execute("ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
         if "reasoning" not in cols:
             self._conn.execute("ALTER TABLE messages ADD COLUMN reasoning TEXT NOT NULL DEFAULT ''")
+        # 回答版本：每条 assistant 答案的 parent_id 指向它所回答的 user 消息，
+        # 同一 user 消息下的多条 assistant 即为「同一提问的多次重新回答」版本。
+        if "parent_id" not in cols:
+            self._conn.execute("ALTER TABLE messages ADD COLUMN parent_id TEXT")
+        # 工作流画布图（方案二/P4 升级为图编排）：存储 nodes/edges 的 JSON
+        wf_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(workflows)")}
+        if "graph_json" not in wf_cols:
+            self._conn.execute("ALTER TABLE workflows ADD COLUMN graph_json TEXT NOT NULL DEFAULT '{}'")
         # E12：旧库补用户归属列（认证启用后按用户隔离）
         sess_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(sessions)")}
         if "user_id" not in sess_cols:

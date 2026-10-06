@@ -23,6 +23,8 @@ import os
 import time
 from typing import Any
 
+from harness.infra import subproc
+
 from .client import ComputerUseModelError, DeepSeekClient
 from .config import ComputerUseConfig
 from .desktop import DesktopController, DesktopUnavailableError
@@ -617,20 +619,18 @@ class ComputerUseAgent:
         last_err: Exception | None = None
         for attempt in range(self.config.max_retries + 1):
             try:
-                proc = await asyncio.create_subprocess_shell(
+                # 线程内同步子进程（见 harness.infra.subproc）：
+                # uvicorn --reload 的 SelectorEventLoop 不支持 asyncio 子进程。
+                result = await subproc.run(
                     command,
                     cwd=self.config.working_dir,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
+                    timeout=self.config.step_timeout,
+                    shell=True,
+                    merge_stderr=True,
                 )
-                try:
-                    out, _ = await asyncio.wait_for(proc.communicate(), timeout=self.config.step_timeout)
-                except TimeoutError:
-                    proc.kill()
-                    await proc.wait()
+                if result.timed_out:
                     return f"[超时] 命令在 {self.config.step_timeout}s 内未完成，已被终止。"
-                text = out.decode("utf-8", errors="ignore")
-                return self._truncate(f"[exit={proc.returncode}]\n{text}")
+                return self._truncate(f"[exit={result.returncode}]\n{result.stdout}")
             except Exception as e:  # noqa: BLE001
                 last_err = e
                 if attempt < self.config.max_retries:

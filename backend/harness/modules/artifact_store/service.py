@@ -149,6 +149,19 @@ class ArtifactStore(ABC):
     def delete(self, artifact_id: str) -> bool:
         """删除工件（文件 + 元数据）。"""
 
+    def delete_by_session(self, session_id: str) -> int:
+        """删除某会话的全部工件（文件 + 元数据），返回删除条数。
+
+        默认实现按会话列出后逐个删除；子类可覆写为单条 SQL 以提升效率。
+        删除会话时必须调用，否则工件文件与元数据会成为永久孤儿数据
+        （artifacts 表无外键级联），磁盘持续增长。
+        """
+        removed = 0
+        for record in self.list_artifacts(session_id=session_id, limit=10000):
+            if self.delete(record.id):
+                removed += 1
+        return removed
+
 
 class ArtifactStoreImpl(ArtifactStore):
     """基于 SQLite 元数据 + 本地文件的工件存储实现。"""

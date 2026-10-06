@@ -59,6 +59,8 @@ class SessionService(Protocol):
         tokens: int = 0,
         latency_ms: int | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        reasoning: str = "",
+        parent_id: str | None = None,
     ) -> Message: ...
     def list_messages(self, session_id: str) -> list[Message]: ...
     def get_message(self, message_id: str) -> Message | None: ...
@@ -157,7 +159,51 @@ class SessionServiceImpl:
                 span_svc.delete_by_session(session_id)
         except Exception:
             pass
+        self._cleanup_orphans(session_id)
         return self._session_repo.delete(session_id)
+
+    def _cleanup_orphans(self, session_id: str) -> None:
+        """清理会话删除后残留的孤儿数据（无外键级联的四张表）。
+
+        `artifacts` / `agent_runs` / `channel_links` / `memories` 均未声明
+        ``ON DELETE CASCADE``，若不显式清理，删除会话后：
+        - 工件大文件永久占用磁盘，且 UI 无法再找回或删除；
+        - 运行快照（snapshot_json）持续膨胀；
+        - 渠道映射指向已删除会话，后续渠道消息写入不存在的会话而静默丢失；
+        - 会话级长期记忆成为不可见垃圾数据。
+
+        全部步骤独立 try/except：任一环节失败不影响会话本身被删除。
+        """
+        db = self._services.get(Database) if self._services else None
+        # 1) 工件：先删落盘文件再删元数据
+        try:
+            from harness.modules.artifact_store.service import ArtifactStore
+
+            if self._services is not None and self._services.has(ArtifactStore):
+                self._services.get(ArtifactStore).delete_by_session(session_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("清理会话工件失败: %s", e)
+        # 兜底：工件服务未注册时也要删掉元数据行
+        if db is not None:
+            try:
+                db.execute("DELETE FROM artifacts WHERE session_id = ?", (session_id,))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("清理 artifacts 元数据失败: %s", e)
+
+        if db is None:
+            return
+        for table in ("agent_runs", "channel_links"):
+            try:
+                db.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
+            except Exception as e:  # noqa: BLE001 —— 表不存在（插件未启用）时静默跳过
+                logger.debug("清理 %s 失败（可能未建表）: %s", table, e)
+        try:
+            db.execute(
+                "DELETE FROM memories WHERE scope = 'session' AND session_id = ?",
+                (session_id,),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("清理会话级记忆失败: %s", e)
 
     def append_message(
         self,
@@ -170,8 +216,13 @@ class SessionServiceImpl:
         latency_ms: int | None = None,
         attachments: list[dict[str, Any]] | None = None,
         reasoning: str = "",
+        parent_id: str | None = None,
     ) -> Message:
-        """追加消息到会话。"""
+        """追加消息到会话。
+
+        parent_id：assistant 答案所回答的 user 消息 id。同一 user 消息下的多条
+        assistant（首次回答 + 后续「重新回答」版本）据此归并为同一提问的版本组。
+        """
         message = Message(
             session_id=session_id,
             role=role,
@@ -182,6 +233,7 @@ class SessionServiceImpl:
             latency_ms=latency_ms,
             attachments=attachments,
             reasoning=reasoning,
+            parent_id=parent_id,
         )
         return self._message_repo.create(message)
 

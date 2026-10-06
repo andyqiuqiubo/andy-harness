@@ -148,7 +148,7 @@ class TaskRunner:
             logger.warning("获取 provider 失败: %s", e)
             return None
         models = target.get("models") or []
-        model = task.model or (models[0] if models else "deepseek-v4-flash")
+        model = task.model or (models[0] if models else "deepseek-flash")
         return provider, model
 
     # ── 受限工具集 ────────────────────────────────────

@@ -1,7 +1,7 @@
 """DeepSeek Provider 插件。
 
-deepseek-v4-flash / deepseek-v4-pro（思维链字段单独处理）。
-兼容旧模型名 deepseek-chat / deepseek-reasoner。
+deepseek-flash / deepseek-v4-pro（思维链字段单独处理）。
+（2026-10 实测 API 仅支持这两个模型名；旧的 v4-flash / chat / reasoner 已下线。）
 """
 
 from __future__ import annotations
@@ -26,12 +26,12 @@ class DeepSeekProvider(OpenAICompatibleProvider):
 
     base_url = "https://api.deepseek.com"
     default_models = [
-        "deepseek-v4-flash",
+        "deepseek-flash",
         "deepseek-v4-pro",
-        "deepseek-chat",
-        "deepseek-reasoner",
     ]
     provider_name = "deepseek"
+    # DeepSeek 推理/思考模型要求多轮时回传上轮 assistant 的 reasoning_content
+    supports_reasoning_content = True
 
     def _parse_stream_chunk(self, data: dict[str, Any]) -> dict[str, Any] | None:
         """解析 DeepSeek 特有的 reasoning_content 字段。"""

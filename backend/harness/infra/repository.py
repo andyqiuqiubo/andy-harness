@@ -66,6 +66,7 @@ class Message:
         latency_ms: int | None = None,
         attachments: list[dict[str, Any]] | None = None,
         reasoning: str = "",
+        parent_id: str | None = None,
         created_at: str | None = None,
     ) -> None:
         self.id: str = id or str(uuid.uuid4())
@@ -80,6 +81,9 @@ class Message:
         self.attachments: list[dict[str, Any]] = attachments or []
         # 思维链（reasoning_content），用于历史回放执行过程
         self.reasoning: str = reasoning
+        # 回答版本：assistant 答案的 parent_id 指向它回答的 user 消息 id；
+        # 同一条 user 消息下的多条 assistant 即为同一提问的多次重新回答。
+        self.parent_id: str | None = parent_id
         self.created_at: str = created_at or datetime.now().isoformat()
 
     def to_dict(self) -> dict[str, Any]:
@@ -90,10 +94,15 @@ class Message:
             "role": self.role,
             "content": self.content,
             "tool_calls": self.tool_calls,
+            # tool 消息与 assistant.tool_calls[].id 的关联键。缺失它会让
+            # REST 返回的工具消息失去归属，前端无法把工具结果与调用配对，
+            # 重放上下文时也会破坏 API 要求的 tool_call_id 对应关系。
+            "tool_call_id": self.tool_call_id,
             "tokens": self.tokens,
             "latency_ms": self.latency_ms,
             "attachments": self.attachments,
             "reasoning": self.reasoning,
+            "parent_id": self.parent_id,
             "created_at": self.created_at,
         }
 
@@ -249,8 +258,8 @@ class MessageRepository:
 
         self._db.execute(
             "INSERT INTO messages (id, session_id, role, content, tool_calls_json, "
-            "tokens, latency_ms, attachments, reasoning, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "tokens, latency_ms, attachments, reasoning, parent_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 message.id,
                 message.session_id,
@@ -261,6 +270,7 @@ class MessageRepository:
                 message.latency_ms,
                 json.dumps(message.attachments or []),
                 message.reasoning or "",
+                message.parent_id,
                 message.created_at,
             ),
         )
@@ -335,6 +345,7 @@ class MessageRepository:
             latency_ms=row["latency_ms"],
             attachments=json.loads(row["attachments"]) if row["attachments"] else [],
             reasoning=(row["reasoning"] if "reasoning" in row.keys() else "") or "",
+            parent_id=(row["parent_id"] if "parent_id" in row.keys() else None) or None,
             created_at=row["created_at"],
         )
 

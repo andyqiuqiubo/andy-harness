@@ -134,6 +134,8 @@ def setup_mcp_routes(registry: ServiceRegistry) -> None:
         svc = _get_mcp_service(registry)
         if svc is None:
             raise APIError("MCP_SERVICE_UNAVAILABLE", "MCP 客户端未启用", 503)
+        if name not in svc.get_configs():
+            raise APIError("MCP_SERVER_NOT_FOUND", f"MCP server 不存在: {name}", 404)
         await svc.disconnect_server(name)
         svc.remove_server(name)
         return {"removed": name}

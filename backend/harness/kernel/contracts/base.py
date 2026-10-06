@@ -37,6 +37,8 @@ class PluginManifest:
     description: str = ""
     # 插件来源：system（系统内置）/ marketplace（从插件市场安装）
     source: str = "system"
+    # 已保存的配置值（持久化在 plugin.json 的 "config" 键，重载/重启后保留）
+    config: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PluginManifest:
@@ -53,6 +55,7 @@ class PluginManifest:
             core=data.get("core", False),
             description=data.get("description", ""),
             source=data.get("source", "system"),
+            config=data.get("config", {}) or {},
         )
 
     def to_dict(self) -> dict[str, Any]:

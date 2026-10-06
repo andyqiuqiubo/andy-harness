@@ -60,6 +60,22 @@ def _slugify(name: str) -> str:
     return re.sub(r"-+", "-", s).strip("-")
 
 
+def _safe_package_dir(package_id: str) -> Path:
+    """把 package_id 解析为用户 skills 目录下的安全子目录。
+
+    卸载接口直接把路径参数拼进目录并 `shutil.rmtree`，若不校验，
+    `..`、`..%2F..%2F` 之类的输入可越过 skills 目录删除任意路径。
+    这里同时做 slug 白名单与 realpath 归属校验两道防护。
+    """
+    if not package_id or package_id != _slugify(package_id):
+        raise HTTPException(status_code=400, detail=f"非法的 Skill 包标识: {package_id}")
+    base = _user_skills_dir().resolve()
+    dest = (base / package_id).resolve()
+    if dest == base or not dest.is_relative_to(base):
+        raise HTTPException(status_code=400, detail=f"非法的 Skill 包路径: {package_id}")
+    return dest
+
+
 def setup_skill_routes(services: ServiceRegistry) -> None:
     """注册 Skill 路由（注入服务注册表）。"""
     global _services
@@ -142,7 +158,7 @@ async def install_skill_marketplace(package_id: str) -> dict[str, Any]:
     if not (pkg_dir / SKILL_FILENAME).is_file():
         raise HTTPException(status_code=404, detail=f"技能市场中不存在: {package_id}")
 
-    dest = _user_skills_dir() / package_id
+    dest = _safe_package_dir(package_id)
     if dest.exists():
         raise HTTPException(status_code=409, detail=f"该 Skill 已安装: {package_id}")
 
@@ -177,7 +193,7 @@ async def install_external_skill(req: ExternalInstallRequest) -> dict[str, Any]:
     name = meta_raw.get("name") or pkg_dir.name
     package_id = _slugify(name) or pkg_dir.name
 
-    dest = _user_skills_dir() / package_id
+    dest = _safe_package_dir(package_id)
     if dest.exists():
         raise HTTPException(status_code=409, detail=f"该 Skill 已安装: {package_id}")
 
@@ -198,7 +214,7 @@ async def uninstall_skill_marketplace(package_id: str) -> dict[str, Any]:
     if service is None:
         raise HTTPException(status_code=503, detail="Skill 服务不可用")
 
-    dest = _user_skills_dir() / package_id
+    dest = _safe_package_dir(package_id)
     if not dest.is_dir():
         raise HTTPException(status_code=404, detail=f"该 Skill 未安装: {package_id}")
 

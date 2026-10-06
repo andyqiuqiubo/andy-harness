@@ -180,7 +180,10 @@ def setup_schedule_routes(registry: ServiceRegistry) -> None:
             raise APIError("SCHEDULE_INVALID", "任务内容（prompt）不能为空", 400)
         if body.schedule.type not in VALID_TYPES:
             raise APIError("SCHEDULE_INVALID", f"无效的调度类型: {body.schedule.type}", 400)
-        task = svc.create_task(body.model_dump())
+        try:
+            task = svc.create_task(body.model_dump())
+        except ValueError as e:
+            raise APIError("SCHEDULE_INVALID", str(e), 400) from e
         return {"task": task.to_dict()}
 
     @router.patch("/{task_id}", summary="更新定时任务")
@@ -189,7 +192,10 @@ def setup_schedule_routes(registry: ServiceRegistry) -> None:
         data = body.model_dump(exclude_none=True)
         if "schedule" in data and data["schedule"].get("type") not in VALID_TYPES:
             raise APIError("SCHEDULE_INVALID", "无效的调度类型", 400)
-        updated = svc.update_task(task_id, data)
+        try:
+            updated = svc.update_task(task_id, data)
+        except ValueError as e:
+            raise APIError("SCHEDULE_INVALID", str(e), 400) from e
         if updated is None:
             raise APIError("SCHEDULE_NOT_FOUND", f"任务不存在: {task_id}", 404)
         return {"task": updated.to_dict()}

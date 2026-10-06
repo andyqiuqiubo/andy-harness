@@ -6,7 +6,6 @@ DockerBackend: 一次性容器（docker run --rm）+ bind mount 工作区 + 禁�
 
 from __future__ import annotations
 
-import asyncio
 import ctypes
 import importlib
 import importlib.util
@@ -26,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from harness.infra import subproc
 from harness.kernel.eventbus import EventBus
 
 logger = logging.getLogger("harness.sandbox")
@@ -174,13 +174,8 @@ def detect_path_traversal(code: str, workspace: str) -> str | None:
     return None
 
 
-def _decode_bytes(data: bytes | None) -> str:
-    """安全解码子进程输出。"""
-    return (data or b"").decode("utf-8", errors="replace")
-
-
 # ---------------------------------------------------------------------------
-# Docker 命令运行器（默认走 asyncio 子进程；测试可注入替身）
+# Docker 命令运行器（默认走线程内同步子进程，见 harness.infra.subproc；测试可注入替身）
 # ---------------------------------------------------------------------------
 
 
@@ -203,40 +198,17 @@ class CommandRunner(Protocol):
 
 
 async def _default_command_runner(args: list[str], timeout: float) -> CommandResult:
-    """默认通过 asyncio 子进程执行命令。"""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    except FileNotFoundError as e:
-        # docker 可执行文件不存在
-        return CommandResult(returncode=-1, stdout="", stderr=str(e))
-    except OSError as e:
-        return CommandResult(returncode=-1, stdout="", stderr=str(e))
+    """默认经 :mod:`harness.infra.subproc` 执行命令（线程内同步子进程）。
 
-    try:
-        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        try:
-            out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=3)
-        except TimeoutError:
-            out_b, err_b = b"", b""
-        return CommandResult(
-            returncode=-1,
-            stdout=_decode_bytes(out_b),
-            stderr=_decode_bytes(err_b),
-            timed_out=True,
-        )
+    不用 ``asyncio.create_subprocess_exec``：Windows 上 ``uvicorn --reload``
+    的 SelectorEventLoop 不支持 asyncio 子进程（抛裸 NotImplementedError）。
+    """
+    result = await subproc.run(args, timeout=timeout)
     return CommandResult(
-        returncode=proc.returncode if proc.returncode is not None else -1,
-        stdout=_decode_bytes(out_b),
-        stderr=_decode_bytes(err_b),
+        returncode=result.returncode,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        timed_out=result.timed_out,
     )
 
 

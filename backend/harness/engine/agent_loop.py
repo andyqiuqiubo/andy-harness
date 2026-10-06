@@ -52,7 +52,7 @@ class ProviderProtocol(Protocol):
 class AgentLoopConfig:
     """AgentLoop 配置。"""
 
-    model: str = "deepseek-v4-flash"
+    model: str = "deepseek-flash"
     budget: int = 4096
     max_tool_iterations: int = DEFAULT_MAX_TOOL_ITERATIONS
     temperature: float = 0.7
@@ -119,6 +119,10 @@ class AgentLoop:
         self._run_session: str | None = None
         # E12：当前运行归属用户（认证启用时注入工具与记忆检索）
         self._run_user = ""
+        # 本次运行已持久化的消息 id（工具迭代中途重建上下文时使用）
+        self._run_message_ids: list[str] = []
+        # 重新回答的目标 user 消息 id（run() 时由 parent_message_id 赋值）
+        self._regenerate_of: str | None = None
 
     @property
     def tool_registry(self) -> ToolRegistry:
@@ -146,6 +150,7 @@ class AgentLoop:
         confirm_callback: (Callable[[str, dict[str, Any], str, str], Awaitable[bool]] | None) = None,
         attachments: list[dict[str, Any]] | None = None,
         user_id: str = "",
+        parent_message_id: str | None = None,
     ) -> AgentLoopResult:
         """执行一次完整的对话循环。
 
@@ -193,19 +198,31 @@ class AgentLoop:
         )
 
         try:
-            # 追加用户消息
-            await self._persist_message(
-                session_id,
-                role="user",
-                content=user_message,
-                attachments=attachments,
-            )
+            # 追加用户消息（重新回答模式：parent_message_id 已存在，不新建 user 消息，
+            # 仅生成新的 assistant 答案版本，其 parent_id 指向原 user 消息）。
+            user_msg_id: str | None
+            if parent_message_id:
+                user_msg_id = parent_message_id
+            else:
+                user_msg_id = await self._persist_message(
+                    session_id,
+                    role="user",
+                    content=user_message,
+                    attachments=attachments,
+                )
             # 记录检查点：运行开始
             self._checkpoint("running", 0, {"phase": "user_received"})
 
             current_messages: list[dict[str, Any]] = []
-            # 整轮（含工具迭代）累积的思维链
-            full_reasoning_parts: list[str] = []
+            # 最近一次模型调用自身的思维链：DeepSeek 思考模式要求每条
+            # assistant 消息回传**它自己的** reasoning_content，因此
+            # 中间 assistant(tool_calls) 消息存当轮思维链，
+            # 终答消息只存产出该答案的那次调用的思维链。
+            last_call_reasoning = ""
+            # 本次运行已持久化的消息 id（工具迭代中途重建上下文时使用）
+            self._run_message_ids = []
+            # 重新回答的目标 user 消息 id（上下文构建时据此丢弃旧答案版本）
+            self._regenerate_of = parent_message_id
 
             while iterations < self._config.max_tool_iterations:
                 if self._stopped:
@@ -213,7 +230,13 @@ class AgentLoop:
                     break
 
                 # 1. 装配上下文
-                context_msgs = await self._build_context(session_id, used_budget, used_model)
+                context_msgs = await self._build_context(
+                    session_id,
+                    used_budget,
+                    used_model,
+                    regenerate_of_message_id=self._regenerate_of,
+                    run_message_ids=self._run_message_ids,
+                )
                 current_messages = context_msgs
 
                 # 2. 调用模型（带重试）
@@ -222,9 +245,7 @@ class AgentLoop:
                 )
                 # 累积所有模型调用的 token 用量（工具迭代可能调用多次）
                 result.usage = self._merge_usage(result.usage, call_usage)
-                # 累积思维链，供最终 assistant 消息持久化
-                if call_reasoning:
-                    full_reasoning_parts.append(call_reasoning)
+                last_call_reasoning = call_reasoning
 
                 if self._stopped:
                     result.short_circuited = True
@@ -240,12 +261,20 @@ class AgentLoop:
                 # 3.5 持久化带 tool_calls 的 assistant 消息
                 # DeepSeek/OpenAI API 要求：tool 消息前必须有带 tool_calls
                 # 字段的 assistant 消息，且 tool_call_id 要匹配，否则 422。
-                await self._persist_message(
+                # DeepSeek 思考模式还要求该消息回传当轮 reasoning_content
+                # （400: "The reasoning_content in the thinking mode must be
+                # passed back to the API"），否则同一轮的后续迭代与之后的
+                # 重新回答都会被 API 拒绝。
+                _mid = await self._persist_message(
                     session_id,
                     role="assistant",
                     content=response_content or "",
                     tool_calls=response_tool_calls,
+                    reasoning=call_reasoning,
+                    parent_id=user_msg_id,
                 )
+                if _mid:
+                    self._run_message_ids.append(_mid)
 
                 # 4. 执行工具调用
                 tool_results = await self._execute_tool_calls(response_tool_calls, session_id, trace_id)
@@ -267,7 +296,13 @@ class AgentLoop:
                     self._config.max_tool_iterations,
                 )
                 if not self._stopped:
-                    context_msgs = await self._build_context(session_id, used_budget, used_model)
+                    context_msgs = await self._build_context(
+                        session_id,
+                        used_budget,
+                        used_model,
+                        regenerate_of_message_id=self._regenerate_of,
+                        run_message_ids=self._run_message_ids,
+                    )
                     wrapup_msgs = list(context_msgs)
                     wrapup_msgs.append(
                         {
@@ -288,8 +323,7 @@ class AgentLoop:
                             trace_id,
                             allow_tools=False,
                         )
-                        if wrapup_reasoning:
-                            full_reasoning_parts.append(wrapup_reasoning)
+                        last_call_reasoning = wrapup_reasoning
                         if wrapup_usage:
                             result.usage = self._merge_usage(result.usage, wrapup_usage)
                         if wrapup_content:
@@ -298,14 +332,15 @@ class AgentLoop:
                         # 收尾失败不视为整体失败（前 N 轮工具结果已落库）
                         logger.warning("强制收尾调用失败: %s", e)
 
-            # 持久化最终 assistant 终答消息（不带 tool_calls，带整轮思维链）
+            # 持久化最终 assistant 终答消息（不带 tool_calls，带产出它的那次调用的思维链）
             if result.content and not result.short_circuited:
                 await self._persist_message(
                     session_id,
                     role="assistant",
                     content=result.content,
                     tokens=(result.usage.get("total_tokens", 0) if result.usage else 0),
-                    reasoning="".join(full_reasoning_parts),
+                    reasoning=last_call_reasoning,
+                    parent_id=user_msg_id,
                 )
                 # 记录检查点：运行完成
                 self._checkpoint("done", iterations, {"phase": "finished"})
@@ -412,8 +447,20 @@ class AgentLoop:
         except Exception as e:  # noqa: BLE001
             logger.debug("发送 trace span 失败（已忽略）: %s", e)
 
-    async def _build_context(self, session_id: str, budget: int, model: str) -> list[dict[str, Any]]:
-        """装配上下文（含钩子）。"""
+    async def _build_context(
+        self,
+        session_id: str,
+        budget: int,
+        model: str,
+        regenerate_of_message_id: str | None = None,
+        run_message_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """装配上下文（含钩子）。
+
+        regenerate_of_message_id / run_message_ids 透传给 ContextService：
+        前者让重新回答的目标提问丢弃全部历史答案版本（模型重新作答），
+        后者保证工具迭代中途重建上下文时本轮已产出的工具调用与结果仍在。
+        """
         from harness.modules.context_manager.service import ContextService
 
         # pre_context_build 钩子
@@ -438,7 +485,13 @@ class AgentLoop:
         context_service = self._services.get(ContextService)
         messages = cast(
             "list[dict[str, Any]]",
-            context_service.build(session_id, budget=budget, model=model),
+            context_service.build(
+                session_id,
+                budget=budget,
+                model=model,
+                regenerate_of_message_id=regenerate_of_message_id,
+                run_message_ids=run_message_ids,
+            ),
         )
 
         # 前置系统消息：用户自定义提示词 → 当前时间 → Skill 目录（L1）
@@ -526,6 +579,47 @@ class AgentLoop:
             # 必须 error 级可见（原 debug 在默认日志级别下完全不可见，事后无法审计）。
             logger.error("权限检查失败（已放行）: %s", e)
             return None
+
+    def _record_permission_audit(
+        self,
+        decision: Any,
+        session_id: str,
+        trace_id: str,
+        stage: str,
+        outcome: str | None = None,
+        decided_by: str | None = None,
+    ) -> None:
+        """在真实执行路径落审计（绝不在 decide() 内部）。
+
+        - 落库点 1（stage='decision'）：每次工具调用前记录策略裁决；
+        - 落库点 2（stage='resolved'）：人类对 confirm 的最终裁决。
+        """
+        try:
+            from harness.modules.permission_manager.audit import record_audit_event
+            from harness.modules.permission_manager.service import PermissionService
+
+            policy_mode: str | None = None
+            if self._services.has(PermissionService):
+                try:
+                    policy_mode = self._services.get(PermissionService).get_mode()
+                except Exception:
+                    policy_mode = None
+            record_audit_event(
+                tool_name=decision.tool_name,
+                risk=decision.risk,
+                action=decision.action,
+                stage=stage,
+                outcome=outcome,
+                reason=decision.reason,
+                policy_mode=policy_mode,
+                decided_by=decided_by or decision.source,
+                user_id=self._run_user or "system",
+                session_id=session_id,
+                agent_run_id=self._run_id,
+                trace_id=trace_id,
+            )
+        except Exception as e:
+            logger.debug("审计落库失败（已跳过）: %s", e)
 
     async def _request_confirm(self, tool_name: str, args: dict[str, Any], risk: str, reason: str) -> bool:
         """请求人工确认。
@@ -780,8 +874,12 @@ class AgentLoop:
         """执行工具调用列表。"""
         results: list[dict[str, Any]] = []
 
-        for tc in tool_calls:
+        for index, tc in enumerate(tool_calls):
             if self._stopped:
+                # 中断时为剩余未执行的 tool_call 回填占位 tool 消息。
+                # 否则 assistant 上会残留「有 tool_calls 却无对应 tool 响应」的
+                # 消息，下一轮请求会被模型 API 以 400 拒绝——会话永久不可用。
+                await self._backfill_interrupted_tool_calls(tool_calls[index:], session_id)
                 break
 
             # 解析 tool_call 结构
@@ -818,6 +916,17 @@ class AgentLoop:
                         "error": pre_result.error or "短路",
                     }
                 )
+                # 钩子短路同样必须回填 tool 消息（与「权限拒绝」路径一致）：
+                # 缺少对应 tool 响应会让下一轮请求被模型 API 以 400 拒绝。
+                _sc_id = tc.get("id", "")
+                _sc_mid = await self._persist_message(
+                    session_id,
+                    role="tool",
+                    content=pre_result.error or "钩子短路，未执行",
+                    tool_call_id=_sc_id,
+                )
+                if _sc_mid:
+                    self._run_message_ids.append(_sc_mid)
                 continue
 
             if pre_result.data is not None and isinstance(pre_result.data, ToolCallContext):
@@ -829,6 +938,9 @@ class AgentLoop:
             # assistant 消息，下一轮请求会被 API 以 400 拒绝。
             blocked_error: str | None = None
             permission_decision = self._check_permission(tool_ctx.tool_name)
+            # 落库点 1：策略决策（每次工具调用必写一条 stage='decision'）
+            if permission_decision is not None:
+                self._record_permission_audit(permission_decision, session_id, trace_id, "decision")
             if permission_decision is not None and permission_decision.denied:
                 blocked_error = f"权限拒绝: {permission_decision.reason}"
                 logger.warning(
@@ -843,7 +955,26 @@ class AgentLoop:
                     permission_decision.risk,
                     permission_decision.reason,
                 )
-                if not approved:
+                if approved:
+                    # 落库点 2：人类对 confirm 放行 → 真正执行
+                    self._record_permission_audit(
+                        permission_decision,
+                        session_id,
+                        trace_id,
+                        "resolved",
+                        "executed",
+                        "human",
+                    )
+                else:
+                    # 落库点 2：人类拒绝 / 取消 → 不执行
+                    self._record_permission_audit(
+                        permission_decision,
+                        session_id,
+                        trace_id,
+                        "resolved",
+                        "rejected",
+                        "human",
+                    )
                     blocked_error = "用户拒绝执行该工具调用"
                     logger.info("用户拒绝工具调用: %s", tool_ctx.tool_name)
 
@@ -924,14 +1055,54 @@ class AgentLoop:
 
             # 回填 tool 结果到会话消息（带 tool_call_id，DeepSeek API 要求）
             tool_call_id = tc.get("id", "")
-            await self._persist_message(
+            _tid = await self._persist_message(
                 session_id,
                 role="tool",
                 content=tool_ctx.result or tool_ctx.error or "",
                 tool_call_id=tool_call_id,
             )
+            if _tid:
+                self._run_message_ids.append(_tid)
 
         return results
+
+    async def _backfill_interrupted_tool_calls(
+        self,
+        tool_calls: list[dict[str, Any]],
+        session_id: str,
+    ) -> int:
+        """为被中断而未执行的 tool_call 回填占位 tool 消息。
+
+        模型 API（DeepSeek / OpenAI 兼容）要求：assistant 消息上出现的每个
+        ``tool_call_id`` 都必须有一条对应的 ``role="tool"`` 消息，否则下一次
+        请求会被以 400 拒绝，表现为「停止过一次之后，这个会话再也问不动了」。
+
+        Args:
+            tool_calls: 尚未执行的原始 tool_call 列表。
+            session_id: 会话 id。
+
+        Returns:
+            成功回填的消息条数。
+        """
+        if not tool_calls:
+            return 0
+        filled = 0
+        for tc in tool_calls:
+            try:
+                _mid = await self._persist_message(
+                    session_id,
+                    role="tool",
+                    content="（已被用户中断，未执行）",
+                    tool_call_id=tc.get("id", ""),
+                )
+                if _mid:
+                    self._run_message_ids.append(_mid)
+                    filled += 1
+            except Exception as e:  # noqa: BLE001 —— 回填失败不应放大中断本身
+                logger.warning("回填中断 tool 消息失败: %s", e)
+        if filled:
+            logger.info("已回填 %d 条中断的 tool 消息（session=%s）", filled, session_id)
+        return filled
 
     async def _cleanup_failed_round(self, session_id: str) -> None:
         """清理失败轮次残留的未完成消息。
@@ -988,8 +1159,13 @@ class AgentLoop:
         tokens: int = 0,
         attachments: list[dict[str, Any]] | None = None,
         reasoning: str = "",
-    ) -> None:
-        """持久化消息（含 pre_message_persist 钩子）。"""
+        parent_id: str | None = None,
+    ) -> str | None:
+        """持久化消息（含 pre_message_persist 钩子）。
+
+        Returns:
+            新建消息的 id；若被钩子短路未持久化则返回 None。
+        """
         from harness.modules.session_manager.service import SessionService
 
         record = MessageRecord(
@@ -1001,6 +1177,7 @@ class AgentLoop:
             tokens=tokens,
             attachments=attachments,
             reasoning=reasoning,
+            parent_id=parent_id,
         )
 
         # pre_message_persist 钩子
@@ -1016,11 +1193,11 @@ class AgentLoop:
             record = pre_result.data
         if pre_result.short_circuit:
             logger.info("pre_message_persist 钩子短路，消息未持久化")
-            return
+            return None
 
         # 持久化
         session_service = self._services.get(SessionService)
-        session_service.append_message(
+        created = session_service.append_message(
             session_id=record.session_id,
             role=record.role,
             content=record.content,
@@ -1030,4 +1207,7 @@ class AgentLoop:
             latency_ms=record.latency_ms,
             attachments=record.attachments,
             reasoning=record.reasoning,
+            parent_id=record.parent_id,
         )
+        # 返回新建消息 id，便于调用方把后续 assistant 答案的 parent_id 指向它
+        return created.id if created is not None else None

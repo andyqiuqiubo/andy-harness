@@ -55,6 +55,9 @@ class OpenAICompatibleProvider(TokenCounter, ModelProviderPlugin):
     base_url: str = ""
     default_models: list[str] = []
     provider_name: str = "openai-compatible"
+    # 是否支持在 assistant 消息中回传 reasoning_content（DeepSeek 推理模型要求）。
+    # 子类（如 DeepSeekProvider）覆盖为 True；其余 OpenAI 兼容端点默认剥离，避免 400。
+    supports_reasoning_content: bool = False
 
     def __init__(
         self,
@@ -102,6 +105,21 @@ class OpenAICompatibleProvider(TokenCounter, ModelProviderPlugin):
         # 合并额外参数：extra_params 是默认值，kwargs 优先覆盖
         body.update(self.extra_params)
         body.update(kwargs)
+        # 不支持 reasoning_content 的 provider（OpenAI/Qwen/Doubao 等）需从 assistant
+        # 消息中剥离该字段，否则请求会被拒绝；仅 DeepSeek 等推理模型保留。
+        if not self.supports_reasoning_content:
+            for msg in body.get("messages", []):
+                if msg.get("role") == "assistant" and "reasoning_content" in msg:
+                    del msg["reasoning_content"]
+        else:
+            # DeepSeek 思考模式（实测 1.0.97 / v4 系列）：带 tool_calls 的 assistant
+            # 消息**必须**回传 reasoning_content，否则 400 "The reasoning_content in
+            # the thinking mode must be passed back to the API"；实测空字符串即可通过。
+            # 兜底填充：历史消息可能由旧版本落库（未存思维链）或模型本轮未输出思考链，
+            # 在此统一补空串，保证含工具轮历史的请求（多轮对话 / 重新回答）不被拒绝。
+            for msg in body.get("messages", []):
+                if msg.get("role") == "assistant" and msg.get("tool_calls") and not msg.get("reasoning_content"):
+                    msg["reasoning_content"] = ""
         return body
 
     async def chat(

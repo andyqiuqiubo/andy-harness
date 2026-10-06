@@ -171,7 +171,7 @@ class MemorySummarizer:
             logger.warning("获取 provider 失败: %s", e)
             return None
         models = target.get("models") or []
-        model = self._model or (models[0] if models else "deepseek-v4-flash")
+        model = self._model or (models[0] if models else "deepseek-flash")
         return provider, model
 
     # ── 总结 ──────────────────────────────────────────
@@ -220,12 +220,16 @@ class MemorySummarizer:
                 if not key or not value:
                     continue
                 scope = str(item.get("scope") or "global")
+                # 必须带上会话归属用户：否则启用认证（E12）后，记忆以 user_id=''
+                # 落库，而 list/search/render_hint 都按 user_id 过滤，
+                # 自动总结产生的记忆对用户永久不可见，却仍占用存储。
                 self._memory.save(
                     key=key,
                     value=value,
                     scope=scope,
                     session_id=session.id if scope == "session" else "",
                     tags=["auto-summary"],
+                    user_id=str(getattr(session, "user_id", "") or ""),
                 )
                 saved += 1
 

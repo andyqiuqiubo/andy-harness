@@ -245,18 +245,40 @@ class ChannelManager:
     # ── 会话映射 ──────────────────────────────────────
 
     async def _resolve_session(self, channel: Channel, user_id: str, owner_id: str = "") -> str:
-        """按 (channel, user) 取稳定会话；缺失则新建并记录映射。"""
+        """按 (channel, user) 取稳定会话；映射缺失或已失效则新建并记录映射。
+
+        必须校验映射指向的会话是否仍存在：会话可能在别处被删除（UI 删除会话 /
+        清空历史），若不加校验直接复用，渠道消息会持续写入一个已不存在的会话，
+        表现为消息静默丢失或运行报错，且映射永远无法自愈。
+        """
         db = self._services.get(Database)
         row = db.query_one(
             "SELECT session_id FROM channel_links WHERE channel=? AND external_user=?",
             (channel.name, user_id),
         )
-        if row is not None:
-            return cast("str", row["session_id"])
 
         from harness.modules.session_manager.service import SessionService
 
         session_service = cast("SessionService", self._services.get(SessionService))
+
+        if row is not None:
+            linked_id = cast("str", row["session_id"])
+            try:
+                if session_service.get_session(linked_id) is not None:
+                    return linked_id
+            except Exception as e:  # noqa: BLE001 —— 查询失败时保守地重建映射
+                logger.warning("校验渠道会话失败，将重建映射: %s", e)
+            # 会话已不存在 → 清理失效映射，走下面的新建分支
+            db.execute(
+                "DELETE FROM channel_links WHERE channel=? AND external_user=?",
+                (channel.name, user_id),
+            )
+            logger.info(
+                "渠道映射指向的会话已不存在，已清理并重建: channel=%s user=%s",
+                channel.name,
+                user_id,
+            )
+
         title = f"{channel.name} · {user_id}"
         session = session_service.create_session(title=title, user_id=owner_id)
         db.execute(

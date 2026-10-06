@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +66,7 @@ class Decision:
     risk: str
     action: str  # allow / confirm / deny
     reason: str = ""
+    source: str = "policy"  # policy（全局策略裁决）/ override（单工具覆盖）
 
     @property
     def needs_confirm(self) -> bool:
@@ -83,6 +85,7 @@ class Decision:
             "risk": self.risk,
             "action": self.action,
             "reason": self.reason,
+            "source": self.source,
         }
 
 
@@ -128,7 +131,15 @@ class PermissionServiceImpl(PermissionService):
         mode: str | None = None,
     ) -> None:
         self._tool_registry = tool_registry
-        self._state_file = state_file or (Path(__file__).resolve().parents[3] / "data" / "permission.json")
+        # 测试隔离：conftest 通过环境变量把权限状态指向临时目录，
+        # 否则用户运行时在 data/permission.json 里设置的覆盖
+        # （如 code_runner=auto）会让确认链路测试无法收到 confirm_request。
+        env_state_file = os.environ.get("HARNESS_PERMISSION_STATE_FILE")
+        self._state_file = (
+            state_file
+            or (Path(env_state_file) if env_state_file else None)
+            or (Path(__file__).resolve().parents[3] / "data" / "permission.json")
+        )
         self._mode = MODE_CONFIRM_DANGEROUS
         self._overrides: dict[str, str] = {}
         self._load_state()
@@ -155,11 +166,11 @@ class PermissionServiceImpl(PermissionService):
 
         override = self._overrides.get(tool_name)
         if override == ACTION_DENY:
-            return Decision(tool_name, risk, DENY, "已被用户加入拒绝列表")
+            return Decision(tool_name, risk, DENY, "已被用户加入拒绝列表", "override")
         if override == ACTION_CONFIRM:
-            return Decision(tool_name, risk, CONFIRM, "该工具被单独设置为需确认")
+            return Decision(tool_name, risk, CONFIRM, "该工具被单独设置为需确认", "override")
         if override == ACTION_AUTO:
-            return Decision(tool_name, risk, ALLOW, "该工具被单独设置为自动放行")
+            return Decision(tool_name, risk, ALLOW, "该工具被单独设置为自动放行", "override")
 
         if self._mode == MODE_AUTO:
             return Decision(tool_name, risk, ALLOW, "当前策略：全部自动放行")

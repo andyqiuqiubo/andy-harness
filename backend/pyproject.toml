@@ -14,6 +14,7 @@ dependencies = [
     "matplotlib>=3.11.2",
     "numpy>=2.4.6",
     "python-multipart>=0.0.20",
+    "jinja2>=3.1.0",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +31,16 @@ dev = [
 desktop = [
     "pyautogui>=0.9.54",
     "mss>=9.0.1",
+]
+# 飞书 Channel 入站（群里 @机器人回群）所需的可选依赖。
+# 缺失时 feishu_channel 优雅降级（channel 模式不可用，api/cli 模式不受影响）；
+# 需启用飞书群聊入站时再安装（见 feishu_channel.py 顶部的 import 守护）。
+feishu = [
+    # 飞书官方服务端 SDK（channel 模式 WebSocket 长连需要）。
+    # 代码按 1.7.x 的 API 实测：EventDispatcherHandler.builder("", "")
+    #   → .register_p2_im_message_receive_v1(f) → .build()，以及 lark.ws.Client。
+    # 低于 1.7 的版本事件注册方式可能不同，请勿放宽下限。
+    "lark-oapi>=1.7.0",
 ]
 
 [build-system]

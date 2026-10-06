@@ -46,6 +46,8 @@ class MessageCreate(BaseModel):
     tool_calls: list[dict[str, Any]] | None = None
     tokens: int = 0
     attachments: list[dict[str, Any]] | None = None
+    # 回答版本：assistant 答案所回答的 user 消息 id（同一提问的多次重新回答共享）。
+    parent_id: str | None = None
 
 
 class SessionImport(BaseModel):
@@ -379,6 +381,7 @@ def setup_session_routes(registry: ServiceRegistry) -> None:
             tool_calls=req.tool_calls,
             tokens=req.tokens,
             attachments=req.attachments,
+            parent_id=req.parent_id,
         )
         return cast("dict[str, Any]", msg.to_dict())
 

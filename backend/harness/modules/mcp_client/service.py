@@ -18,6 +18,8 @@ import json
 import logging
 import os
 import shlex
+import subprocess
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
@@ -260,12 +262,20 @@ class BaseMCPConnection(ABC):
 
 
 class MCPServerConnection(BaseMCPConnection):
-    """stdio 传输：MCP server 子进程。"""
+    """stdio 传输：MCP server 子进程。
+
+    Windows 上 ``uvicorn --reload`` 的事件循环是 SelectorEventLoop，**不支持**
+    :func:`asyncio.create_subprocess_exec`（抛裸 NotImplementedError 且消息为空）。
+    因此这里不用 asyncio 子进程，改为「同步 :class:`subprocess.Popen` +
+    后台阻塞读线程 + :func:`asyncio.run_coroutine_threadsafe` 回投主循环」，
+    与事件循环种类无关；写入走线程避免阻塞主循环。
+    """
 
     def __init__(self, config: MCPServerConfig) -> None:
         super().__init__(config)
-        self._proc: asyncio.subprocess.Process | None = None
-        self._reader_task: asyncio.Task[None] | None = None
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._reader_thread: threading.Thread | None = None
+        self._owner_loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def _connected(self) -> bool:
@@ -278,31 +288,45 @@ class MCPServerConnection(BaseMCPConnection):
         env = dict(os.environ)
         for k, v in cfg.env.items():
             env[k] = v
+        self._owner_loop = asyncio.get_running_loop()
         try:
-            self._proc = await asyncio.create_subprocess_exec(
-                cfg.command,
-                *cfg.args,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            self._proc = await asyncio.to_thread(
+                subprocess.Popen,
+                [cfg.command, *cfg.args],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 env=env,
             )
         except (FileNotFoundError, OSError) as e:
             raise RuntimeError(f"无法启动 MCP server '{cfg.name}': {e}") from e
-        self._reader_task = asyncio.ensure_future(self._read_loop())
+        self._reader_thread = threading.Thread(
+            target=self._read_loop_sync,
+            name=f"mcp-stdio-{cfg.name}",
+            daemon=True,
+        )
+        self._reader_thread.start()
+
+    def _write_sync(self, data: bytes) -> None:
+        proc = self._proc
+        if proc is None or proc.stdin is None:
+            raise RuntimeError("MCP stdio 连接未建立")
+        proc.stdin.write(data)
+        proc.stdin.flush()
 
     async def _send(self, payload: dict[str, Any]) -> None:
-        if self._proc is None or self._proc.stdin is None:
-            raise RuntimeError("MCP stdio 连接未建立")
         line = json.dumps(payload, ensure_ascii=False) + "\n"
-        self._proc.stdin.write(line.encode("utf-8"))
-        await self._proc.stdin.drain()
+        await asyncio.to_thread(self._write_sync, line.encode("utf-8"))
 
-    async def _read_loop(self) -> None:
-        assert self._proc is not None and self._proc.stdout is not None
+    def _read_loop_sync(self) -> None:
+        """后台线程：阻塞读子进程 stdout，逐行回投主循环分发。"""
+        proc = self._proc
+        loop = self._owner_loop
+        if proc is None or proc.stdout is None or loop is None:
+            return
         try:
             while not self._closed:
-                raw = await self._proc.stdout.readline()
+                raw = proc.stdout.readline()
                 if not raw:
                     break
                 line = raw.decode("utf-8", errors="replace").strip()
@@ -312,34 +336,45 @@ class MCPServerConnection(BaseMCPConnection):
                     msg = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                await self._dispatch(msg)
-        except asyncio.CancelledError:
+                try:
+                    asyncio.run_coroutine_threadsafe(self._dispatch(msg), loop)
+                except RuntimeError:
+                    return  # 主循环已关闭（应用退出），读线程自行结束
+        except OSError:
             pass
-        except Exception as e:  # noqa: BLE001
-            logger.debug("MCP 读取循环结束: %s", e)
         finally:
-            self._fail_pending(f"MCP stdio 通道已关闭（server={self.config.name}）")
+            try:
+                loop.call_soon_threadsafe(
+                    self._fail_pending,
+                    f"MCP stdio 通道已关闭（server={self.config.name}）",
+                )
+            except RuntimeError:
+                pass
+
+    @staticmethod
+    def _terminate_sync(proc: subprocess.Popen[bytes]) -> None:
+        """terminate → 等 5s → kill（与原 asyncio 版语义一致）。"""
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
 
     async def disconnect(self) -> None:
         self._closed = True
-        if self._reader_task is not None:
-            self._reader_task.cancel()
-            try:
-                await self._reader_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-            self._reader_task = None
-        if self._proc is not None:
-            try:
-                if self._proc.returncode is None:
-                    self._proc.terminate()
-                    await asyncio.wait_for(self._proc.wait(), timeout=5)
-            except (TimeoutError, ProcessLookupError, Exception):  # noqa: BLE001
-                try:
-                    self._proc.kill()
-                except Exception:  # noqa: BLE001
-                    pass
+        proc = self._proc
+        if proc is not None:
             self._proc = None
+            await asyncio.to_thread(self._terminate_sync, proc)
+        # 读线程在 EOF / _closed 后自行退出（daemon，不阻塞进程退出）
 
 
 # ────────────────────────── SSE / HTTP 传输 ──────────────────────────
@@ -637,31 +672,51 @@ class MCPClientService:
         self._configs: dict[str, MCPServerConfig] = {}
 
     def load_config(self) -> dict[str, MCPServerConfig]:
-        """从配置文件加载 server 配置（不连接）。"""
+        """从配置文件加载 server 配置（不连接）。
+
+        多路径**合并**语义：依次读取 ``self._config_paths`` 中的每一个存在
+        的配置文件，同名 server 由后读到的（优先级更低）路径**不覆盖**先读到
+        的高优先级配置。
+
+        旧实现在命中第一个存在的文件后即 ``clear()`` + ``return``，导致用户级
+        ``mcp.json`` 一旦存在，项目内置路径下的 server 会被整体丢弃；随后
+        ``add_server → _save()`` 又把这份残缺配置写回主路径，丢失被固化。
+        """
+        loaded_any = False
+        merged: dict[str, MCPServerConfig] = {}
         for path in self._config_paths:
-            if os.path.exists(path):
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("读取 MCP 配置失败 %s: %s", path, e)
+                continue
+            servers = data.get("mcpServers", data) if isinstance(data, dict) else {}
+            if not isinstance(servers, dict):
+                continue
+            count = 0
+            for name, raw in servers.items():
+                if not isinstance(raw, dict):
+                    continue
+                raw = dict(raw)
+                raw.setdefault("name", name)
                 try:
-                    with open(path, encoding="utf-8") as f:
-                        data = json.load(f)
-                except (json.JSONDecodeError, OSError) as e:
-                    logger.warning("读取 MCP 配置失败 %s: %s", path, e)
+                    cfg = parse_server_config(raw)
+                except ValueError as e:
+                    logger.warning("跳过无效 MCP 配置 %s: %s", name, e)
                     continue
-                servers = data.get("mcpServers", data) if isinstance(data, dict) else {}
-                if not isinstance(servers, dict):
+                if name in merged:
+                    logger.debug("MCP server %s 已由更高优先级配置提供，跳过 %s", name, path)
                     continue
-                self._configs.clear()
-                for name, raw in servers.items():
-                    if not isinstance(raw, dict):
-                        continue
-                    raw = dict(raw)
-                    raw.setdefault("name", name)
-                    try:
-                        self._configs[name] = parse_server_config(raw)
-                    except ValueError as e:
-                        logger.warning("跳过无效 MCP 配置 %s: %s", name, e)
-                logger.info("已从 %s 加载 %d 个 MCP server", path, len(self._configs))
-                return self._configs
-        logger.info("未找到 MCP 配置文件（已探查 %s）", self._config_paths)
+                merged[name] = cfg
+                count += 1
+            loaded_any = True
+            logger.info("已从 %s 加载 %d 个 MCP server", path, count)
+        self._configs = merged
+        if not loaded_any:
+            logger.info("未找到 MCP 配置文件（已探查 %s）", self._config_paths)
         return self._configs
 
     def get_configs(self) -> dict[str, MCPServerConfig]:
@@ -699,17 +754,36 @@ class MCPClientService:
         with open(path, "w", encoding="utf-8") as f:
             json.dump({"mcpServers": servers}, f, ensure_ascii=False, indent=2)
 
-    def add_server(self, cfg: MCPServerConfig) -> None:
-        """添加一个 server 配置并持久化。"""
-        if cfg.name in self._servers:
+    def add_server(self, cfg: MCPServerConfig, *, overwrite: bool = False) -> None:
+        """添加一个 server 配置并持久化。
+
+        Args:
+            cfg: server 配置。
+            overwrite: 允许覆盖同名配置。默认 False——同名已存在时抛
+                ``RuntimeError``（路由映射为 409），避免静默覆盖掉用户已有的
+                URL / command / headers 配置。
+
+        Raises:
+            RuntimeError: 同名 server 已连接，或同名配置已存在且未允许覆盖。
+        """
+        if cfg.name in self._servers and not overwrite:
             raise RuntimeError(f"server '{cfg.name}' 已连接，请先断开")
+        if cfg.name in self._configs and not overwrite:
+            raise RuntimeError(f"server '{cfg.name}' 配置已存在")
         self._configs[cfg.name] = cfg
         self._save()
 
-    def remove_server(self, name: str) -> None:
-        """移除一个 server 配置并持久化。"""
+    def remove_server(self, name: str) -> bool:
+        """移除一个 server 配置并持久化。
+
+        Returns:
+            是否真实删除了配置（False 表示原本就不存在，调用方可据此返回 404）。
+        """
+        existed = name in self._configs
         self._configs.pop(name, None)
-        self._save()
+        if existed:
+            self._save()
+        return existed
 
     async def connect_server(self, cfg: MCPServerConfig) -> list[MCPToolSpec]:
         """连接单个 server（已连接则返回其现有工具清单）。"""

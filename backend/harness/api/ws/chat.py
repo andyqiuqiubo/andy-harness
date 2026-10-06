@@ -46,6 +46,9 @@ class WSMessage(BaseModel):
     max_tool_iterations: int = 10
     system_prompt: str | None = None
     attachments: list[dict[str, Any]] = []
+    # 重新回答：指向被重新生成的 user 消息 id。设置后不再新建 user 消息，
+    # 仅生成一条新的 assistant 答案版本（parent_id 指向该 user 消息）。
+    parent_message_id: str | None = None
 
 
 class _StreamingProviderProxy:
@@ -166,7 +169,7 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
             provider_models = getattr(provider, "models", None) or []
             if isinstance(provider_models, list) and provider_models:
                 default_model = str(provider_models[0])
-            used_model = model or default_model or "deepseek-v4-flash"
+            used_model = model or default_model or "deepseek-flash"
 
             import time as _time
 
@@ -511,6 +514,25 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
                 )
                 current_loop = loop
 
+                # 重新回答：取原 user 消息内容（仅用于运行标题），不新建 user 消息
+                user_message_for_loop = msg.content
+                if msg.parent_message_id:
+                    try:
+                        from harness.modules.session_manager.service import SessionService
+
+                        _ss = services.get(SessionService)
+                        _parent = _ss.get_message(msg.parent_message_id)
+                        if _parent is None or _parent.role != "user":
+                            await _send_error(
+                                "INVALID_MESSAGE",
+                                "重新回答的目标不是 user 消息或不存在",
+                            )
+                            continue
+                        user_message_for_loop = _parent.content
+                    except Exception as e:
+                        await _send_error("SESSION_SERVICE_UNAVAILABLE", "会话服务不可用", str(e))
+                        continue
+
                 # 工具事件实时回调（S18: 替代循环结束后批量发送）
                 async def _on_tool_event(event: dict[str, Any]) -> None:
                     await websocket.send_json(event)
@@ -552,7 +574,7 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
                 try:
                     result = await loop.run(
                         session_id=msg.session_id,
-                        user_message=msg.content,
+                        user_message=user_message_for_loop,
                         provider=stream_provider,
                         model=msg.model,
                         budget=msg.budget,
@@ -560,6 +582,7 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
                         on_tool_event=_on_tool_event,
                         confirm_callback=_request_confirm,
                         user_id=auth_user_id,
+                        parent_message_id=msg.parent_message_id or None,
                     )
                 finally:
                     current_loop = None

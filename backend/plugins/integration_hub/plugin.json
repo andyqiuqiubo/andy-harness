@@ -1,0 +1,10 @@
+{
+  "id": "integration_hub",
+  "name": "第三方系统集成",
+  "version": "0.1.0",
+  "type": "tool",
+  "entry": "plugins.integration_hub.main:IntegrationHubPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["network"],
+  "description": "可扩展的第三方系统对接能力，内置飞书（开放API + CLI）接入，预留统一接口以便后续接入其他系统"
+}

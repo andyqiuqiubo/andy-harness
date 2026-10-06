@@ -205,7 +205,9 @@ async def resume_run(
             "error": f"续跑失败: {e}",
         }
 
-    checkpoint_svc.update_status(run_id, "resumed")
+    # 续跑本身执行失败（如模型调用报错）时不能标成 resumed，
+    # 否则前端据此认为已成功续跑，真实错误被吞掉。
+    checkpoint_svc.update_status(run_id, "error" if result.error else "resumed")
     return {
         "run_id": run_id,
         "session_id": cp.session_id,

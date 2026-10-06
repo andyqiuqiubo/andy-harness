@@ -26,7 +26,7 @@ _SETTINGS_FILE = Path(__file__).resolve().parent.parent.parent.parent / "data" /
 _DEFAULT_SETTINGS: dict[str, Any] = {
     "theme": "light",
     "language": "zh-CN",
-    "default_model": "deepseek-chat",
+    "default_model": "deepseek-flash",
     "default_budget": 4096,
 }
 
