@@ -8,25 +8,58 @@ const { t } = useLanguage()
 
 const titleEl = ref<HTMLElement | null>(null)
 const tilt = ref({ rx: 0, ry: 0 })
-const titleText = 'andy-harness'
+const titleText = 'Andy-Harness'
 
-// 文字朝鼠标方向倾斜：鼠标在哪，文字就倒向哪（绕中心做 3D 视差）
-function onWindowMove(e: MouseEvent) {
-  const el = titleEl.value
-  if (!el) return
-  const rect = el.getBoundingClientRect()
+// 文字朝鼠标方向倾斜：鼠标在哪，文字就倒向哪（绕中心做 3D 视差）。
+//
+// 触发范围：**仅当鼠标位于标题文字区域内移动时**才生效。
+// 实现要点：监听挂在 <h1> 自身（元素级 pointermove 天然只在元素盒内触发），
+// 不再监听 window —— 鼠标在页面其它任何位置移动都不会带动标题。
+// 鼠标离开文字区域时平滑回正，避免文字长期歪斜看似卡死。
+const MAX_RX = 18
+const MAX_RY = 20
+
+// 归一化基准改为「标题自身盒」：鼠标只能在标题附近活动，
+// 若仍按窗口宽度归一，区域内最多只能摆到 ±5°，手感会近乎失效。
+let titleRect: DOMRect | null = null
+
+function cacheTitleRect() {
+  titleRect = titleEl.value?.getBoundingClientRect() ?? null
+}
+
+function clamp01(v: number): number {
+  return v < -1 ? -1 : v > 1 ? 1 : v
+}
+
+function onTitleMove(e: PointerEvent) {
+  if (!titleRect) cacheTitleRect()
+  const rect = titleRect
+  if (!rect) return
   const cx = rect.left + rect.width / 2
   const cy = rect.top + rect.height / 2
-  const dx = (e.clientX - cx) / (window.innerWidth / 2)
-  const dy = (e.clientY - cy) / (window.innerHeight / 2)
-  tilt.value = { rx: -dy * 18, ry: dx * 20 }
+  // 缓存可能因布局变化而过期，用 clamp 兜住越界值，保证角度不超出设定上限
+  const dx = clamp01((e.clientX - cx) / Math.max(1, rect.width / 2))
+  const dy = clamp01((e.clientY - cy) / Math.max(1, rect.height / 2))
+  tilt.value = { rx: -dy * MAX_RX, ry: dx * MAX_RY }
+}
+
+function onTitleLeave() {
+  tilt.value = { rx: 0, ry: 0 }
+}
+
+// 滚动 / 缩放会让缓存坐标失效
+function onLayoutChange() {
+  cacheTitleRect()
 }
 
 onMounted(() => {
-  window.addEventListener('mousemove', onWindowMove)
+  cacheTitleRect()
+  window.addEventListener('resize', onLayoutChange)
+  window.addEventListener('scroll', onLayoutChange, { passive: true })
 })
 onUnmounted(() => {
-  window.removeEventListener('mousemove', onWindowMove)
+  window.removeEventListener('resize', onLayoutChange)
+  window.removeEventListener('scroll', onLayoutChange)
 })
 </script>
 
@@ -45,6 +78,9 @@ onUnmounted(() => {
         ref="titleEl"
         class="hero-title"
         :style="{ transform: `rotateX(${tilt.rx}deg) rotateY(${tilt.ry}deg)` }"
+        @pointermove="onTitleMove"
+        @pointerleave="onTitleLeave"
+        @pointercancel="onTitleLeave"
       >
         <span v-for="(ch, i) in titleText.split('')" :key="i" class="hero-char">{{ ch }}</span>
       </h1>
@@ -60,6 +96,10 @@ onUnmounted(() => {
       <router-link to="/chat" class="cta cta-primary">
         <span>{{ t('nav.chat') }}</span>
         <span class="cta-arrow">→</span>
+      </router-link>
+      <router-link to="/workflows" class="cta cta-secondary">
+        <span>🔀</span>
+        <span>{{ t('nav.workflows') }}</span>
       </router-link>
       <router-link to="/settings" class="cta cta-secondary">
         <span>⚙</span>

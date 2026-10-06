@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onMounted, computed } from 'vue'
+import { computed } from 'vue'
 import { useProviderStore } from '../stores/providers'
+import { modelsForProvider } from '../utils/modelCatalog'
 
 const providerStore = useProviderStore()
 
@@ -10,49 +11,24 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 
-// H9: Filter models by selected provider
-const filteredModels = computed(() => {
-  if (!props.provider) return providerStore.models
-  return providerStore.models.filter((m) => m.provider === props.provider)
-})
-
-const groupedModels = computed(() => {
-  const groups: Record<string, { provider: string; models: { id: string; name: string }[] }> = {}
-  for (const model of filteredModels.value) {
-    if (!groups[model.provider]) {
-      groups[model.provider] = { provider: model.provider, models: [] }
-    }
-    groups[model.provider].models.push({ id: model.id, name: model.name })
-  }
-  return Object.values(groups)
+/** 所选 provider 在下拉里应展示的模型选项（目录过滤 + 显示名）。 */
+const options = computed(() => {
+  if (!props.provider) return []
+  const p = providerStore.providers.find((x) => x.id === props.provider)
+  return modelsForProvider(props.provider, p?.models || [])
 })
 
 function onChange(e: Event) {
   emit('update:modelValue', (e.target as HTMLSelectElement).value)
 }
-
-onMounted(() => {
-  providerStore.loadModels()
-})
-
-/** 无可选模型时的原因：加载失败 vs 确实没有模型（未配置 API Key）。 */
-const emptyHint = computed(() => {
-  if (providerStore.loadError) return providerStore.loadError
-  if (providerStore.models.length === 0) return '暂无可用模型，请先在设置中配置 Provider 的 API Key'
-  return ''
-})
 </script>
 
 <template>
   <div class="model-selector-wrapper">
-    <span v-if="emptyHint" class="empty-hint" :title="emptyHint">{{ emptyHint }}</span>
     <select :value="modelValue" @change="onChange" class="model-selector">
-      <option value="">选择模型...</option>
-      <optgroup v-for="group in groupedModels" :key="group.provider" :label="group.provider">
-        <option v-for="model in group.models" :key="model.id" :value="model.id">
-          {{ model.name }}
-        </option>
-      </optgroup>
+      <option v-for="opt in options" :key="opt.id" :value="opt.id">
+        {{ opt.label }}
+      </option>
     </select>
     <span class="selector-arrow">
       <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -69,17 +45,6 @@ const emptyHint = computed(() => {
   align-items: center;
 }
 
-/* 无模型可选时的原因提示（加载失败 / 未配置 API Key） */
-.empty-hint {
-  max-width: 220px;
-  margin-right: var(--space-sm);
-  font-size: var(--font-size-xs);
-  color: var(--color-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .model-selector {
   appearance: none;
   -webkit-appearance: none;
@@ -93,7 +58,7 @@ const emptyHint = computed(() => {
   color: var(--color-text);
   cursor: pointer;
   transition: border-color var(--transition-base), box-shadow var(--transition-base), background var(--transition-base);
-  min-width: 160px;
+  min-width: 170px;
 }
 
 .model-selector:hover {
@@ -118,16 +83,6 @@ const emptyHint = computed(() => {
 
 .model-selector:focus + .selector-arrow {
   color: var(--color-primary);
-}
-
-/* Group headers styled differently */
-.model-selector :deep(optgroup) {
-  font-weight: 700;
-  font-size: var(--font-size-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--color-primary);
-  background: var(--bg-form);
 }
 
 .model-selector :deep(option) {

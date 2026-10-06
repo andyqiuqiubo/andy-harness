@@ -5,21 +5,36 @@ import { usePluginStore, type PluginInfo, type MarketplacePlugin } from '../stor
 import { useSettingsStore, THEME_LIST, type Theme } from '../stores/settings'
 import { useSkillStore, type SkillInfo, type SkillMarketplaceItem } from '../stores/skills'
 import { usePermissionStore } from '../stores/permissions'
+import { useAuthStore } from '../stores/auth'
 import { useLanguage } from '../composables/useLanguage'
+import AuditLogView from './AuditLogView.vue'
+import IntegrationsPanel from '../components/IntegrationsPanel.vue'
 import { apiClient } from '../api/client'
 import { formatLocalTime } from '../utils/datetime'
 import type { PermissionAction, PermissionMode } from '../api/types'
 
-type Tab = 'providers' | 'session' | 'plugins' | 'skills' | 'mcp' | 'artifacts' | 'memory' | 'tracing' | 'schedule' | 'general'
+type Tab = 'providers' | 'session' | 'memory' | 'plugins' | 'skills' | 'mcp' | 'schedule' | 'security' | 'audit' | 'artifacts' | 'general'
 
 const providerStore = useProviderStore()
 const pluginStore = usePluginStore()
 const settingsStore = useSettingsStore()
 const skillStore = useSkillStore()
 const permissionStore = usePermissionStore()
+const authStore = useAuthStore()
 const { t } = useLanguage()
 
+// 审计日志属管理面：认证未启用（单用户）或管理员可见。
+const showAuditTab = computed(() =>
+  authStore.enabled ? !!authStore.user?.is_admin : true,
+)
+
 const activeTab = ref<Tab>('providers')
+
+// 审计 tab 内部子视图：运行轨迹 / 权限审计（合二为一）
+const auditSubTab = ref<'traces' | 'log'>('traces')
+
+// 插件 tab 内部子视图：智连器（第三方系统集成，默认）/ 赋能器（本机插件）
+const pluginSubTab = ref<'connector' | 'plugin'>('connector')
 
 // Provider 表单
 const showAddProvider = ref(false)
@@ -108,20 +123,36 @@ async function handleTestProvider(id: string) {
 }
 
 // H10: Start editing a provider
-function startEditProvider(id: string) {
+const editKeyLoading = ref(false)
+const editShowKey = ref(false)
+
+async function startEditProvider(id: string) {
   const p = providerStore.providers.find((p) => p.id === id)
   if (!p) return
   editingProvider.value = id
   editTestError.value = ''
+  editShowKey.value = false
   editForm.value = {
     name: p.name,
     base_url: p.base_url,
     models: p.models.join(', '),
     api_key: '',
   }
+  // 取回已存储的 Key 预填（input type=password 显示为圆点；可点眼睛查看明文）
+  if (p.has_api_key) {
+    editKeyLoading.value = true
+    try {
+      const res = await apiClient.get<{ api_key: string }>(`/providers/${id}/api-key`)
+      editForm.value.api_key = res.api_key || ''
+    } catch {
+      // 取回失败保持为空（等价于旧行为：留空不修改）
+    } finally {
+      editKeyLoading.value = false
+    }
+  }
 }
 
-// 启用：保存配置 → 自动测试连接 → 成功则启用并关闭，失败则显示错误
+// 编辑对话框：保存配置并保持当前启用状态（测试失败会自动停用）
 async function handleSaveProvider(id: string) {
   editSaving.value = true
   editTestError.value = ''
@@ -168,7 +199,19 @@ async function handleSaveProvider(id: string) {
   }
 }
 
-// H10: Toggle provider enabled/disabled
+// 编辑对话框内直接停用：已启用的 provider 无需测试，停用立即生效并关闭弹窗
+async function handleDisableFromEdit(id: string) {
+  editSaving.value = true
+  editTestError.value = ''
+  try {
+    await providerStore.updateProvider(id, { enabled: false })
+    editingProvider.value = null
+  } catch (e) {
+    editTestError.value = '停用失败: ' + e
+  } finally {
+    editSaving.value = false
+  }
+}
 // 启用前必须先通过连接测试；停用直接生效
 async function handleToggleProvider(id: string) {
   const p = providerStore.providers.find((p) => p.id === id)
@@ -277,7 +320,7 @@ async function handleOpenPluginMarketplace() {
 }
 
 async function handleMarketplaceInstall(mp: MarketplacePlugin) {
-  if (!confirm(`确定从插件市场安装「${mp.name}」吗？`)) return
+  if (!window.confirm(t.value('marketplace.confirmPlugin').replace('{0}', mp.name))) return
   marketplaceInstalling.value = mp.plugin_id
   try {
     await pluginStore.installMarketplacePlugin(mp.plugin_id)
@@ -375,7 +418,7 @@ async function handleOpenSkillMarketplace() {
 }
 
 async function handleSkillMarketplaceInstall(item: SkillMarketplaceItem) {
-  if (!window.confirm(`确定从技能市场安装「${item.name}」吗？`)) return
+  if (!window.confirm(t.value('marketplace.confirmSkill').replace('{0}', item.name))) return
   skillMarketplaceInstalling.value = item.package_id
   try {
     await skillStore.installMarketplaceSkill(item.package_id)
@@ -603,7 +646,7 @@ async function handleOpenMcpMarketplace() {
 }
 
 async function handleMcpMarketplaceInstall(item: McpMarketplaceItem) {
-  if (!window.confirm(`确定从 MCP 市场安装「${item.name}」吗？`)) return
+  if (!window.confirm(t.value('marketplace.confirmMcp').replace('{0}', item.name))) return
   mcpMarketplaceInstalling.value = item.package_id
   try {
     const data = await apiClient.post<{ connected: boolean; error?: string }>(
@@ -1243,6 +1286,9 @@ function formatMs(n: number): string {
         <button :class="['tab-btn', { active: activeTab === 'session' }]" @click="activeTab = 'session'">
           {{ t('settings.tab.session') }}
         </button>
+        <button :class="['tab-btn', { active: activeTab === 'memory' }]" @click="activeTab = 'memory'">
+          {{ t('settings.tab.memory') }}
+        </button>
         <button :class="['tab-btn', { active: activeTab === 'plugins' }]" @click="activeTab = 'plugins'">
           {{ t('settings.tab.plugins') }}
         </button>
@@ -1252,17 +1298,21 @@ function formatMs(n: number): string {
         <button :class="['tab-btn', { active: activeTab === 'mcp' }]" @click="activeTab = 'mcp'">
           {{ t('settings.tab.mcp') }}
         </button>
-        <button :class="['tab-btn', { active: activeTab === 'artifacts' }]" @click="activeTab = 'artifacts'">
-          {{ t('settings.tab.artifacts') }}
-        </button>
-        <button :class="['tab-btn', { active: activeTab === 'memory' }]" @click="activeTab = 'memory'">
-          {{ t('settings.tab.memory') }}
-        </button>
-        <button :class="['tab-btn', { active: activeTab === 'tracing' }]" @click="activeTab = 'tracing'">
-          {{ t('settings.tab.tracing') }}
-        </button>
         <button :class="['tab-btn', { active: activeTab === 'schedule' }]" @click="activeTab = 'schedule'">
           {{ t('settings.tab.schedule') }}
+        </button>
+        <button :class="['tab-btn', { active: activeTab === 'security' }]" @click="activeTab = 'security'">
+          {{ t('settings.tab.security') }}
+        </button>
+        <button
+          v-if="showAuditTab"
+          :class="['tab-btn', { active: activeTab === 'audit' }]"
+          @click="activeTab = 'audit'"
+        >
+          {{ t('settings.tab.audit') }}
+        </button>
+        <button :class="['tab-btn', { active: activeTab === 'artifacts' }]" @click="activeTab = 'artifacts'">
+          {{ t('settings.tab.artifacts') }}
         </button>
         <button :class="['tab-btn', { active: activeTab === 'general' }]" @click="activeTab = 'general'">
           {{ t('settings.tab.general') }}
@@ -1409,14 +1459,45 @@ function formatMs(n: number): string {
                   <input v-model="editForm.models" class="form-input" placeholder="model1, model2" />
                 </div>
                 <div class="form-row">
-                  <label class="form-label">{{ t('providers.apiKey') }} (留空不修改)</label>
-                  <input v-model="editForm.api_key" type="password" class="form-input" placeholder="sk-..." />
+                  <label class="form-label">{{ t('providers.apiKeyEditLabel') }}</label>
+                  <div class="api-key-field">
+                    <input
+                      v-model="editForm.api_key"
+                      :type="editShowKey ? 'text' : 'password'"
+                      class="form-input"
+                      :placeholder="editKeyLoading ? t('providers.keyLoading') : 'sk-...'"
+                      autocomplete="off"
+                    />
+                    <button
+                      v-if="editForm.api_key"
+                      class="api-key-toggle"
+                      :title="editShowKey ? t('providers.keyHide') : t('providers.keyShow')"
+                      @click="editShowKey = !editShowKey"
+                    >
+                      <svg v-if="editShowKey" class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" /></svg>
+                      <svg v-else class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
+                    </button>
+                  </div>
                 </div>
               </div>
               <div class="edit-actions">
-                <button class="btn-primary" @click="handleSaveProvider(p.id)" :disabled="editSaving">
+                <!-- 已停用：主按钮=启用（保存→测试→启用）；已启用：主按钮=保存修改，旁有停用 -->
+                <button
+                  v-if="!p.enabled"
+                  class="btn-primary"
+                  @click="handleSaveProvider(p.id)"
+                  :disabled="editSaving"
+                >
                   {{ editSaving ? t('providers.testing') : t('providers.enable') }}
                 </button>
+                <template v-else>
+                  <button class="btn-primary" @click="handleSaveProvider(p.id)" :disabled="editSaving">
+                    {{ editSaving ? t('providers.testing') : t('providers.save') }}
+                  </button>
+                  <button class="btn-ghost" @click="handleDisableFromEdit(p.id)" :disabled="editSaving">
+                    {{ t('providers.disable') }}
+                  </button>
+                </template>
                 <button class="btn-ghost" @click="editingProvider = null" :disabled="editSaving">{{ t('providers.cancel') }}</button>
               </div>
               <div v-if="editTestError" class="edit-test-error">
@@ -1437,7 +1518,7 @@ function formatMs(n: number): string {
         <div class="card session-card">
           <div class="form-row">
             <label class="form-label">{{ t('session.model') }}</label>
-            <input v-model="sessionSettings.model" class="form-input" placeholder="deepseek-chat" />
+            <input v-model="sessionSettings.model" class="form-input" placeholder="deepseek-flash" />
           </div>
           <div class="form-row">
             <label class="form-label">{{ t('session.temperature') }}: <span class="temp-value">{{ sessionSettings.temperature }}</span></label>
@@ -1461,102 +1542,129 @@ function formatMs(n: number): string {
 
       <!-- ═══════════════ 插件管理 ═══════════════ -->
       <section v-if="activeTab === 'plugins'" class="tab-content">
-        <div class="section-header">
-          <h2 class="section-title">{{ t('plugins.title') }}</h2>
-        <button class="btn-primary" @click="handleOpenPluginMarketplace">
-          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-          </svg>
-          从插件市场安装
-        </button>
+        <!-- 子页签：智连器（外接第三方系统） / 赋能器（本机能力插件） -->
+        <div class="subnav">
+          <button
+            :class="['sub-tab-btn', { active: pluginSubTab === 'connector' }]"
+            @click="pluginSubTab = 'connector'"
+          >
+            {{ t('plugins.subConnector') }}
+          </button>
+          <button
+            :class="['sub-tab-btn', { active: pluginSubTab === 'plugin' }]"
+            @click="pluginSubTab = 'plugin'"
+          >
+            {{ t('plugins.subEnhancer') }}
+          </button>
+        </div>
+        <p class="subnav-hint">
+          {{ pluginSubTab === 'connector' ? t('plugins.subConnectorDesc') : t('plugins.subEnhancerDesc') }}
+        </p>
+
+        <!-- 智连器：第三方系统集成（飞书等）：配置 + 连接 + 页面内调用 -->
+        <div v-if="pluginSubTab === 'connector'" class="sub-tab-pane">
+          <IntegrationsPanel />
         </div>
 
-        <!-- 插件市场 -->
-        <Transition name="modal-fade">
-          <div v-if="showMarketplace" class="modal-overlay" @click.self="showMarketplace = false">
-            <div class="modal-dialog marketplace-modal">
-              <div class="modal-header">
-                <h3 class="modal-title">插件市场</h3>
-                <button class="modal-close" @click="showMarketplace = false">
-                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                </button>
-              </div>
-              <div class="modal-body">
-                <div v-if="marketplaceLoading" class="modal-loading">加载中…</div>
-                <div v-else-if="pluginStore.marketplace.length === 0" class="empty-hint" style="border:none;padding:var(--space-md) 0;">
-                  插件市场暂无可用插件
+        <!-- 赋能器：本机插件（启用/停用 + 市场安装） -->
+        <div v-else class="sub-tab-pane">
+          <div class="section-header">
+            <h2 class="section-title">{{ t('plugins.title') }}</h2>
+            <button class="btn-primary" @click="handleOpenPluginMarketplace">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+              {{ t('marketplace.installFromPlugins') }}
+            </button>
+          </div>
+
+          <!-- 插件市场 -->
+          <Transition name="modal-fade">
+            <div v-if="showMarketplace" class="modal-overlay" @click.self="showMarketplace = false">
+              <div class="modal-dialog marketplace-modal">
+                <div class="modal-header">
+                  <h3 class="modal-title">插件市场</h3>
+                  <button class="modal-close" @click="showMarketplace = false">
+                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                  </button>
                 </div>
-                <div v-else class="marketplace-list">
-                  <div v-for="mp in pluginStore.marketplace" :key="mp.plugin_id" class="marketplace-card">
-                    <div class="marketplace-info">
-                      <div class="marketplace-name">
-                        {{ mp.name }}
-                        <span v-if="mp.installed" class="badge-pill badge-ok">已安装</span>
+                <div class="modal-body">
+                  <div v-if="marketplaceLoading" class="modal-loading">加载中…</div>
+                  <div v-else-if="pluginStore.marketplace.length === 0" class="empty-hint" style="border:none;padding:var(--space-md) 0;">
+                    插件市场暂无可用插件
+                  </div>
+                  <div v-else class="marketplace-list">
+                    <div v-for="mp in pluginStore.marketplace" :key="mp.plugin_id" class="marketplace-card">
+                      <div class="marketplace-info">
+                        <div class="marketplace-name">
+                          {{ mp.name }}
+                          <span v-if="mp.installed" class="badge-pill badge-ok">已安装</span>
+                        </div>
+                        <div class="marketplace-meta">
+                          <span class="badge-pill badge-version">v{{ mp.version }}</span>
+                          <span class="badge-pill badge-type">{{ mp.type }}</span>
+                        </div>
+                        <div class="marketplace-desc">{{ mp.description }}</div>
                       </div>
-                      <div class="marketplace-meta">
-                        <span class="badge-pill badge-version">v{{ mp.version }}</span>
-                        <span class="badge-pill badge-type">{{ mp.type }}</span>
+                      <div class="marketplace-actions">
+                        <button class="btn-ghost" @click="marketplaceDescribeTarget = mp">
+                          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>
+                          说明
+                        </button>
+                        <button
+                          v-if="!mp.installed"
+                          class="btn-primary"
+                          @click="handleMarketplaceInstall(mp)"
+                          :disabled="marketplaceInstalling === mp.plugin_id"
+                        >
+                          {{ marketplaceInstalling === mp.plugin_id ? '安装中…' : '安装' }}
+                        </button>
                       </div>
-                      <div class="marketplace-desc">{{ mp.description }}</div>
-                    </div>
-                    <div class="marketplace-actions">
-                      <button class="btn-ghost" @click="marketplaceDescribeTarget = mp">
-                        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>
-                        说明
-                      </button>
-                      <button
-                        v-if="!mp.installed"
-                        class="btn-primary"
-                        @click="handleMarketplaceInstall(mp)"
-                        :disabled="marketplaceInstalling === mp.plugin_id"
-                      >
-                        {{ marketplaceInstalling === mp.plugin_id ? '安装中…' : '安装' }}
-                      </button>
                     </div>
                   </div>
                 </div>
               </div>
             </div>
-          </div>
-        </Transition>
+          </Transition>
 
-        <div class="plugin-list">
-          <div v-for="p in pluginStore.plugins" :key="p.id" class="plugin-card card">
-            <div class="plugin-row">
-              <div class="plugin-info">
-                <div class="plugin-name">
-                  {{ p.name }}
-                  <span v-if="p.activated" class="badge-pill badge-enabled">已启用</span>
-                  <span v-else class="badge-pill badge-disabled">已停用</span>
-                  <span v-if="p.core" class="badge-pill badge-core">{{ t('plugins.core') }}</span>
+          <div class="plugin-list">
+            <div v-for="p in pluginStore.plugins" :key="p.id" class="plugin-card card">
+              <div class="plugin-row">
+                <div class="plugin-info">
+                  <div class="plugin-name">
+                    {{ p.name }}
+                    <span v-if="p.activated" class="badge-pill badge-enabled">已启用</span>
+                    <span v-else class="badge-pill badge-disabled">已停用</span>
+                    <span v-if="p.core" class="badge-pill badge-core">{{ t('plugins.core') }}</span>
+                  </div>
+                  <div class="plugin-meta">
+                    <span class="badge-pill badge-version">v{{ p.version }}</span>
+                    <span class="badge-pill badge-type">{{ p.type }}</span>
+                  </div>
+                  <div v-if="p.permissions && p.permissions.length" class="plugin-permissions">
+                    <span class="perm-label">权限:</span>
+                    <span v-for="perm in p.permissions" :key="perm" class="perm-tag">{{ perm }}</span>
+                  </div>
                 </div>
-                <div class="plugin-meta">
-                  <span class="badge-pill badge-version">v{{ p.version }}</span>
-                  <span class="badge-pill badge-type">{{ p.type }}</span>
+                <div class="plugin-actions">
+                  <label class="switch">
+                    <input type="checkbox" :checked="p.activated" :disabled="p.core" @change="p.activated ? handleDeactivatePlugin(p.id) : handleActivatePlugin(p.id)" />
+                    <span class="slider"></span>
+                  </label>
+                  <span v-if="p.core" class="core-lock" title="核心插件不可停用">
+                    <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
+                  </span>
+                  <button class="btn-ghost" @click="handleLoadPluginConfig(p)" title="配置">
+                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+                  </button>
+                  <button v-if="p.source === 'marketplace'" class="btn-ghost btn-uninstall" @click="handleUninstallPlugin(p.id)" title="卸载插件">
+                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+                  </button>
                 </div>
-                <div v-if="p.permissions && p.permissions.length" class="plugin-permissions">
-                  <span class="perm-label">权限:</span>
-                  <span v-for="perm in p.permissions" :key="perm" class="perm-tag">{{ perm }}</span>
-                </div>
-              </div>
-              <div class="plugin-actions">
-                <label class="switch">
-                  <input type="checkbox" :checked="p.activated" :disabled="p.core" @change="p.activated ? handleDeactivatePlugin(p.id) : handleActivatePlugin(p.id)" />
-                  <span class="slider"></span>
-                </label>
-                <span v-if="p.core" class="core-lock" title="核心插件不可停用">
-                  <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
-                </span>
-                <button class="btn-ghost" @click="handleLoadPluginConfig(p)" title="配置">
-                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
-                </button>
-                <button v-if="p.source === 'marketplace'" class="btn-ghost btn-uninstall" @click="handleUninstallPlugin(p.id)" title="卸载插件">
-                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
-                </button>
               </div>
             </div>
+            <div v-if="pluginStore.plugins.length === 0" class="empty-hint">{{ t('plugins.empty') }}</div>
           </div>
-          <div v-if="pluginStore.plugins.length === 0" class="empty-hint">{{ t('plugins.empty') }}</div>
         </div>
       </section>
 
@@ -1567,7 +1675,7 @@ function formatMs(n: number): string {
           <div class="section-actions">
             <button class="btn-primary" @click="handleOpenSkillMarketplace">
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
-              从技能市场安装
+              {{ t('marketplace.installFromSkills') }}
             </button>
             <button class="btn-ghost btn-sm" @click="handleReloadSkills" :disabled="skillReloading">
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1752,7 +1860,7 @@ function formatMs(n: number): string {
           <div class="section-actions">
             <button class="btn-primary btn-sm" @click="handleOpenMcpMarketplace">
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
-              从 MCP 市场安装
+              {{ t('marketplace.installFromMcp') }}
             </button>
             <button class="btn-ghost btn-sm" @click="handleReloadMcp" :disabled="mcpLoading">
               {{ t('mcp.refresh') }}
@@ -2064,68 +2172,7 @@ function formatMs(n: number): string {
         <p v-if="memoryError" class="mcp-error">{{ memoryError }}</p>
       </section>
 
-      <!-- ═══════════════ 运行轨迹（Tracing） ═══════════════ -->
-      <section v-if="activeTab === 'tracing'" class="tab-content">
-        <div class="section-header">
-          <h2 class="section-title">{{ t('tracing.title') }}</h2>
-          <button class="btn-primary btn-sm" @click="loadTraces">{{ t('tracing.refresh') }}</button>
-        </div>
-        <p class="section-desc">{{ t('tracing.desc') }}</p>
-
-        <div v-if="!tracesAvailable" class="empty-state small">
-          <p>{{ t('tracing.unavailable') }}</p>
-        </div>
-        <div v-else-if="traces.length === 0" class="empty-state small">
-          <p>{{ t('tracing.empty') }}</p>
-        </div>
-        <div v-for="tr in traces" :key="tr.trace_id" class="card trace-card">
-          <div class="trace-head">
-            <span class="trace-status" :class="tr.status"></span>
-            <span class="trace-name">{{ tr.name }}</span>
-            <span class="artifact-time">{{ formatLocalTime(tr.started_at) }}</span>
-            <span class="trace-meta">{{ t('tracing.steps') }} {{ tr.step_count }}</span>
-            <span class="trace-meta">span {{ tr.span_count }}</span>
-            <span class="trace-meta">{{ formatMs(tr.duration_ms) }}</span>
-            <span class="trace-meta" v-if="tr.total_tokens">{{ tr.total_tokens }} tokens</span>
-            <span class="trace-meta error" v-if="tr.error_count">{{ tr.error_count }} 错误</span>
-            <button class="btn-ghost btn-xs" @click="toggleTrace(tr.trace_id)">
-              {{ traceDetailId === tr.trace_id ? t('tracing.collapse') : t('tracing.expand') }}
-            </button>
-            <button class="btn-danger btn-xs" @click="handleDeleteTrace(tr.trace_id)">
-              {{ t('tracing.delete') }}
-            </button>
-          </div>
-
-          <div v-if="traceDetailId === tr.trace_id" class="trace-lane">
-            <div v-if="laneBars.length === 0" class="trace-bar-empty">{{ t('tracing.noSpans') }}</div>
-            <div v-for="bar in laneBars" :key="bar.id" class="trace-bar-row">
-              <span class="trace-bar-label" :title="bar.name">
-                <span class="trace-kind" :class="bar.kind">{{ bar.kind }}</span>
-                {{ bar.name }}
-              </span>
-              <div class="trace-bar-track">
-                <div
-                  class="trace-bar"
-                  :class="[bar.kind, bar.status]"
-                  :style="{ left: bar.left + '%', width: bar.width + '%' }"
-                  :title="`${bar.name} · ${formatMs(bar.duration_ms)}${bar.error ? ' · ' + bar.error : ''}`"
-                ></div>
-              </div>
-              <span class="trace-bar-ms">{{ formatMs(bar.duration_ms) }}</span>
-            </div>
-            <div v-for="bar in laneBars" :key="'d-' + bar.id" class="trace-detail">
-              <div class="trace-detail-name">{{ bar.name }}</div>
-              <div v-if="bar.error" class="trace-detail-error">{{ bar.error }}</div>
-              <div v-if="bar.input_preview" class="trace-detail-line">in: {{ bar.input_preview }}</div>
-              <div v-if="bar.output_preview" class="trace-detail-line">out: {{ bar.output_preview }}</div>
-              <div v-if="bar.total_tokens" class="trace-detail-line">
-                tokens: {{ bar.prompt_tokens }} / {{ bar.completion_tokens }} / {{ bar.total_tokens }}
-              </div>
-            </div>
-          </div>
-        </div>
-        <p v-if="traceError" class="mcp-error">{{ traceError }}</p>
-      </section>
+      <!-- 运行轨迹（Tracing）已并入下方「审计」tab，作为其子视图之一 -->
 
       <!-- ═══════════════ 定时任务 ═══════════════ -->
       <section v-if="activeTab === 'schedule'" class="tab-content">
@@ -2380,7 +2427,7 @@ function formatMs(n: number): string {
                 @click="settingsStore.setTheme(tm.id as Theme)"
               >
                 <span class="theme-swatch" :style="{ background: tm.color }"></span>
-                <span class="theme-name">{{ tm.name }}</span>
+                <span class="theme-name">{{ t('theme.' + tm.id) }}</span>
                 <svg v-if="settingsStore.theme === tm.id" class="theme-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                   <polyline points="20 6 9 17 4 12" />
                 </svg>
@@ -2402,10 +2449,12 @@ function formatMs(n: number): string {
           </div>
         </div>
 
-        <!-- 工具权限与人工确认 -->
-        <h2 class="section-title" style="margin-top: var(--space-lg);">
-          {{ t('permissions.title') }}
-        </h2>
+        <!-- 主题与语言（工具权限与人工确认已拆分到「安全」tab） -->
+      </section>
+
+      <!-- ═══════════════ 安全（工具权限与人工确认） ═══════════════ -->
+      <section v-if="activeTab === 'security'" class="tab-content">
+        <h2 class="section-title">{{ t('permissions.title') }}</h2>
         <div class="card general-card">
           <div class="form-row">
             <label class="form-label">{{ t('permissions.mode') }}</label>
@@ -2444,6 +2493,89 @@ function formatMs(n: number): string {
           <div v-else class="empty-hint">{{ t('permissions.empty') }}</div>
         </div>
       </section>
+
+      <!-- ═══════════════ 审计（运行轨迹 + 权限审计 精细合二为一） ═══════════════ -->
+      <section v-if="showAuditTab && activeTab === 'audit'" class="tab-content">
+        <div class="audit-center">
+          <div class="audit-subnav">
+            <button :class="['sub-tab-btn', { active: auditSubTab === 'traces' }]" @click="auditSubTab = 'traces'">
+              {{ t('audit.subTraces') }}
+            </button>
+            <button :class="['sub-tab-btn', { active: auditSubTab === 'log' }]" @click="auditSubTab = 'log'">
+              {{ t('audit.subLog') }}
+            </button>
+          </div>
+
+          <!-- 运行轨迹 pane -->
+          <div v-if="auditSubTab === 'traces'" class="audit-pane">
+            <div class="section-header">
+              <h2 class="section-title">{{ t('tracing.title') }}</h2>
+              <button class="btn-primary btn-sm" @click="loadTraces">{{ t('tracing.refresh') }}</button>
+            </div>
+            <p class="section-desc">{{ t('tracing.desc') }}</p>
+
+            <div v-if="!tracesAvailable" class="empty-state small">
+              <p>{{ t('tracing.unavailable') }}</p>
+            </div>
+            <div v-else-if="traces.length === 0" class="empty-state small">
+              <p>{{ t('tracing.empty') }}</p>
+            </div>
+            <div v-for="tr in traces" :key="tr.trace_id" class="card trace-card">
+              <div class="trace-head">
+                <span class="trace-status" :class="tr.status"></span>
+                <span class="trace-name">{{ tr.name }}</span>
+                <span class="artifact-time">{{ formatLocalTime(tr.started_at) }}</span>
+                <span class="trace-meta">{{ t('tracing.steps') }} {{ tr.step_count }}</span>
+                <span class="trace-meta">span {{ tr.span_count }}</span>
+                <span class="trace-meta">{{ formatMs(tr.duration_ms) }}</span>
+                <span class="trace-meta" v-if="tr.total_tokens">{{ tr.total_tokens }} tokens</span>
+                <span class="trace-meta error" v-if="tr.error_count">{{ tr.error_count }} 错误</span>
+                <button class="btn-ghost btn-xs" @click="toggleTrace(tr.trace_id)">
+                  {{ traceDetailId === tr.trace_id ? t('tracing.collapse') : t('tracing.expand') }}
+                </button>
+                <button class="btn-danger btn-xs" @click="handleDeleteTrace(tr.trace_id)">
+                  {{ t('tracing.delete') }}
+                </button>
+              </div>
+
+              <div v-if="traceDetailId === tr.trace_id" class="trace-lane">
+                <div v-if="laneBars.length === 0" class="trace-bar-empty">{{ t('tracing.noSpans') }}</div>
+                <div v-for="bar in laneBars" :key="bar.id" class="trace-bar-row">
+                  <span class="trace-bar-label" :title="bar.name">
+                    <span class="trace-kind" :class="bar.kind">{{ bar.kind }}</span>
+                    {{ bar.name }}
+                  </span>
+                  <div class="trace-bar-track">
+                    <div
+                      class="trace-bar"
+                      :class="[bar.kind, bar.status]"
+                      :style="{ left: bar.left + '%', width: bar.width + '%' }"
+                      :title="`${bar.name} · ${formatMs(bar.duration_ms)}${bar.error ? ' · ' + bar.error : ''}`"
+                    ></div>
+                  </div>
+                  <span class="trace-bar-ms">{{ formatMs(bar.duration_ms) }}</span>
+                </div>
+                <div v-for="bar in laneBars" :key="'d-' + bar.id" class="trace-detail">
+                  <div class="trace-detail-name">{{ bar.name }}</div>
+                  <div v-if="bar.error" class="trace-detail-error">{{ bar.error }}</div>
+                  <div v-if="bar.input_preview" class="trace-detail-line">in: {{ bar.input_preview }}</div>
+                  <div v-if="bar.output_preview" class="trace-detail-line">out: {{ bar.output_preview }}</div>
+                  <div v-if="bar.total_tokens" class="trace-detail-line">
+                    tokens: {{ bar.prompt_tokens }} / {{ bar.completion_tokens }} / {{ bar.total_tokens }}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <p v-if="traceError" class="mcp-error">{{ traceError }}</p>
+          </div>
+
+          <!-- 权限审计 pane -->
+          <div v-else class="audit-pane">
+            <AuditLogView />
+          </div>
+        </div>
+      </section>
+
     </div>
 
     <!-- ═══════════════ 插件配置弹窗 ═══════════════ -->
@@ -2659,6 +2791,62 @@ function formatMs(n: number): string {
 
 .tab-btn.active::after {
   width: 60%;
+}
+
+/* ── 审计中心子导航（轨迹 / 权限审计） ──────────────── */
+.audit-center {
+  animation: slideUp 0.25s ease;
+}
+
+.audit-subnav {
+  display: flex;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-lg);
+}
+
+.sub-tab-btn {
+  padding: var(--space-xs) var(--space-lg);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
+  transition: var(--transition-base);
+  white-space: nowrap;
+}
+
+.sub-tab-btn:hover {
+  color: var(--color-text);
+  background: var(--bg-hover);
+}
+
+.sub-tab-btn.active {
+  color: var(--color-primary);
+  background: var(--color-primary-light);
+  border-color: var(--color-primary);
+  font-weight: 600;
+}
+
+/* ── 插件页子页签（智连器 / 赋能器） ──────────────── */
+.subnav {
+  display: flex;
+  gap: var(--space-xs);
+}
+
+.subnav-hint {
+  margin: var(--space-xs) 0 var(--space-md);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  line-height: 1.6;
+}
+
+.sub-tab-pane {
+  animation: slideUp 0.2s ease;
+}
+
+.audit-pane {
+  animation: slideUp 0.2s ease;
 }
 
 /* ── Scrollable Body ──────────────────────────────────── */
@@ -2981,6 +3169,33 @@ function formatMs(n: number): string {
 .edit-form {
   padding: var(--space-lg);
   margin-bottom: var(--space-lg);
+}
+
+/* ── API Key 预填输入（圆点/明文切换） ── */
+.api-key-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.api-key-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: color var(--transition-base), border-color var(--transition-base);
+}
+
+.api-key-toggle:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
 }
 
 .form-card-title {

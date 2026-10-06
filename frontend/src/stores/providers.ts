@@ -11,6 +11,8 @@ export const useProviderStore = defineStore('providers', () => {
 
   /** 最近一次加载失败的原因（供 UI 提示，避免「静默空白」）。 */
   const loadError = ref<string | null>(null)
+  /** 是否已完成至少一次加载（区分「加载中」与「确实没有 provider」）。 */
+  const providersLoaded = ref(false)
 
   async function loadProviders() {
     try {
@@ -19,6 +21,8 @@ export const useProviderStore = defineStore('providers', () => {
     } catch (e) {
       providers.value = []
       loadError.value = e instanceof Error ? e.message : String(e)
+    } finally {
+      providersLoaded.value = true
     }
   }
 
@@ -48,5 +52,5 @@ export const useProviderStore = defineStore('providers', () => {
     return models.value.filter((m) => m.provider === providerId)
   }
 
-  return { providers, models, enabledProviders, loadError, loadProviders, loadModels, updateProvider, toggleProviderEnabled, modelsByProvider }
+  return { providers, models, enabledProviders, loadError, providersLoaded, loadProviders, loadModels, updateProvider, toggleProviderEnabled, modelsByProvider }
 })

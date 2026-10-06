@@ -4,8 +4,10 @@ import type { Message, TokenUsage } from '../api/types'
 import { formatTokens } from '../utils/format'
 import { fetchAttachmentBlobUrl } from '../api/client'
 import MarkdownRenderer from './MarkdownRenderer.vue'
+import { useLanguage } from '../composables/useLanguage'
 
 const props = defineProps<{ message: Message }>()
+const { t } = useLanguage()
 
 const emit = defineEmits<{
   (e: 'delete-turn', message: Message): void
@@ -85,7 +87,7 @@ async function copyContent() {
 
 // 是否在消息流中可见：
 // - tool 角色消息仅用于模型 API 上下文，其结果已在「执行过程」过程框中
-//   展示（ChatView.displayItems），不单独渲染（避免孤立的工具头像行）
+//   展示（ChatView.turns 按版本归并），不单独渲染（避免孤立的工具头像行）
 // - assistant 消息既无正文也无工具调用时不渲染（避免空白气泡/空行）
 const isVisible = computed(() => {
   const m = props.message
@@ -117,12 +119,12 @@ function usageCacheMiss(u: TokenUsage | undefined): number {
     <template v-if="message.role === 'user'">
       <div class="message-body user-body">
         <div class="msg-actions">
-          <button class="icon-btn" :title="copied ? '已复制' : '复制提问'" @click="copyContent">
+          <button class="icon-btn" :title="copied ? t('chat.copied') : t('chat.copyQuestion')" @click="copyContent">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
             </svg>
           </button>
-          <button class="icon-btn danger" title="删除本轮问答（物理删除）" @click="emit('delete-turn', message)">
+          <button class="icon-btn danger" :title="t('chat.deleteTurnBtn')" @click="emit('delete-turn', message)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" /><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
             </svg>
@@ -203,23 +205,23 @@ function usageCacheMiss(u: TokenUsage | undefined): number {
         <!-- 回答的操作条：复制 / 重新回答 / 追问 / 分叉（仅 assistant 回答） -->
         <div class="msg-actions-wrap" v-if="message.role === 'assistant' && message.content">
           <div class="msg-actions">
-            <button class="icon-btn" :title="copied ? '已复制' : '复制回答'" @click="copyContent">
+            <button class="icon-btn" :title="copied ? t('chat.copied') : t('chat.copyAnswer')" @click="copyContent">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
               </svg>
             </button>
-            <!-- 重新回答：原位删除该轮并用原问题重新生成（放在复制后、追问前） -->
-            <button class="icon-btn" title="重新回答" @click="emit('retry', message)">
+            <!-- 重新回答：保留历史答案版本，仅针对同一提问再生成一条新答案 -->
+            <button class="icon-btn" :title="t('chat.retryTitle')" @click="emit('retry', message)">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
               </svg>
             </button>
-            <button class="icon-btn" title="针对该回答继续追问" @click="emit('follow-up', message)">
+            <button class="icon-btn" :title="t('chat.followUpBtn')" @click="emit('follow-up', message)">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="9 17 4 12 9 7" /><path d="M20 18v-2a4 4 0 0 0-4-4H4" />
               </svg>
             </button>
-            <button class="icon-btn" title="从该回答处分叉出新会话" @click="emit('fork', message)">
+            <button class="icon-btn" :title="t('chat.forkBtn')" @click="emit('fork', message)">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
               </svg>
@@ -227,7 +229,7 @@ function usageCacheMiss(u: TokenUsage | undefined): number {
           </div>
           <!-- 复制成功提示（3 秒后自动消失） -->
           <transition name="copy-toast-fade">
-            <span v-if="copied" class="copy-toast">复制成功</span>
+            <span v-if="copied" class="copy-toast">{{ t('chat.copied') }}</span>
           </transition>
         </div>
 
@@ -240,7 +242,7 @@ function usageCacheMiss(u: TokenUsage | undefined): number {
           <span class="usage-item usage-total">· 合计 {{ formatTokens(message.usage.total_tokens) }} tokens</span>
         </div>
 
-        <!-- Tool calls 已统一归并进「执行过程」过程框（ChatView.displayItems），
+        <!-- Tool calls 已统一归并进「执行过程」过程框（ChatView.turns 按版本归并），
              此处不再内联渲染，避免同一工具调用重复展示两处。 -->
       </div>
     </template>

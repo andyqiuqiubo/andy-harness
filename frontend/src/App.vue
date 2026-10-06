@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 根组件
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import PluginOverlayHost from './components/PluginOverlayHost.vue'
 import LoginView from './views/LoginView.vue'
 import { useAuthStore } from './stores/auth'
@@ -14,6 +14,23 @@ const showLogin = computed(
     authStore.enabled &&
     !authStore.isAuthenticated
 )
+
+// 页面级滚动条：仅在滚动时显示（由 body.is-scrolling 控制显隐，见 style.css）
+let scrollTimer: number | undefined
+function onAppScroll() {
+  document.body.classList.add('is-scrolling')
+  if (scrollTimer) window.clearTimeout(scrollTimer)
+  scrollTimer = window.setTimeout(() => {
+    document.body.classList.remove('is-scrolling')
+  }, 800)
+}
+onMounted(() => {
+  document.getElementById('app')?.addEventListener('scroll', onAppScroll, { passive: true })
+})
+onUnmounted(() => {
+  document.getElementById('app')?.removeEventListener('scroll', onAppScroll)
+  if (scrollTimer) window.clearTimeout(scrollTimer)
+})
 </script>
 
 <template>
@@ -37,5 +54,7 @@ body {
 #app {
   width: 100%;
   height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 </style>

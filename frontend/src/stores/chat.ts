@@ -18,6 +18,27 @@ export const useChatStore = defineStore('chat', () => {
   const mockMode = ref(false)
   let mockTimer: ReturnType<typeof setTimeout> | null = null
 
+  /** 正在「重新回答」的提问 id（其下会新增一条答案版本；用于 UI 显示「生成中」）。 */
+  const regeneratingParentId = ref<string | null>(null)
+
+  /**
+   * 当前流式回答**归属的会话 id**。
+   *
+   * WS 是全局共享的单连接：后端为会话 A 生成的 token_delta / tool_event / done
+   * 帧，在用户中途切到会话 B 之后仍会继续推来。旧实现不加区分地处理，导致：
+   * - `done` 把 A 的答案 push 进 B 的消息列表（跨会话串数据）；
+   * - `isStreaming` 迟迟不落回 false，B 的输入框与发送按钮被禁用。
+   */
+  const streamingSessionId = ref<string | null>(null)
+
+  /**
+   * 模板中心实例化后暂存的首条提问：跳转会话页、WS 就绪后自动经正常
+   * 发送链路发出（走 AgentLoop 才有流式回答；仅落库的提问是「死消息」）。
+   * 附目标会话 id：用户中途切走会话时不得误发到别的会话。
+   */
+  const pendingAutoSend = ref('')
+  const pendingAutoSendSession = ref<string | null>(null)
+
   // 执行过程步骤（思维链 / 中间说明 / 工具调用），实时累积，
   // 供 ChatView 的「执行过程」过程框统一展示。
   const processEvents = ref<ProcessStep[]>([])
@@ -128,6 +149,18 @@ export const useChatStore = defineStore('chat', () => {
     pendingAttachments.value = []
     attachmentWarning.value = ''
     _clearWatchdog()
+    // 切会话必须解除流式态：否则在 A 生成途中切到 B 时 isStreaming 仍为 true，
+    // B 的输入框与发送按钮被禁用（要等 A 的 done 帧才恢复，甚至永远等不到）。
+    // 同时清空流式归属，避免 A 的残留帧写进 B。
+    isStreaming.value = false
+    error.value = null
+    regeneratingParentId.value = null
+    streamingSessionId.value = null
+    // 模拟模式的定时器同理，必须一并停掉
+    if (mockTimer) {
+      clearTimeout(mockTimer)
+      mockTimer = null
+    }
 
     // 并行加载消息与最新上下文快照（有快照则显示，无则保持 null 隐藏）
     try {
@@ -189,6 +222,18 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function handleWSFrame(frame: WSFrame) {
+    // 丢弃「非当前会话」的流式帧：用户在 A 生成途中切到 B 后，A 的
+    // token_delta / tool_event / done 仍会经同一条 WS 推来。不加归属校验会把
+    // A 的答案写进 B，并让 B 的 isStreaming 迟迟不落回 false（输入框被禁用）。
+    // 控制类帧（error / confirm_* / attachment_warning / context_snapshot）不参与。
+    const _streamKinds = ['token_delta', 'tool_event', 'done']
+    if (
+      streamingSessionId.value &&
+      streamingSessionId.value !== currentSessionId.value &&
+      _streamKinds.includes(frame.type)
+    ) {
+      return
+    }
     // 收到任何帧都说明服务端是活的 → 解除「首个响应超时」
     if (frame.type !== 'token_delta') _clearWatchdog()
     switch (frame.type) {
@@ -227,9 +272,13 @@ export const useChatStore = defineStore('chat', () => {
         _clearWatchdog()
         error.value = (frame.data.message as string) || '未知错误'
         isStreaming.value = false
+        regeneratingParentId.value = null
+        streamingSessionId.value = null
         break
       case 'done':
         _clearWatchdog()
+        regeneratingParentId.value = null
+        streamingSessionId.value = null
         // 标记思维链完成
         if (streamingReasoning.value) {
           reasoningDone.value = true
@@ -324,6 +373,7 @@ export const useChatStore = defineStore('chat', () => {
             reasoningDone.value = false
             processEvents.value = []
             isStreaming.value = false
+            streamingSessionId.value = null
             return
           }
           streamingContent.value += tokens[idx]
@@ -357,6 +407,9 @@ export const useChatStore = defineStore('chat', () => {
     // 既无文本也无附件时不发送
     if (!content.trim() && atts.length === 0) return
 
+    // 标记本次流式归属：用于丢弃切会话后迟到的旧会话帧
+    streamingSessionId.value = sessionId
+
     isStreaming.value = true
     error.value = null
     streamingContent.value = ''
@@ -383,6 +436,16 @@ export const useChatStore = defineStore('chat', () => {
     }
     if (!mockMode.value && !apiClient.ws.send(payload)) {
       error.value = '未连接到服务，消息未发送。请等待右下角连接状态恢复后重试。'
+      // 必须撤销乐观状态：isStreaming 在上面已被置 true，若这里直接 return，
+      // 服务端根本没收到请求、不会回 done/error，输入框与发送按钮将永久禁用。
+      // 同时清空流式过程中累积的中间态，避免下次发送时混入上一轮的残留。
+      isStreaming.value = false
+      streamingSessionId.value = null
+      streamingContent.value = ''
+      streamingReasoning.value = ''
+      reasoningDone.value = false
+      toolEvents.value = []
+      processEvents.value = []
       return
     }
     // 已在传输中（或在握手队列里）→ 启动看门狗兜底
@@ -407,6 +470,89 @@ export const useChatStore = defineStore('chat', () => {
 
     // 发送后清空待发送附件
     pendingAttachments.value = []
+  }
+
+  /**
+   * 重新回答：保留该提问下的全部历史答案版本，仅针对同一提问再生成一条新答案。
+   * 不删除任何旧问答对；后端据此新建一条 parent_id = userMsgId 的 assistant 答案。
+   */
+  async function regenerateAnswer(userMsgId: string, content: string, providerId: string) {
+    if (!currentSessionId.value) return
+    if (!userMsgId) return
+    if (isStreaming.value) return
+
+    const sessionId = currentSessionId.value
+    streamingSessionId.value = sessionId
+    isStreaming.value = true
+    error.value = null
+    streamingContent.value = ''
+    streamingReasoning.value = ''
+    reasoningDone.value = false
+    toolEvents.value = []
+    processEvents.value = []
+    attachmentWarning.value = ''
+    regeneratingParentId.value = userMsgId
+
+    const settingsStore = useSettingsStore()
+    const settings = settingsStore.sessionSettings
+
+    const payload = {
+      session_id: sessionId,
+      content,
+      provider_id: providerId || 'deepseek',
+      model: settings.model || undefined,
+      temperature: settings.temperature,
+      system_prompt: settings.system_prompt || undefined,
+      attachments: [],
+      // 关键：指向被重新生成的 user 消息，后端据此复用提问、仅新增一条答案版本
+      parent_message_id: userMsgId,
+    }
+
+    if (!mockMode.value && !apiClient.ws.send(payload)) {
+      error.value = '未连接到服务，消息未发送。请等待右下角连接状态恢复后重试。'
+      regeneratingParentId.value = null
+      streamingSessionId.value = null
+      isStreaming.value = false
+      return
+    }
+    _armWatchdog()
+
+    if (mockMode.value) {
+      _runMockRegenerate(content, userMsgId)
+      pendingAttachments.value = []
+      return
+    }
+  }
+
+  /** 模拟模式下「重新回答」：本地直接生成一条新答案版本（parent_id = userMsgId）。 */
+  function _runMockRegenerate(userContent: string, userMsgId: string) {
+    const fullReply = _generateMockReply(userContent)
+    const tokens = fullReply.split(/(\s+)/)
+    let idx = 0
+    mockTimer = setTimeout(function emitToken() {
+      if (idx >= tokens.length) {
+        messages.value.push({
+          id: Date.now().toString(),
+          session_id: currentSessionId.value || '',
+          role: 'assistant',
+          content: streamingContent.value,
+          tokens: 0,
+          parent_id: userMsgId,
+          created_at: new Date().toISOString(),
+        })
+        streamingContent.value = ''
+        streamingReasoning.value = ''
+        reasoningDone.value = false
+        processEvents.value = []
+        isStreaming.value = false
+        regeneratingParentId.value = null
+        streamingSessionId.value = null
+        return
+      }
+      streamingContent.value += tokens[idx]
+      idx++
+      mockTimer = setTimeout(emitToken, 30 + Math.random() * 40)
+    }, 300)
   }
 
   /** 上传若干文件为待发送附件（已在后端完成类型/大小/数量校验）。 */
@@ -451,6 +597,7 @@ export const useChatStore = defineStore('chat', () => {
       apiClient.ws.send({ type: 'stop', session_id: currentSessionId.value })
     }
     isStreaming.value = false
+    streamingSessionId.value = null
     if (streamingContent.value || streamingReasoning.value) {
       messages.value.push({
         id: Date.now().toString(),
@@ -550,6 +697,10 @@ export const useChatStore = defineStore('chat', () => {
     contextSnapshot,
     error,
     mockMode,
+    regeneratingParentId,
+    streamingSessionId,
+    pendingAutoSend,
+    pendingAutoSendSession,
     pendingAttachments,
     uploading,
     attachmentWarning,
@@ -563,6 +714,7 @@ export const useChatStore = defineStore('chat', () => {
     deleteSession,
     reloadMessages,
     deleteTurn,
+    regenerateAnswer,
     forkSession,
     importSession,
     handleWSFrame,

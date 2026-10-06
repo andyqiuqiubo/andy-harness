@@ -15,6 +15,8 @@ import ModelSelector from '../components/ModelSelector.vue'
 import MarkdownRenderer from '../components/MarkdownRenderer.vue'
 import ProcessTrace from '../components/ProcessTrace.vue'
 import type { Message, ProcessStep } from '../api/types'
+import { pickOnboardingTarget } from '../utils/onboarding'
+import { modelsForProvider } from '../utils/modelCatalog'
 
 const chatStore = useChatStore()
 const providerStore = useProviderStore()
@@ -24,7 +26,7 @@ const todoStore = useTodoStore()
 const { t } = useLanguage()
 
 const inputText = ref('')
-const selectedModel = ref(settingsStore.sessionSettings.model || 'deepseek-v4-flash')
+const selectedModel = ref(settingsStore.sessionSettings.model || 'deepseek-flash')
 const selectedProvider = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
 // 是否位于消息列表底部（用户上滑时停止自动滚动）
@@ -96,47 +98,34 @@ watch(inputText, () => {
   nextTick(autoResize)
 })
 
-// ── 历史消息归并 ──────────────────────────────────────────────
-// 规则（关键）：一次提问只产出**一个**可见答案气泡。以 user 消息为边界分组，
-// 每组 assistant 消息中只有**最后一条带正文**的渲染为答案气泡；它之前的带正文
-// assistant（如「我来帮您…」这种执行前过渡语）正文并入执行过程框，不再单独占
-// 气泡；所有 tool_calls 都归并进执行过程。这样既：①避免一个回答被拆成
-// 「过渡语气泡+最终结论气泡」两段（0.0.24 修复）；②保住 0.0.21——完整答案若与
-// 收尾工具同轮，那条仍是最后一条带正文，照常渲染为答案；③工具卡片不散落（0.0.23）。 ──
-interface DisplayItem {
-  kind: 'message' | 'process'
-  message?: Message
-  steps?: ProcessStep[]
+// ── 历史消息归并（按提问分组 + 重新回答版本） ──────────────
+// 一条「轮次（turn）」= 一个 user 提问 + 它名下所有 assistant 答案版本。
+// 重新回答会在同一 user 消息下再追加一条 parent_id 指向它的 assistant 答案，
+// 因此一个轮次可能有多条答案版本。每条版本 = 一段按时间排序的 assistant 消息中
+// 以「带正文的最终答案」结尾的切片；切片内该最终答案之前的中间消息（过渡语 /
+// 工具调用）作为这一版的「执行过程」归并展示（逻辑继承 0.0.24 的归并修复）。 ──
+interface Version {
+  answer: Message
+  steps: ProcessStep[]
+}
+interface Turn {
+  id: string
+  userMessage: Message
+  versions: Version[]
 }
 
-const displayItems = computed<DisplayItem[]>(() => {
-  const msgs = chatStore.messages
-  // 第一次倒序扫描：标记每条 assistant 是否为本组「最后一条带正文」（最终答案）。
-  // 以 user/system 消息为分组边界，每组只选最后一条带正文的 assistant 作为答案气泡。
-  const isFinalAnswer = new Set<number>()
-  let groupHasFinal = false
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    const m = msgs[i]
-    if (m.role === 'user' || m.role === 'system') { groupHasFinal = false; continue }
-    if (m.role !== 'assistant') continue
-    const hasText = !!(m.content || '').trim()
-    if (!groupHasFinal && hasText) {
-      isFinalAnswer.add(i)
-      groupHasFinal = true
+/** 把若干条中间 assistant 消息归并为「执行过程」步骤（思维链 / 说明 / 工具调用）。 */
+function toVersionSteps(msgs: Message[]): ProcessStep[] {
+  const steps: ProcessStep[] = []
+  for (const m of msgs) {
+    if (m.reasoning && m.reasoning.trim()) {
+      steps.push({ kind: 'reasoning', text: m.reasoning })
     }
-  }
-
-  const items: DisplayItem[] = []
-  let pending: ProcessStep[] = []
-  const flush = () => {
-    if (pending.length) {
-      items.push({ kind: 'process', steps: pending })
-      pending = []
+    if ((m.content || '').trim()) {
+      steps.push({ kind: 'text', text: m.content!.trim() })
     }
-  }
-  const pushToolSteps = (m: Message) => {
     for (const tc of m.tool_calls || []) {
-      pending.push({
+      steps.push({
         kind: 'tool',
         tool: {
           tool_name: tc.tool_name,
@@ -147,48 +136,151 @@ const displayItems = computed<DisplayItem[]>(() => {
       })
     }
   }
-  for (let i = 0; i < msgs.length; i++) {
-    const m = msgs[i]
-    if (m.role === 'user' || m.role === 'system') {
-      flush()
-      items.push({ kind: 'message', message: m })
-      continue
-    }
-    if (m.role !== 'assistant') continue // tool 角色由后端 API 过滤，兜底跳过
-    const hasTools = !!(m.tool_calls && m.tool_calls.length)
-    const hasText = !!(m.content || '').trim()
-    if (isFinalAnswer.has(i)) {
-      // 本组最终答案：思维链（整轮累积）作为过程步骤排在答案气泡之前；
-      // 附带的 tool_calls 仍归进执行过程
-      if (m.reasoning && m.reasoning.trim()) pending.push({ kind: 'reasoning', text: m.reasoning })
-      flush()
-      items.push({ kind: 'message', message: m })
-      if (hasTools) pushToolSteps(m)
-    } else {
-      // 过渡轮：正文（如有）作为说明并入执行过程，工具调用也并入
-      if (hasText) pending.push({ kind: 'text', text: m.content!.trim() })
-      if (hasTools) pushToolSteps(m)
+  return steps
+}
+
+const turns = computed<{ turns: Turn[]; standalone: Message[] }>(() => {
+  const msgs = chatStore.messages
+  const turnsList: Turn[] = []
+  const standalone: Message[] = []
+  const rawByTurn = new Map<string, Message[]>()
+  let currentUser: Message | null = null
+
+  // 第一遍：归类——user 开新轮次；system 单独渲染；assistant 按 parent_id（缺省回退当前 user）归桶
+  for (const m of msgs) {
+    if (m.role === 'user') {
+      currentUser = m
+      turnsList.push({ id: m.id, userMessage: m, versions: [] })
+      rawByTurn.set(m.id, [])
+    } else if (m.role === 'system') {
+      standalone.push(m)
+      currentUser = null
+    } else if (m.role === 'assistant') {
+      const key = m.parent_id ?? currentUser?.id
+      const bucket = key && rawByTurn.has(key) ? rawByTurn.get(key)! : currentUser && rawByTurn.has(currentUser.id) ? rawByTurn.get(currentUser.id)! : null
+      bucket?.push(m)
     }
   }
-  // 兜底：末尾残留的中间步骤（如被中断的轮次）
-  flush()
-  return items
+
+  // 第二遍：每个轮次把 assistant 按时间排序后，以「终答」切分为版本。
+  // 终答 = 无 tool_calls 且有正文的 assistant 消息；带 tool_calls 的消息
+  // （即使模型附带了过渡文字，如"我先查一下天气"）属于执行过程，
+  // 归入当前版本的 steps——否则一次重新回答会被拆成两个假版本。
+  for (const turn of turnsList) {
+    const raw = (rawByTurn.get(turn.id) || [])
+      .slice()
+      .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
+    const isFinalAnswer = (m: Message) =>
+      (m.content || '').trim() !== '' && !(m.tool_calls && m.tool_calls.length)
+    let segment: Message[] = []
+    for (const m of raw) {
+      segment.push(m)
+      if (isFinalAnswer(m)) {
+        turn.versions.push({
+          answer: m,
+          steps: toVersionSteps(segment.slice(0, -1)),
+        })
+        segment = []
+      }
+    }
+    // 末尾无终答的片段（如被中断的轮次）丢弃，不形成版本
+  }
+
+  return { turns: turnsList, standalone }
 })
 
-// 初始化 provider 选择：优先 deepseek
+/** 每轮当前选中版本下标（缺省指向最新版）。 */
+const selectedVersion = ref<Record<string, number>>({})
+/** 记录每轮历史版本数，用于「新增版本时自动跳到最新版」。 */
+const prevVersionCounts = ref<Record<string, number>>({})
+
+function versionIndex(turn: Turn): number {
+  const n = turn.versions.length
+  if (n === 0) return -1
+  const i = selectedVersion.value[turn.id]
+  if (i === undefined) return n - 1
+  return Math.min(Math.max(i, 0), n - 1)
+}
+
+function setVersion(turnId: string, idx: number) {
+  selectedVersion.value = { ...selectedVersion.value, [turnId]: idx }
+}
+
+function prevVersion(turn: Turn) {
+  const i = versionIndex(turn)
+  if (i > 0) setVersion(turn.id, i - 1)
+}
+
+function nextVersion(turn: Turn) {
+  const i = versionIndex(turn)
+  if (i < turn.versions.length - 1) setVersion(turn.id, i + 1)
+}
+
+// 轮次/版本数变化时：新增版本（重新回答）自动定位到最新版；下标越界则夹紧
+watch(
+  turns,
+  (val) => {
+    const nextSel = { ...selectedVersion.value }
+    const nextCnt = { ...prevVersionCounts.value }
+    for (const turn of val.turns) {
+      const n = turn.versions.length
+      const prev = nextCnt[turn.id] ?? n
+      if (n > prev) {
+        // 刚重新生成了一条新答案 → 自动展示最新版
+        nextSel[turn.id] = n - 1
+      } else {
+        const cur = nextSel[turn.id]
+        if (cur === undefined || cur > n - 1) nextSel[turn.id] = n - 1
+      }
+      nextCnt[turn.id] = n
+    }
+    selectedVersion.value = nextSel
+    prevVersionCounts.value = nextCnt
+  },
+)
+
+// 初始化 provider 选择：优先 deepseek（且已配置 Key、已启用）
 watch(() => providerStore.providers, (providers) => {
   if (providers.length > 0 && !selectedProvider.value) {
-    // 优先选择 deepseek
-    const deepseek = providers.find((p) => p.id === 'deepseek' || p.id.includes('deepseek'))
-    const enabled = providers.filter((p) => p.enabled !== false)
-    if (deepseek && deepseek.enabled !== false) {
+    const usable = providers.filter((p) => p.enabled !== false && p.has_api_key)
+    const deepseek = usable.find((p) => p.id === 'deepseek' || p.id.includes('deepseek'))
+    if (deepseek) {
       selectedProvider.value = deepseek.id
-    } else {
-      const target = enabled.length > 0 ? enabled[0] : providers[0]
-      selectedProvider.value = target.id
+    } else if (usable.length > 0) {
+      selectedProvider.value = usable[0].id
     }
   }
 }, { immediate: true })
+
+// ── 模型区三态（右上角 provider/模型选项） ──────────
+// unconfigured：没有任何 provider 配置 API Key → 仅显示「未配置模型」；
+// all-disabled：有配置但全部停用 → 仅显示「模型全部已停用」；
+// ready：至少一个已配置且启用 → 正常显示 provider + 模型下拉。
+const modelAreaState = computed<'loading' | 'unconfigured' | 'all-disabled' | 'ready'>(() => {
+  if (!providerStore.providersLoaded || providerStore.loadError) return 'loading'
+  const providers = providerStore.providers
+  if (providers.length === 0) return 'unconfigured'
+  if (!providers.some((p) => p.has_api_key)) return 'unconfigured'
+  if (!providers.some((p) => p.has_api_key && p.enabled !== false)) return 'all-disabled'
+  return 'ready'
+})
+
+// selectedModel 与所选 provider 的可用模型保持同步：
+// localStorage 里可能存着已下线的旧模型名（如 deepseek-v4-flash），
+// 不校正会让下拉显示为空白、发消息时模型 404。
+watch(
+  [selectedProvider, () => providerStore.providers],
+  () => {
+    if (modelAreaState.value !== 'ready' || !selectedProvider.value) return
+    const p = providerStore.providers.find((x) => x.id === selectedProvider.value)
+    const available = modelsForProvider(selectedProvider.value, p?.models || [])
+    if (available.length === 0) return
+    if (!available.some((o) => o.id === selectedModel.value)) {
+      selectedModel.value = available[0].id
+    }
+  },
+  { immediate: true },
+)
 
 // ── 人工确认（Human-in-the-loop） ──────────────────
 interface ConfirmRequest {
@@ -496,33 +588,27 @@ async function handleForkAt(msg: { id: string }) {
   }
 }
 
-/** 重新回答：定位该回答对应的用户提问，删除该轮后用原问题重新生成（原位重生成）。 */
-async function handleRetry(msg: { id: string }) {
+/** 重新回答：保留该提问下全部历史答案版本，仅针对同一提问再生成一条新答案。
+ *  优先用答案自身的 parent_id 定位提问；旧数据（无 parent_id）回退到向上找 user 消息。 */
+function handleRetry(msg: { id: string; parent_id?: string | null }) {
   if (chatStore.isStreaming) return
   const list = chatStore.messages
-  const idx = list.findIndex((m) => m.id === msg.id)
-  if (idx < 0) return
-  // 向上找到紧邻的用户提问
-  let question = ''
-  let userMsgId = ''
-  for (let i = idx - 1; i >= 0; i--) {
-    if (list[i].role === 'user') {
-      question = list[i].content || ''
-      userMsgId = list[i].id
-      break
+  let userMsgId = msg.parent_id || ''
+  if (!userMsgId) {
+    const idx = list.findIndex((m) => m.id === msg.id)
+    if (idx < 0) return
+    for (let i = idx - 1; i >= 0; i--) {
+      if (list[i].role === 'user') {
+        userMsgId = list[i].id
+        break
+      }
     }
   }
-  if (!question || !userMsgId) return
+  if (!userMsgId) return
+  const userMsg = list.find((m) => m.id === userMsgId)
+  const content = userMsg?.content || ''
   try {
-    // 删除该轮（提问 + 回答 + 工具消息），仅影响这一轮，不波及后续
-    await chatStore.deleteTurn(userMsgId)
-    // 用原问题重新发送，原地生成一份新回答
-    chatStore.sendMessage(
-      question,
-      selectedProvider.value,
-      selectedModel.value || undefined,
-      [],
-    )
+    chatStore.regenerateAnswer(userMsgId, content, selectedProvider.value)
     scrollToBottom()
   } catch (e) {
     window.alert(t.value('chat.retryFail') + ': ' + e)
@@ -532,6 +618,98 @@ async function handleRetry(msg: { id: string }) {
 // 停止生成
 function handleStop() {
   chatStore.stopStreaming()
+}
+
+// 工具箱下拉（5 大功能入口）
+const showToolbox = ref(false)
+
+// ── 模板实例化后的首条提问：WS 就绪即自动发送（走正常链路才有回答） ──
+function tryFlushPendingAutoSend() {
+  const text = chatStore.pendingAutoSend
+  if (!text) return
+  // 已流式中 / 未选中 provider：保持待发，等下一个触发点
+  if (chatStore.isStreaming || !selectedProvider.value) return
+  // 目标会话必须正是当前会话（用户中途切走则不误发）
+  if (chatStore.pendingAutoSendSession && chatStore.currentSessionId !== chatStore.pendingAutoSendSession) {
+    return
+  }
+  // 真实对话要求 WS 已连接（模拟模式不发 WS）
+  if (!chatStore.mockMode && wsConnectionStatus.value !== 'connected') return
+  // 防重：用户若已手动发过同一内容，直接清空待发
+  const alreadySent = chatStore.messages.some((m) => m.role === 'user' && m.content === text)
+  if (alreadySent) {
+    chatStore.pendingAutoSend = ''
+    chatStore.pendingAutoSendSession = null
+    return
+  }
+  chatStore.pendingAutoSend = ''
+  chatStore.pendingAutoSendSession = null
+  chatStore.sendMessage(
+    text,
+    selectedProvider.value,
+    selectedModel.value || undefined,
+  )
+  scrollToBottom()
+}
+
+// WS 连接状态变化 + 会话切换 + provider 就绪时，尝试冲刷待发提问
+watch([() => wsConnectionStatus.value, () => chatStore.currentSessionId, () => selectedProvider.value], () => {
+  if (wsConnectionStatus.value === 'connected') {
+    nextTick(() => tryFlushPendingAutoSend())
+  }
+}, { immediate: true })
+
+// ── 首次使用引导：配置 DeepSeek API Key（会话页内直接完成，不跳页） ──
+const onboardingKey = ref('')
+const onboardingSaving = ref(false)
+const onboardingError = ref('')
+const onboardingDismissed = ref(false)
+const onboardingDone = ref(false)
+
+const onboarding = computed(() =>
+  pickOnboardingTarget(providerStore.providers, chatStore.mockMode),
+)
+const showOnboarding = computed(
+  () =>
+    onboarding.value.needed &&
+    !onboardingDismissed.value &&
+    !onboardingDone.value,
+)
+
+/** 保存引导卡里填入的 API Key（PATCH 保存后刷新状态，并做一次弱连通性校验）。 */
+async function saveOnboardingKey() {
+  const target = onboarding.value.provider
+  const key = onboardingKey.value.trim()
+  if (!target || !key || onboardingSaving.value) return
+  onboardingSaving.value = true
+  onboardingError.value = ''
+  try {
+    await apiClient.patch(`/providers/${target.id}`, { api_key: key })
+    await providerStore.loadProviders()
+    if (!chatStore.currentSessionId) {
+      // 尚无会话时先建一条，保存后立即可发消息
+      await chatStore.createSession()
+    }
+    onboardingDone.value = true
+    onboardingKey.value = ''
+    scrollToBottom()
+    // 弱校验：连通性失败只提示，不回滚（Key 已保存，可能只是网络问题）
+    try {
+      const res = await apiClient.post<{ connected: boolean }>(
+        `/providers/${target.id}/test`,
+        {},
+      )
+      if (res && res.connected === false) {
+        chatStore.error = t.value('chat.onboardTestWarn')
+      }
+    } catch {
+      // test 端点不可用时忽略
+    }
+  } catch (e) {
+    onboardingError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    onboardingSaving.value = false
+  }
 }
 
 // 监听消息变化自动滚动（仅当用户停在底部时；上滑查看历史则停止跟随）
@@ -606,18 +784,36 @@ onUnmounted(() => {
             </svg>
             <span>{{ chatStore.mockMode ? '模拟中' : '模拟' }}</span>
           </button>
-          <div class="select-wrapper">
-            <select v-model="selectedProvider" class="provider-select">
-              <option v-for="p in providerStore.providers" :key="p.id" :value="p.id">
-                {{ p.name }}
-              </option>
-            </select>
-            <svg class="select-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none">
-              <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </div>
-          <ModelSelector v-model="selectedModel" :provider="selectedProvider" />
-          <div class="conn-status" :class="`status-${wsConnectionStatus}`">
+          <!-- 模型区三态：未配置 / 全部停用 时仅显示提示文字，否则显示 provider + 模型下拉 -->
+          <template v-if="modelAreaState === 'ready'">
+            <div class="select-wrapper">
+              <select v-model="selectedProvider" class="provider-select">
+                <option v-for="p in providerStore.providers" :key="p.id" :value="p.id">
+                  {{ p.name }}
+                </option>
+              </select>
+              <svg class="select-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none">
+                <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <ModelSelector v-model="selectedModel" :provider="selectedProvider" />
+          </template>
+          <span
+            v-else-if="modelAreaState === 'unconfigured'"
+            class="model-area-hint"
+            :title="t('chat.noModelHint')"
+          >{{ t('chat.noModelConfigured') }}</span>
+          <span
+            v-else-if="modelAreaState === 'all-disabled'"
+            class="model-area-hint"
+            :title="t('chat.allDisabledHint')"
+          >{{ t('chat.allModelsDisabled') }}</span>
+          <!-- 连接状态：仅模型可用时展示（未配置/全部停用时避免与模型状态文案冲突） -->
+          <div
+            v-if="modelAreaState === 'ready'"
+            class="conn-status"
+            :class="`status-${wsConnectionStatus}`"
+          >
             <span class="conn-dot"></span>
             <span class="conn-text">{{ statusText(wsConnectionStatus) }}</span>
           </div>
@@ -633,6 +829,37 @@ onUnmounted(() => {
               <line x1="21" y1="12" x2="9" y2="12" />
             </svg>
           </button>
+          <!-- 工具箱：5 大功能的会话页入口（下拉收纳，避免头部拥挤） -->
+          <div class="toolbox-wrap">
+            <button
+              :class="['btn-settings', { active: showToolbox }]"
+              :title="t('chat.toolbox')"
+              @click="showToolbox = !showToolbox"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
+                <rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" />
+              </svg>
+            </button>
+            <div v-if="showToolbox" class="toolbox-backdrop" @click="showToolbox = false"></div>
+            <div v-if="showToolbox" class="toolbox-menu">
+              <router-link to="/insights" class="toolbox-item" @click="showToolbox = false">
+                <span>📊</span><span>{{ t('nav.insights') }}</span>
+              </router-link>
+              <router-link to="/evals" class="toolbox-item" @click="showToolbox = false">
+                <span>🎯</span><span>{{ t('nav.evals') }}</span>
+              </router-link>
+              <router-link to="/workflows" class="toolbox-item" @click="showToolbox = false">
+                <span>🔀</span><span>{{ t('nav.workflows') }}</span>
+              </router-link>
+              <router-link to="/templates" class="toolbox-item" @click="showToolbox = false">
+                <span>📦</span><span>{{ t('nav.templates') }}</span>
+              </router-link>
+              <router-link to="/devkit" class="toolbox-item" @click="showToolbox = false">
+                <span>🧩</span><span>{{ t('nav.devkit') }}</span>
+              </router-link>
+            </div>
+          </div>
           <router-link to="/settings" class="btn-settings" title="设置">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3" />
@@ -671,19 +898,106 @@ onUnmounted(() => {
       <!-- Messages -->
       <div ref="messagesContainer" class="messages-container" @scroll="onMessagesScroll">
         <div class="messages-inner">
-          <!-- 历史消息：中间步骤归并为「执行过程」过程框（默认收缩），答案正常展示 -->
-          <template v-for="(item, idx) in displayItems" :key="item.kind === 'message' ? `m-${item.message!.id}` : `p-${idx}`">
+          <!-- 首次使用引导：未配置任何 API Key 时，在会话页内直接完成 DeepSeek 配置 -->
+          <div v-if="showOnboarding" class="onboarding-card" :class="{ done: onboardingDone }">
+            <div class="onboarding-head">
+              <svg class="onboarding-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M15 7h3a5 5 0 0 1 5 5 5 5 0 0 1-5 5h-3m-6 0H6a5 5 0 0 1-5-5 5 5 0 0 1 5-5h3" />
+                <line x1="8" y1="12" x2="16" y2="12" />
+              </svg>
+              <div class="onboarding-title-wrap">
+                <h3 class="onboarding-title">{{ t('chat.onboardTitle') }}</h3>
+                <p class="onboarding-desc">
+                  {{ t('chat.onboardDesc') }}
+                  <a href="https://platform.deepseek.com" target="_blank" rel="noopener" class="onboarding-link">
+                    {{ t('chat.onboardGetKey') }}
+                  </a>
+                </p>
+              </div>
+            </div>
+            <div v-if="onboarding.provider" class="onboarding-form">
+              <input
+                v-model="onboardingKey"
+                type="password"
+                class="onboarding-input"
+                :placeholder="t('chat.onboardKeyPh')"
+                autocomplete="off"
+                @keydown.enter="saveOnboardingKey"
+              />
+              <button class="btn-primary onboarding-save" :disabled="!onboardingKey.trim() || onboardingSaving" @click="saveOnboardingKey">
+                {{ onboardingSaving ? t('chat.onboardSaving') : t('chat.onboardSave') }}
+              </button>
+            </div>
+            <p v-if="onboardingError" class="onboarding-error">{{ onboardingError }}</p>
+            <div class="onboarding-foot">
+              <router-link to="/settings" class="onboarding-ghost-link">{{ t('chat.onboardToSettings') }}</router-link>
+              <button class="onboarding-later" @click="onboardingDismissed = true">
+                {{ t('chat.onboardLater') }}
+              </button>
+            </div>
+          </div>
+
+          <!-- 历史消息：按提问分组为多版本问答对。每个提问只展示一次，
+               其下可有多个答案版本，用 ‹ i/N › 在版本间切换（旧版本保留不删除）。 -->
+          <template v-for="turn in turns.turns" :key="`turn-${turn.id}`">
+            <!-- 提问气泡（用户消息） -->
             <MessageItem
-              v-if="item.kind === 'message'"
-              :message="item.message!"
+              :message="turn.userMessage"
               @delete-turn="handleDeleteTurn"
               @follow-up="handleFollowUp"
               @fork="handleForkAt"
-              @retry="handleRetry"
             />
-            <div v-else class="history-process-row">
-              <ProcessTrace :steps="item.steps || []" />
-            </div>
+
+            <template v-if="turn.versions.length">
+              <!-- 版本导航：仅当存在多个答案版本时显示 -->
+              <div v-if="turn.versions.length > 1" class="version-nav">
+                <button
+                  class="icon-btn"
+                  :disabled="versionIndex(turn) === 0"
+                  :title="t('chat.versionPrev')"
+                  @click="prevVersion(turn)"
+                >
+                  &lt;
+                </button>
+                <span class="version-label">
+                  {{ t('chat.versionLabel').replace('{0}', String(versionIndex(turn) + 1)).replace('{1}', String(turn.versions.length)) }}
+                </span>
+                <button
+                  class="icon-btn"
+                  :disabled="versionIndex(turn) === turn.versions.length - 1"
+                  :title="t('chat.versionNext')"
+                  @click="nextVersion(turn)"
+                >
+                  &gt;
+                </button>
+              </div>
+
+              <!-- 重新生成中提示 -->
+              <div v-if="chatStore.regeneratingParentId === turn.id" class="version-regenerating">
+                {{ t('chat.regenerating') }}
+              </div>
+
+              <!-- 当前版本的执行过程（思维链 / 工具调用） -->
+              <div
+                v-if="turn.versions[versionIndex(turn)]?.steps?.length"
+                class="history-process-row"
+              >
+                <ProcessTrace :steps="turn.versions[versionIndex(turn)].steps" />
+              </div>
+
+              <!-- 当前版本的回答 -->
+              <MessageItem
+                :message="turn.versions[versionIndex(turn)].answer"
+                @retry="handleRetry"
+                @follow-up="handleFollowUp"
+                @fork="handleForkAt"
+              />
+            </template>
+          </template>
+
+          <!-- 系统消息单独渲染（不属于任何提问轮次） -->
+          <template v-for="sys in turns.standalone" :key="`sys-${sys.id}`">
+            <MessageItem :message="sys" />
           </template>
 
           <!-- 流式渲染中：思维链 + 工具调用统一进「执行过程」框实时展示；
@@ -1025,6 +1339,68 @@ onUnmounted(() => {
   color: var(--color-text-secondary);
 }
 
+/* 模型区三态提示文字（未配置 / 全部停用） */
+.model-area-hint {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  padding: 6px 12px;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-md);
+  white-space: nowrap;
+  cursor: help;
+}
+
+/* ── 工具箱下拉（5 大功能入口） ── */
+.toolbox-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.toolbox-wrap .btn-settings.active {
+  background: var(--bg-hover);
+  color: var(--color-primary);
+}
+
+.toolbox-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+}
+
+.toolbox-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 100;
+  min-width: 190px;
+  padding: 6px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xl);
+  display: flex;
+  flex-direction: column;
+  animation: fadeIn var(--transition-fast) ease-out;
+}
+
+.toolbox-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  text-decoration: none;
+  font-size: var(--font-size-sm);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.toolbox-item:hover {
+  background: var(--bg-hover);
+  color: var(--color-primary);
+}
+
 /* ── Connection status ── */
 .conn-status {
   display: flex;
@@ -1140,6 +1516,141 @@ onUnmounted(() => {
   width: 100%;
 }
 
+/* ── 首次使用引导卡（配置 API Key） ── */
+.onboarding-card {
+  margin: var(--space-md) 0 var(--space-lg);
+  padding: var(--space-md) var(--space-lg);
+  background: var(--bg-surface);
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md), 0 0 24px rgba(99, 102, 241, 0.12);
+  animation: slideUp var(--transition-base) ease-out;
+}
+
+.onboarding-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+}
+
+.onboarding-icon {
+  width: 22px;
+  height: 22px;
+  color: var(--color-primary);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.onboarding-title {
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.onboarding-desc {
+  margin: 4px 0 0;
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+.onboarding-link {
+  color: var(--color-primary);
+  text-decoration: none;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.onboarding-link:hover {
+  text-decoration: underline;
+}
+
+.onboarding-form {
+  display: flex;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+}
+
+.onboarding-input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-family: var(--font-mono, monospace);
+  transition: border-color var(--transition-base), box-shadow var(--transition-base);
+}
+
+.onboarding-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-light);
+}
+
+.onboarding-save {
+  flex-shrink: 0;
+  padding: 9px 18px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark));
+  color: var(--color-text-inverse);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform var(--transition-base), box-shadow var(--transition-base), opacity var(--transition-base);
+}
+
+.onboarding-save:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-primary);
+}
+
+.onboarding-save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.onboarding-error {
+  margin: var(--space-sm) 0 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-danger);
+}
+
+.onboarding-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+}
+
+.onboarding-ghost-link {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  text-decoration: none;
+}
+
+.onboarding-ghost-link:hover {
+  color: var(--color-primary);
+}
+
+.onboarding-later {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  padding: 2px 6px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+
+.onboarding-later:hover {
+  color: var(--color-text-secondary);
+}
+
 /* ── Streaming message ── */
 .streaming-message {
   display: flex;
@@ -1172,6 +1683,71 @@ onUnmounted(() => {
   margin: var(--space-sm) 0;
   margin-left: 48px;
   max-width: calc(100% - 48px);
+}
+
+/* ── 重新回答版本导航（‹ i/N ›） ── */
+.version-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin: var(--space-xs) 0 0;
+  margin-left: 48px;
+  max-width: calc(100% - 48px);
+}
+
+.version-nav .icon-btn {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-md);
+  font-weight: 700;
+  line-height: 1;
+  opacity: 1;
+}
+
+.version-nav .icon-btn:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: var(--bg-hover);
+}
+
+.version-nav .icon-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.version-label {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: var(--bg-tag);
+  white-space: nowrap;
+}
+
+.version-regenerating {
+  margin: var(--space-xs) 0 0;
+  margin-left: 48px;
+  max-width: calc(100% - 48px);
+  font-size: var(--font-size-xs);
+  color: var(--color-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.version-regenerating::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  animation: pulse 1.2s ease-in-out infinite;
 }
 
 .streaming-content {
@@ -1899,6 +2475,12 @@ onUnmounted(() => {
 
   /* 移动端：历史过程行与消息体对齐（头像 30px + 间距） */
   .history-process-row {
+    margin-left: 38px;
+    max-width: calc(100% - 38px);
+  }
+
+  .version-nav,
+  .version-regenerating {
     margin-left: 38px;
     max-width: calc(100% - 38px);
   }

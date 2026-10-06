@@ -65,7 +65,7 @@ export const useSettingsStore = defineStore('settings', () => {
   )
 
   const sessionSettings = ref<SessionSettings>({
-    model: localStorage.getItem('session_model') || 'deepseek-v4-flash',
+    model: localStorage.getItem('session_model') || 'deepseek-flash',
     temperature: parseFloat(localStorage.getItem('session_temperature') || '0.7'),
     system_prompt: localStorage.getItem('session_system_prompt') || '',
   })

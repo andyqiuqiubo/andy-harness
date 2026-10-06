@@ -20,6 +20,8 @@ export interface Message {
   usage?: TokenUsage
   reasoning?: string
   created_at: string
+  /** 重新回答：本答案所回答的 user 消息 id（非重新回答产生的答案为 null/缺省）。 */
+  parent_id?: string | null
 }
 
 /** 附件公开元信息（不含存储路径，与后端 AttachmentRepository.create 对齐）。 */
