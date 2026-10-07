@@ -115,3 +115,16 @@ desktop/src-tauri/gen/
 # 临时文件
 *.tmp
 *.bak
+
+# ───────────────────────────────────────────────
+# 项目说明性 / 临时性文档（不纳入版本管理）
+# 仅保留：README.md、DISCLAIMER.md、docs/andy-harness-v1.0.0用户使用手册.md
+# ───────────────────────────────────────────────
+README-UPDATE-*.md
+CHANGELOG.md
+CONTRIBUTING.md
+ENHANCEMENTS.md
+01-architecture.md
+02-development-plan.md
+docs/*.md
+!docs/andy-harness-v1.0.0用户使用手册.md
