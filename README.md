@@ -489,7 +489,7 @@ Jev 是 TypeSafe AI 的结构化决策模型，支持三种原语：
 5. 安装后插件出现在插件管理列表，可启用/停用/配置；卸载后可从市场随时重装
 6. 系统内置插件默认为系统插件，不显示删除按钮；仅市场安装的插件可卸载
 
-> 想要自己开发插件发布到市场，参考[插件开发指南](docs/plugin-dev-guide.md)。
+> 想要自己开发插件发布到市场：用 DevKit 工作台（`/devkit`）生成插件脚手架，或直接以 `backend/plugins/` 内置插件（如 `tool_calculator`、`integration_hub`）为模板照抄结构。
 
 ### 切换主题
 
@@ -645,11 +645,11 @@ cd backend && uv run python -m harness.eval --cases tests/evals/eval_cases.json
 
 **Q: 如何接入新的模型厂商？**
 
-A: 创建一个 Provider 插件，继承 `OpenAICompatibleProvider`，设置 `base_url` 和 `default_models`。详见[插件开发指南](docs/plugin-dev-guide.md#2-后端-provider-插件开发)。
+A: 创建一个 Provider 插件，继承 `OpenAICompatibleProvider`，设置 `base_url` 和 `default_models`。可参考 `backend/plugins/provider_deepseek/` 源码。
 
 **Q: 如何让 AI 调用自定义工具？**
 
-A: 创建一个 Tool 插件，实现 `ToolPlugin` 契约（tool_name / description / parameters_schema / execute）。安装后 AI 会自动根据 description 判断何时调用。详见[插件开发指南](docs/plugin-dev-guide.md#1-后端工具插件开发)。
+A: 创建一个 Tool 插件，实现 `ToolPlugin` 契约（tool_name / description / parameters_schema / execute）。安装后 AI 会自动根据 description 判断何时调用。可参考 `backend/plugins/tool_calculator/` 源码。
 
 **Q: 插件需要重启服务才能生效吗？**
 
