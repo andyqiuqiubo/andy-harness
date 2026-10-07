@@ -8,16 +8,18 @@
 [![Vue 3](https://img.shields.io/badge/Vue-3.5-green.svg)](https://vuejs.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141-009688.svg)](https://fastapi.tiangolo.com/)
 
+> ⚠️ **免责声明（务必阅读）**：本软件由 AI 驱动，运行会产生 **Token 消耗与相应费用**，并可通过工具与 **Computer Use 自动操控你的电脑**（存在误操作系统、数据被修改、凭据泄露等安全风险）。使用前请务必阅读 [免责声明 DISCLAIMER.md](DISCLAIMER.md)，充分了解其功能与安全风险，并遵守中国对 AI 使用者的相关规定。
+
 ---
 
 ## 项目状态
 
-- **当前版本：v1.0.0（开发者预览版）** —— 首个对外版本号，完整变更见 [CHANGELOG](CHANGELOG.md) 与 [发布清单](docs/RELEASE-v1.0.0.md)；1.0.0 之后已增量落地**工作流编排 / 模板分享中心 / 洞察看板 / 评测实验室 / 插件开发者工作台 / 集成中心（飞书）/ 权限审计**等新能力（见 CHANGELOG「未发布」节）。
+- **当前版本：v1.0.0（开发者预览版）** —— 首个对外版本号，完整变更见 [GitHub Releases](https://github.com/andyqiuqiubo/andy-harness/releases)；1.0.0 之后已增量落地**工作流编排 / 模板分享中心 / 洞察看板 / 评测实验室 / 插件开发者工作台 / 集成中心（飞书）/ 权限审计**等新能力（详见下方功能特性）。
 - 上手请先读 [用户使用手册](docs/andy-harness-v1.0.0用户使用手册.md)（图文、含 16 张界面截图）。
 - 本仓库由作者在 **Windows 10** 个人 PC 下创建与开发，**尚未在 macOS / Linux 等其他操作系统上验证**，跨平台运行存在未知风险。
 - 目前仅对 **DeepSeek `deepseek-v4-flash`** 模型做了深度调试与联调；Qwen / Doubao 等其它模型尚未充分验证，实际使用时可能遇到预期外的问题。
 - 部分能力后端已实现但**暂无界面入口**（渠道 / Computer Use / Jev / 断点续跑 / 用户管理），具体见手册第 10 节与下方功能特性中的标注。
-- **质量门禁现状（2026-10-07 实测）**：后端 `ruff check` / `ruff format --check` / `mypy --strict`（125 个源文件）/ `pytest`（742 passed、2 skipped）全通过；前端 `eslint` / `vitest`（57 用例）/ `vue-tsc` / `vite build` 全通过。CI 两个 job 均为绿。仍存的预览版限制（前端包体未分包、渠道 / Computer Use / Jev / 断点续跑 / 用户管理无 UI 入口、Docker 前端未配反向代理、仅 Windows + 仅 DeepSeek 联调）见[发布前全项目分析报告](docs/ANALYSIS-v1.0.0-2026-10-01.md)。
+- **质量门禁现状（2026-10-07 实测）**：后端 `ruff check` / `ruff format --check` / `mypy --strict`（125 个源文件）/ `pytest`（742 passed、2 skipped）全通过；前端 `eslint` / `vitest`（57 用例）/ `vue-tsc` / `vite build` 全通过。CI 两个 job 均为绿。另于 2026-10-06 完成全项目系统性验证（静态检查 + 单测 + 前端单测 + 构建 + 前后端契约校验 + 23 步端到端冒烟），修复严重 bug / 功能缺口 / 前后端联动共 **20 项**（含外部包安装 git/HTTP 拉取超时与事件循环阻塞这一致命缺陷），详见全项目系统性验证与修复总结（2026-10-06，本地留存不入库）。仍存的预览版限制（前端包体未分包、渠道 / Computer Use / Jev / 断点续跑 / 用户管理无 UI 入口、Docker 前端未配反向代理、仅 Windows + 仅 DeepSeek 联调）见下方[已知问题与注意事项](#已知问题与注意事项)。
 
 ---
 
@@ -75,8 +77,6 @@
 - **插件开发者工作台（DevKit）**：面向二次开发者的插件脚手架与开发辅助工具，入口 `/devkit`
 - **集成中心（Integration Hub）**：飞书三模式接入——`api`（app_id/app_secret 直调开放接口）/ `cli`（lark-cli 子进程）/ `channel`（WebSocket 长连，群里 @机器人即答，可选 `feishu` extra：`lark-oapi>=1.7.0`）；出网代理经 `backend/.env.local` 注入（已 git-ignore，启动脚本与后端统一读取）
 - **权限审计与审计日志**：管理员校验（`require_admin`）之上记录状态变更审计事件，设置页「审计日志」标签可查询操作流水
-
-> 想了解本项目相对业界Harness的能力差距与后续规划，见 [能力增强清单](ENHANCEMENTS.md)。
 
 ---
 
@@ -212,8 +212,8 @@ docker-compose up -d     # Compose V1 旧独立命令
 | `pnpm install` | **253 个包，耗时 1 分 51 秒** |
 | 安装后磁盘占用 | 前端 `node_modules` **802.9 MB**；整个项目目录（含缓存）**约 2.1 GB** |
 | 启动耗时 | 后端就绪 < 10 秒；前端 Vite 就绪约 1 秒 |
-| 质量门禁 | `ruff check` ✅ / `ruff format --check` ✅（264 文件）/ `mypy --strict` ✅（**104 个源文件**）/ `eslint` ✅ / `vitest` ✅（**43 个用例**）/ `pnpm build` ✅ |
-| `pytest` | **593 passed, 2 skipped**（⚠️ 必须先 `pnpm build`，否则多 1 个 failed，见踩坑 8） |
+| 质量门禁 | `ruff check` ✅ / `ruff format --check` ✅（264 文件）/ `mypy --strict` ✅（**125 个源文件**）/ `eslint` ✅ / `vitest` ✅（**57 个用例**）/ `pnpm build` ✅ |
+| `pytest` | **742 passed, 2 skipped**（⚠️ 必须先 `pnpm build`，否则多 1 个 failed，见踩坑 8） |
 | 插件加载 | 启动日志：**34 个插件**已加载并激活 |
 
 ### 完整流程（Windows PowerShell，复制即可）
@@ -321,7 +321,7 @@ Jev Manager 已激活，但未配置 API Key。请在设置页面配置 jev_mana
 | 5 | 想改用 `npm install` | 仓库用 `pnpm-lock.yaml` 锁版本，npm 会重新解析依赖 | 坚持用 pnpm 9+（CI 用 10） |
 | 6 | `make install` 报 `command not found` | Windows / Git for Windows 不自带 `make` | 不装 make，直接用 `uv sync` + `pnpm install`；或 `choco install make` |
 | 7 | `make clean` 报错 | Makefile 里用的是 `rm -rf`，Windows 无此命令 | 手动删 `backend\.venv`、`frontend\node_modules`、`frontend\dist` 等 |
-| 8 | 干净克隆后 `pytest` 出现 **1 failed** | `test_desktop_shell.py::test_tauri_conf_is_valid_and_grounded` 断言 `frontend/dist` 存在，此时尚未构建前端 | 先 `cd frontend && pnpm build` 再跑 `pytest` → 实测变为 **593 passed, 2 skipped** |
+| 8 | 干净克隆后 `pytest` 出现 **1 failed** | `test_desktop_shell.py::test_tauri_conf_is_valid_and_grounded` 断言 `frontend/dist` 存在，此时尚未构建前端 | 先 `cd frontend && pnpm build` 再跑 `pytest` → 实测变为 **742 passed, 2 skipped** |
 | 9 | 浏览器打不开 `http://127.0.0.1:5173` | Vite 默认只绑 `localhost`，Windows 上解析为 IPv6 `[::1]` | 地址栏用 **`http://localhost:5173`**；或启动时显式 `pnpm exec vite --host 127.0.0.1` |
 | 10 | 按「Node.js 22+」装了 Node 22.0 却起不来 | Vite 8 的真实要求是 `^20.19.0 \|\| >=22.12.0` | 用 Node **22.12+**（或 20.19+）；实测 Node 24 正常 |
 | 11 | `start-all.bat` 一闪就退，提示「系统找不到指定的路径」 | 没先装依赖（仓库不含 `.venv` / `node_modules`） | 先执行安装步骤；`start-all.bat` **不会**自动装依赖，只复用已有环境 |
@@ -516,6 +516,35 @@ Computer Use 是本项目的一等目标（操控整个本机桌面，浏览器�
 
 ---
 
+## 已知问题与注意事项
+
+> 本项目为 **v1.0.0 开发者预览版**。以下为当前已知限制与使用注意事项——多数非代码缺陷，但使用前请知悉，避免误判为 bug。
+
+### 已知限制（预览版）
+
+- **平台与模型验证范围有限**：仅在 **Windows 10** 个人 PC 下创建与验证，跨平台运行存在未知风险；仅对 **DeepSeek `deepseek-v4-flash`** 做过深度联调，Qwen / Doubao 等其它模型尚未充分验证，实际使用时可能遇到预期外问题。
+- **部分能力暂无界面入口（仅 REST API）**：渠道（Webhook / Telegram）、Computer Use、Jev 决策、Checkpoint 断点续跑、用户 / 权限的创建与管理目前没有 GUI 入口，需调用对应 REST 接口（详见[用户使用手册](docs/andy-harness-v1.0.0用户使用手册.md)）。
+- **前端包体未分包**：`vite build` 产物为单一 chunk（约 1.3 MB / gzip ≈ 440 KB），首屏体积偏大但不影响功能。
+- **Docker 部署尚未端到端验证**：前端镜像用静态服务器 `serve -s dist` 托管，**未配置 `/api` 与 `/ws` 反向代理**，容器模式下页面能打开但连不上后端；`docker-compose.yml` 端口已绑定 `127.0.0.1`。如需容器化联调，请自行加 nginx 反向代理（见 [Docker 部署](#docker-部署) 节）。
+- **桌面壳数据目录覆盖不完整**：桌面壳模式的数据目录仅覆盖 `harness.db` 与 `attachments/`（经 `HARNESS_DB_PATH` / `HARNESS_ATTACHMENTS_DIR`），`auth_secret.txt`、`permission.json`、`skill_state.json`、`settings.json` 与制品目录仍写在仓库 `backend/data/` 下（装机到只读目录时需留意）。
+
+### 使用注意事项
+
+- **运行后端测试前必须构建前端**：`pytest` 中 `test_desktop_shell.py` 等会断言 `frontend/dist` 存在；请先 `cd frontend && pnpm build` 再跑 `pytest`，否则会出现 1 个 `failed`（`pnpm build` 后全绿，742 passed, 2 skipped）。
+- **访问地址用 `localhost` 而非 `127.0.0.1`**：Vite 默认只绑定 `localhost`（Windows 解析为 IPv6 `[::1]`），`http://127.0.0.1:5173` 会连不上。
+- **依赖安装用 pnpm，不要用 npm**：仓库以 `pnpm-lock.yaml` 锁版本，`npm install` 会重新解析依赖。
+- **Windows 下 `make` 不可用**：直接用 `uv sync` + `pnpm install` + 双击 `start-all.bat`；或装 `choco install make` 后用 `make`。
+- **外部包安装已内置超时（120s）**：从 zip / git / http(s) 安装第三方插件或技能时，若源不可达（离线 / 代理 502 / 私有仓库等待凭据等），拉取会在 120 秒（可用 `HARNESS_PKG_INSTALL_TIMEOUT` 调整）后失败返回，不再无限挂起请求。
+- **删除会话会级联清理**：删除会话会一并清理其制品（含磁盘大文件）、运行记录、渠道映射与会话级记忆，操作不可恢复，请确认后再删。
+
+### 后续排期（已验证但本轮未改动）
+
+- 数据库 `artifacts` / `agent_runs` / `channel_links` / `memories` / `eval_runs` 表尚未补 `ON DELETE CASCADE` 外键（当前已在服务层做级联清理作为第一道防线）。
+- 全量 `pytest` 单次运行耗时较长（>80 min），建议后续引入 `pytest-xdist` 并行或按目录拆分 CI job。
+- 验证新增的 `scripts/smoke_e2e.py`（23 步端到端冒烟）与 `scripts/check_fe_be_contract.py`（前后端契约校验）建议保留并接入 CI。
+
+---
+
 ## 项目结构
 
 ```
@@ -524,17 +553,17 @@ andy-harness/
 │   ├── harness/       # 核心代码
 │   │   ├── kernel/    # L4 内核（插件加载/事件总线/服务注册/钩子/契约）
 │   │   ├── engine/    # L3 Agent 引擎（循环/工具/钩子/断点续跑 checkpoint）
-│   │   ├── modules/   # L2 业务模块（18 个：会话/上下文/模型/沙箱/记忆/技能/MCP/权限/认证/渠道/调度/轨迹/制品/附件/待办/子代理/编排/打包安装）
+│   │   ├── modules/   # L2 业务模块（23 个：会话/上下文/模型/沙箱/记忆/技能/MCP/权限/认证/渠道/调度/轨迹/制品/附件/待办/子代理/编排/打包安装/模板/工作流/评测/洞察/集成）
 │   │   ├── api/       # L1 REST + WebSocket（rest / ws / middleware / deps / errors）
 │   │   ├── infra/     # L5 SQLite / 加密 / Repository / 安全原语
 │   │   ├── eval/      # 回归评测框架（python -m harness.eval）
 │   │   └── cli/       # 命令行入口
-│   ├── plugins/       # 36 个内置插件（自动扫描，含 provider / tool / service / channel）
+│   ├── plugins/       # 37 个内置插件（自动扫描，含 provider / tool / service / channel）
 │   ├── marketplace/   # 插件市场的可安装包（6 个）
-│   ├── skill_marketplace/  # 技能市场（6 个 SKILL.md 技能包）
-│   ├── mcp_marketplace/    # MCP 市场（5 个免鉴权公开服务配置）
+│   ├── skill_marketplace/  # 技能市场（11 个 SKILL.md 技能包）
+│   ├── mcp_marketplace/    # MCP 市场（10 个免鉴权公开服务配置）
 │   ├── skills/        # 内置技能（4 个）
-│   └── tests/         # pytest（59 个测试模块 / 593 个用例）
+│   └── tests/         # pytest（69 个测试模块 / 742 个用例）
 ├── frontend/          # Vue 3 前端（Vite + TypeScript + Pinia）
 │   └── src/
 │       ├── views/     # ChatView / SettingsView / HomeView / LoginView
@@ -572,22 +601,15 @@ andy-harness/
 
 **面向使用者**
 - [andy-harness v1.0.0 用户使用手册](docs/andy-harness-v1.0.0用户使用手册.md) — 图文版完整手册（安装启动、对话、会话管理、设置页十大标签、主题、认证、排错、**环境变量与数据文件全表**，共 16 张界面截图）
-- [发布 v1.0.0 操作清单](docs/RELEASE-v1.0.0.md) — semver / 版本号 / tag / Release Notes 注意事项与发布前门禁
 - [常见问题排错](#-下载后常见问题排错) — 见下方专章（12 条）
+- [已知问题与注意事项](#已知问题与注意事项) — 预览版已知限制与避坑要点
 
 **面向开发者**
-- [架构设计文档](01-architecture.md) — 总体分层、插件机制、核心模块详设
-- [分阶段开发计划](02-development-plan.md) — P0–P9 任务清单与验收标准
-- [插件开发指南](docs/plugin-dev-guide.md) — 从零开发可运行插件
 - [桌面壳说明](desktop/README.md) — Tauri 壳的设计要点、开发运行与打包（含 sidecar 说明）
 - [前端开发说明](frontend/README.md) — Vue 3 / Pinia / i18n / 前端插件与测试
-- [安全隔离技术分析](docs/security-isolation-analysis.md) — 沙箱 / 权限 / 多用户 / 密钥 / 桌面能力的分层隔离现状与 Docker 隔离评估
-- [能力增强清单](ENHANCEMENTS.md) — 相对业界 Harness 的差距与后续规划
+- [免责声明](DISCLAIMER.md) — Token 成本、工具与桌面自动化的风险边界
 
-**质量与审计记录**
-- [发布前全项目分析报告](docs/ANALYSIS-v1.0.0-2026-10-01.md) — 全量实测基线（CI / 测试 / 静态检查）、分级问题清单与发布执行清单
-- [全项目审计报告](docs/AUDIT-2026-09-30.md) 与 [缺口分析](docs/GAP-ANALYSIS-2026-09-30.md) — 1.0.0 之前的历史审计轨迹
-- [项目面试解说](docs/面试解说.md) — 面试时主动陈述项目的话术底稿（架构 / 技术点 / 难点与解决）
+> 说明性 / 过程性文档（架构详设、开发计划、插件开发指南、审计与验证报告、CHANGELOG 等）自 v1.0.0 起不纳入版本管理，仅作者本地留存；历史变更与版本说明见 [GitHub Releases](https://github.com/andyqiuqiubo/andy-harness/releases)。
 
 ---
 
@@ -653,7 +675,7 @@ A: API Key 使用 Fernet 对称加密存储在 SQLite 中，密钥派生自本�
 
 ## 贡献
 
-欢迎提交 Issue 和 PR！请阅读 [贡献指南](CONTRIBUTING.md)。
+欢迎提交 Issue 和 PR！
 
 ---
 
