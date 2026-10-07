@@ -36,7 +36,7 @@ const isAtBottom = ref(true)
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const isExpanded = ref(false) // 是否处于「放大到整页」状态
 const canExpand = ref(false) // 内容是否超过 7 行（决定是否显示放大按钮）
-const MIN_ROWS = 3
+const MIN_ROWS = 1
 const MAX_ROWS = 7
 
 /** 读取 textarea 单行高度与上下内边距（跟随主题字号，避免硬编码）。 */
@@ -1153,7 +1153,7 @@ onUnmounted(() => {
             :placeholder="t('chat.placeholder')"
             @keydown.enter.exact.prevent="handleSend"
             :disabled="chatStore.isStreaming"
-            rows="3"
+            rows="1"
           />
           <!-- 放大 / 缩小按钮：内容超过 7 行时出现在输入框右上角 -->
           <button
@@ -1206,6 +1206,11 @@ onUnmounted(() => {
             class="hidden-file-input"
             @change="handleFileSelect"
           />
+        </div>
+
+        <!-- AI 生成内容提示条：常驻输入框下方 -->
+        <div class="ai-notice-bar">
+          <span class="ai-notice-text">{{ t('chat.aiGeneratedNotice') }}</span>
         </div>
       </div>
     </div>
@@ -1348,6 +1353,23 @@ onUnmounted(() => {
   border-radius: var(--radius-md);
   white-space: nowrap;
   cursor: help;
+}
+
+/* ── AI 生成内容提示条（常驻输入框下方，无底色、文字居中） ── */
+.ai-notice-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: var(--content-max-width);
+  margin: 4px auto 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+  line-height: 1.3;
+  text-align: center;
+}
+
+.ai-notice-text {
+  font-weight: 400;
 }
 
 /* ── 工具箱下拉（5 大功能入口） ── */
@@ -2122,7 +2144,7 @@ onUnmounted(() => {
 
 /* ── Input area ── */
 .input-area {
-  padding: var(--space-md) var(--space-md) var(--space-lg);
+  padding: var(--space-sm) var(--space-md) var(--space-sm);
   border-top: 1px solid var(--border-color);
   background: var(--bg-surface);
   flex-shrink: 0;
@@ -2138,7 +2160,7 @@ onUnmounted(() => {
   background: var(--bg-input);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-xl);
-  padding: 8px 8px 8px 16px;
+  padding: 6px 6px 6px 14px;
   box-shadow: var(--shadow-sm);
   transition: border-color var(--transition-base), box-shadow var(--transition-base);
   position: relative;
@@ -2296,7 +2318,7 @@ onUnmounted(() => {
   color: var(--color-text);
   resize: none;
   line-height: 1.6;
-  padding: 6px 0;
+  padding: 4px 0;
   overflow-y: hidden;
   /* 高度由 JS 动态设置（3~7 行自适应 / 放大整页），加过渡更平滑 */
   transition: height 0.12s ease;

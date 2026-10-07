@@ -584,6 +584,7 @@ export default {
   'chat.noModelHint': 'No provider has an API key yet. Configure one via the onboarding card or Settings → Model Providers.',
   'chat.allModelsDisabled': 'All models disabled',
   'chat.allDisabledHint': 'Every configured provider is disabled. Enable at least one in Settings → Model Providers.',
+  'chat.aiGeneratedNotice': 'Content is AI-generated. Please verify carefully.',
 
   // Sessions
   'sessions.title': 'Sessions',

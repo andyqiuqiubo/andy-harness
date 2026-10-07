@@ -584,6 +584,7 @@ export default {
   'chat.noModelConfigured': '未配置模型',
   'chat.noModelHint': '尚未配置任何大模型的 API Key。点击左上角「设置 → 模型 Provider」或在会话区引导卡中完成配置。',
   'chat.allModelsDisabled': '模型全部已停用',
+  'chat.aiGeneratedNotice': '内容由 AI 生成，请仔细甄别',
   'chat.allDisabledHint': '所有已配置的模型 Provider 均已停用。前往「设置 → 模型 Provider」启用至少一个。',
 
   // Sessions
