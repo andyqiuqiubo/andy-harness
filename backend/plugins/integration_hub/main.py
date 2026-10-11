@@ -30,6 +30,7 @@ from harness.kernel.contracts.tool import ToolPlugin
 
 from .feishu_provider import FeishuIntegration
 from .integration_base import get_registry
+from .oortcloud_provider import OortCloudIntegration, OortCloudProvider
 
 logger = logging.getLogger("harness.plugin.integration_hub")
 
@@ -336,6 +337,28 @@ class IntegrationHubPlugin(BasePlugin):
             feishu = FeishuIntegration()
             registry.register(feishu)
 
+        # OortCloud（OortCodex）：oauth 登录领取免费额度 → 自动建 Provider
+        oort: OortCloudIntegration = registry.get("oortcloud")  # type: ignore[assignment]
+        if oort is None:
+            oort = OortCloudIntegration(services=ctx.services)
+            registry.register(oort)
+
+        # 重启后 load_from_db 会用**通用** OpenAICompatibleProvider 类注册 custom_oortcloud，
+        # 从而丢失对话流必需的 X-Roo-App-Version 头（表现为对话挂起、前端看门狗误报）。
+        # load_from_db 在插件激活之前执行，故此处显式换回 OortCloudProvider 类。
+        try:
+            from harness.modules.model_manager.provider_registry import ProviderRegistry
+
+            if ctx.services.has(ProviderRegistry):
+                pr = ctx.services.get(ProviderRegistry)
+                if pr.has_provider("custom_oortcloud"):
+                    cfg = pr.get_provider_config("custom_oortcloud")
+                    if cfg:
+                        pr.register_provider("custom_oortcloud", OortCloudProvider, cfg)
+                        ctx.logger.info("已将 custom_oortcloud 恢复为 OortCloudProvider")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("恢复 OortCloud Provider 类失败: %s", e)
+
         # 注入入站消息处理器（channel 模式需要）
         feishu.set_message_handler(self._build_channel_handler(ctx))
 
@@ -343,7 +366,7 @@ class IntegrationHubPlugin(BasePlugin):
         tool_registry.register(IntegrationConnectTool(), owner=self.plugin_id)
         tool_registry.register(IntegrationCallTool(), owner=self.plugin_id)
         tool_registry.register(IntegrationChannelTool(), owner=self.plugin_id)
-        ctx.logger.info("第三方系统集成插件已激活（已注册飞书：cli/channel/api）")
+        ctx.logger.info("第三方系统集成插件已激活（已注册飞书：cli/channel/api；OortCloud：oauth）")
 
     async def deactivate(self, ctx: PluginContext) -> None:
         ctx.logger.info("第三方系统集成插件已停用")

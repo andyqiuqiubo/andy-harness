@@ -82,3 +82,123 @@ describe('client auth wiring（E12）', () => {
     apiClient.ws.disconnect()
   })
 })
+
+/**
+ * 回归：WS 重连状态机（防「重连中」风暴）。
+ *
+ * 用户实测现象：没做任何设置/操作，会话界面时不时显示「重连中」。
+ *
+ * 根因：`WebSocket.close()` 是**异步**的，其 `onclose` 稍后才派发。旧实现在
+ * `connect()` 里关闭旧连接后**同步**把 `shouldReconnect` 改回 true，于是旧连接
+ * 迟到的 `onclose` 又排一次重连 → 1s 后把刚建好的健康连接关掉 → 新连接的
+ * `onclose` 再排一次……形成永不停止的重连风暴；且每次 `onopen` 都会把
+ * `reconnectAttempts` 归零，`maxReconnects` 永远触达不到，界面就一直闪「重连中」。
+ */
+describe('WS 重连状态机（防重连风暴）', () => {
+  /** 可控 WebSocket 替身：由测试决定何时握手成功 / 何时断开。 */
+  class ControlledWebSocket {
+    static instances: ControlledWebSocket[] = []
+    // client.ts 的 send() 会引用这两个静态常量
+    static readonly CONNECTING = 0
+    static readonly OPEN = 1
+    static readonly CLOSING = 2
+    static readonly CLOSED = 3
+
+    url: string
+    readyState = ControlledWebSocket.CONNECTING
+    sent: string[] = []
+    onopen: (() => void) | null = null
+    onclose: ((e: CloseEvent) => void) | null = null
+    onmessage: ((e: MessageEvent) => void) | null = null
+    onerror: ((e: Event) => void) | null = null
+
+    constructor(url: string) {
+      this.url = url
+      ControlledWebSocket.instances.push(this)
+    }
+
+    send(data: string) {
+      this.sent.push(data)
+    }
+
+    close() {
+      this.readyState = ControlledWebSocket.CLOSED
+    }
+
+    /** 测试助手：模拟握手成功。 */
+    handshakeOk() {
+      this.readyState = ControlledWebSocket.OPEN
+      this.onopen?.()
+    }
+
+    /** 测试助手：模拟断开（浏览器派发 onclose）。 */
+    fireClose(code = 1006) {
+      this.readyState = ControlledWebSocket.CLOSED
+      this.onclose?.({ code } as CloseEvent)
+    }
+  }
+
+  beforeEach(() => {
+    vi.resetModules()
+    clearToken()
+    ControlledWebSocket.instances = []
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  it('离开会话页立即再进入：旧连接迟到的 onclose 不应引发额外重连', async () => {
+    vi.useFakeTimers()
+    const { apiClient, wsConnectionStatus } = await import('./client')
+
+    apiClient.ws.connect()
+    const s1 = ControlledWebSocket.instances[0]!
+    s1.handshakeOk()
+    expect(wsConnectionStatus.value).toBe('connected')
+
+    // 用户离开会话页 → 立刻再进入（ChatView 卸载 + 重挂载）
+    apiClient.ws.disconnect()
+    apiClient.ws.connect()
+    const s2 = ControlledWebSocket.instances[1]!
+    s2.handshakeOk()
+    expect(wsConnectionStatus.value).toBe('connected')
+
+    // 旧连接 S1 的 onclose 迟到（真实浏览器里 close 是异步的）
+    s1.fireClose(1006)
+
+    // 修复前：状态被改成 reconnecting，且 1s 后把健康连接 s2 关掉，开始无限重连
+    expect(wsConnectionStatus.value).toBe('connected')
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(ControlledWebSocket.instances.length).toBe(2)
+
+    apiClient.ws.disconnect()
+  })
+
+  it('真实掉线仍会重连一次；重连成功后不再空转新建连接', async () => {
+    vi.useFakeTimers()
+    const { apiClient, wsConnectionStatus } = await import('./client')
+
+    apiClient.ws.connect()
+    const s1 = ControlledWebSocket.instances[0]!
+    s1.handshakeOk()
+
+    // 服务端真实断开（如后端重启 / 网络抖动）
+    s1.fireClose(1006)
+    expect(wsConnectionStatus.value).toBe('reconnecting')
+
+    await vi.advanceTimersByTimeAsync(1100)
+    expect(ControlledWebSocket.instances.length).toBe(2)
+    const s2 = ControlledWebSocket.instances[1]!
+    s2.handshakeOk()
+    expect(wsConnectionStatus.value).toBe('connected')
+
+    // 再等很久也不应出现多余连接（修复前这里会一直重连）
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(ControlledWebSocket.instances.length).toBe(2)
+
+    apiClient.ws.disconnect()
+  })
+})

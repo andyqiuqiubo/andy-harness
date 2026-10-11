@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 
 import { apiClient } from '../api/client'
 import { useLanguage } from '../composables/useLanguage'
+import { startOortcloudLogin } from '../composables/useOortcloud'
 
 const { t } = useLanguage()
 
@@ -23,6 +24,8 @@ interface ProviderDesc {
   cli_available?: boolean | null
   cli_path?: string | null
   cli_auth?: { ready: boolean | null; summary: string } | null
+  credits?: number | null
+  unlimited?: boolean
 }
 
 interface ProviderUI {
@@ -55,6 +58,9 @@ interface ProviderUI {
   channelAppSecret: string
   channelBusy: boolean
   channelDetail: string
+  credits: number | null
+  unlimited: boolean
+  oauthBusy: boolean
 }
 
 const providers = ref<ProviderUI[]>([])
@@ -98,6 +104,9 @@ async function loadProviders() {
       channelAppSecret: '',
       channelBusy: false,
       channelDetail: '',
+      credits: p.credits ?? null,
+      unlimited: p.unlimited ?? false,
+      oauthBusy: false,
     }))
   } catch (e: unknown) {
     loadError.value = e instanceof Error ? e.message : String(e)
@@ -172,6 +181,19 @@ async function disconnect(ui: ProviderUI) {
   }
 }
 
+/** oauth 模式：跳转到统一登录页授权（OortCloud 领取免费额度）。 */
+async function loginOauth(ui: ProviderUI) {
+  ui.oauthBusy = true
+  ui.error = ''
+  try {
+    await startOortcloudLogin('/settings?tab=plugins')
+  } catch (e: unknown) {
+    ui.error = e instanceof Error ? e.message : String(e)
+    ui.oauthBusy = false
+  }
+  // 跳转后当前页面会卸载，无需复位 busy
+}
+
 async function refreshDetail(ui: ProviderUI) {
   try {
     const detail = await apiClient.get<ProviderDesc>(`/integrations/${ui.id}`)
@@ -184,6 +206,8 @@ async function refreshDetail(ui: ProviderUI) {
     ui.cliAuth = detail.cli_auth ?? ui.cliAuth
     ui.channelCapabilities = detail.channel_capabilities || ui.channelCapabilities
     ui.channelRunning = detail.channel_running || false
+    ui.credits = detail.credits ?? ui.credits
+    ui.unlimited = detail.unlimited ?? ui.unlimited
     if (!ui.actions.find((a) => a.name === ui.selectedAction)) {
       ui.selectedAction = ui.actions[0]?.name || ''
     }
@@ -303,11 +327,12 @@ function modeLabel(m: string): string {
   if (m === 'api') return t.value('integrations.modeApi')
   if (m === 'cli') return t.value('integrations.modeCli')
   if (m === 'channel') return t.value('integrations.modeChannel')
+  if (m === 'oauth') return t.value('integrations.modeOauth')
   return m
 }
 
-/** 页签展示顺序：开放 API 优先（填凭证即用），CLI 需另装二进制放后面。 */
-const MODE_DISPLAY_ORDER = ['api', 'channel', 'cli']
+/** 页签展示顺序：oauth 优先（一键授权即用），开放 API 次之，CLI 需另装二进制放最后。 */
+const MODE_DISPLAY_ORDER = ['oauth', 'api', 'channel', 'cli']
 function displayModes(ui: ProviderUI): string[] {
   return [...ui.modes].sort((a, b) => {
     const ia = MODE_DISPLAY_ORDER.indexOf(a)
@@ -493,6 +518,32 @@ onMounted(loadProviders)
           <p v-if="ui.channelDetail" class="integration-hint">{{ ui.channelDetail }}</p>
         </template>
 
+        <!-- oauth 模式（OortCloud 领取免费额度）：一键跳转授权 -->
+        <template v-else-if="ui.mode === 'oauth'">
+          <p class="integration-hint">
+            {{ ui.authInstructions?.oauth || t('integrations.oauthHint') }}
+          </p>
+          <div v-if="ui.authenticated" class="oort-credits">
+            <span v-if="ui.unlimited" class="badge-pill badge-ok">{{ t('integrations.oauthUnlimited') }}</span>
+            <span v-else class="badge-pill badge-ok">
+              {{ t('integrations.oauthCredits') }}: {{ ui.credits ?? '—' }}
+            </span>
+          </div>
+          <div class="integration-actions">
+            <button
+              v-if="!ui.authenticated"
+              class="btn-primary btn-sm"
+              :disabled="ui.oauthBusy"
+              @click="loginOauth(ui)"
+            >
+              {{ ui.oauthBusy ? t('integrations.connecting') : t('integrations.oauthConnect') }}
+            </button>
+            <button v-else class="btn-ghost btn-sm" :disabled="ui.busy" @click="disconnect(ui)">
+              {{ t('integrations.disconnect') }}
+            </button>
+          </div>
+        </template>
+
         <!-- API 模式（兜底）：凭证必填 -->
         <template v-else>
           <div class="form-row">
@@ -539,8 +590,8 @@ onMounted(loadProviders)
           </div>
         </template>
 
-        <!-- 已连接（cli/api）：动作调用 -->
-        <div v-if="ui.authenticated && (ui.mode === 'cli' || ui.mode === 'api')" class="integration-invoke">
+        <!-- 已连接（cli/api/oauth）：动作调用 -->
+        <div v-if="ui.authenticated && (ui.mode === 'cli' || ui.mode === 'api' || ui.mode === 'oauth')" class="integration-invoke">
           <div class="form-row">
             <label class="form-label">{{ t('integrations.action') }}</label>
             <select

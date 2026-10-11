@@ -74,12 +74,34 @@ async def connect_integration(
 
     API 模式需在 credentials 中提供 app_id / app_secret；
     CLI 模式 credentials 可留空（依赖本机已安装的官方命令行工具）。
+    OortCloud 的 oauth 模式需在 credentials 中提供登录回调带回的
+    access_token / tenant_id / state。
     """
     provider = _get_provider(provider_id)
     mode = body.get("mode", "")
     credentials = body.get("credentials") or {}
     result = await provider.authenticate(mode, credentials)
     return result.to_dict()
+
+
+@router.get("/{provider_id}/login-url")
+async def get_login_url(
+    provider_id: str,
+    redirect_uri: str = "",
+    _admin: dict[str, Any] | None = Depends(require_admin),
+) -> dict[str, Any]:
+    """获取第三方统一登录页地址（仅 oauth 类接入需要）。
+
+    后端用 env 中的平台/网关/服务名拼装完整 URL，绝不携带运营方
+    appid/secretkey。前端拿到后跳转，用户授权后由 redirect_uri 回传 token。
+    provider 未实现该方法时返回 404（如飞书 cli/api 无需此端点）。
+    """
+    provider = _get_provider(provider_id)
+    build = getattr(provider, "build_login_url", None)
+    if build is None or not callable(build):
+        raise HTTPException(status_code=404, detail=f"提供方 {provider_id} 不支持 login-url 接入方式")
+    login_url = build(redirect_uri)
+    return {"login_url": login_url}
 
 
 @router.post("/{provider_id}/disconnect")

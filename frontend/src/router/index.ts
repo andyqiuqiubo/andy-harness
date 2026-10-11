@@ -8,6 +8,7 @@ import TemplateHubView from '../views/TemplateHubView.vue'
 import WorkflowView from '../views/WorkflowView.vue'
 import WorkflowListView from '../views/WorkflowListView.vue'
 import DevkitView from '../views/DevkitView.vue'
+import OortcloudCallback from '../views/OortcloudCallback.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -61,6 +62,11 @@ const router = createRouter({
       path: '/devkit',
       name: 'devkit',
       component: DevkitView,
+    },
+    {
+      path: '/oauth/oortcloud/callback',
+      name: 'oortcloud-callback',
+      component: OortcloudCallback,
     },
   ],
 })

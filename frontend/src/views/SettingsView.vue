@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { useProviderStore } from '../stores/providers'
 import { usePluginStore, type PluginInfo, type MarketplacePlugin } from '../stores/plugins'
 import { useSettingsStore, THEME_LIST, type Theme } from '../stores/settings'
@@ -7,6 +8,7 @@ import { useSkillStore, type SkillInfo, type SkillMarketplaceItem } from '../sto
 import { usePermissionStore } from '../stores/permissions'
 import { useAuthStore } from '../stores/auth'
 import { useLanguage } from '../composables/useLanguage'
+import { startOortcloudLogin } from '../composables/useOortcloud'
 import AuditLogView from './AuditLogView.vue'
 import IntegrationsPanel from '../components/IntegrationsPanel.vue'
 import { apiClient } from '../api/client'
@@ -15,13 +17,28 @@ import type { PermissionAction, PermissionMode } from '../api/types'
 
 type Tab = 'providers' | 'session' | 'memory' | 'plugins' | 'skills' | 'mcp' | 'schedule' | 'security' | 'audit' | 'artifacts' | 'general'
 
+const TABS: Tab[] = [
+  'providers', 'session', 'memory', 'plugins', 'skills', 'mcp', 'schedule',
+  'security', 'audit', 'artifacts', 'general',
+]
+
 const providerStore = useProviderStore()
 const pluginStore = usePluginStore()
 const settingsStore = useSettingsStore()
 const skillStore = useSkillStore()
 const permissionStore = usePermissionStore()
 const authStore = useAuthStore()
+const route = useRoute()
 const { t } = useLanguage()
+
+// OortCloud 免费额度是否已领取（用于 Providers 页的领取入口显隐）
+const oortcloudClaimed = computed(() =>
+  providerStore.providers.some((p) => p.id === 'custom_oortcloud' && p.has_api_key),
+)
+
+function claimOortcloud() {
+  startOortcloudLogin('/settings?tab=providers')
+}
 
 // 审计日志属管理面：认证未启用（单用户）或管理员可见。
 const showAuditTab = computed(() =>
@@ -495,6 +512,11 @@ function onTabNavClick(e: MouseEvent) {
 onMounted(() => {
   updateTabScrollState()
   window.addEventListener('resize', updateTabScrollState)
+  // 支持从外部链接（如 OortCloud 领取回调）直接定位到指定标签
+  const qTab = route.query.tab
+  if (typeof qTab === 'string' && TABS.includes(qTab as Tab)) {
+    activeTab.value = qTab as Tab
+  }
   providerStore.loadProviders()
   pluginStore.loadPlugins()
   skillStore.loadSkills()
@@ -1509,6 +1531,28 @@ function formatMs(n: number): string {
           <div v-if="providerStore.providers.length === 0" class="empty-hint">
             {{ t('providers.empty') }}
           </div>
+        </div>
+
+        <!-- OortCloud 免费额度领取入口：配置表单下方常驻，未领取时提示 -->
+        <div v-if="!oortcloudClaimed" class="oort-promo card">
+          <div class="oort-promo-info">
+            <div class="oort-promo-title">
+              <svg class="oort-promo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
+                <line x1="7" y1="7" x2="7.01" y2="7" />
+              </svg>
+              {{ t('oortcloud.promoTitle') }}
+            </div>
+            <p class="oort-promo-desc">{{ t('oortcloud.promoDesc') }}</p>
+          </div>
+          <button class="btn-primary" @click="claimOortcloud">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 7h3a5 5 0 0 1 5 5 5 5 0 0 1-5 5h-3m-6 0H6a5 5 0 0 1-5-5 5 5 0 0 1 5-5h3" /><line x1="8" y1="12" x2="16" y2="12" /></svg>
+            {{ t('oortcloud.promoBtn') }}
+          </button>
+        </div>
+        <div v-else class="oort-promo-done">
+          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+          {{ t('oortcloud.promoDone') }}
         </div>
       </section>
 
@@ -2655,6 +2699,51 @@ function formatMs(n: number): string {
   padding: var(--space-lg);
   overflow: hidden;
   animation: slideUp 0.3s ease;
+}
+
+/* ── OortCloud 免费额度领取入口 ── */
+.oort-promo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  margin-top: var(--space-lg);
+  padding: var(--space-md) var(--space-lg);
+}
+.oort-promo-info {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.oort-promo-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--color-text);
+}
+.oort-promo-icon {
+  width: 22px;
+  height: 22px;
+  color: var(--color-primary);
+  flex: 0 0 auto;
+}
+.oort-promo-desc {
+  margin: 4px 0 0;
+  font-size: 0.82rem;
+  color: var(--color-text-tertiary);
+  line-height: 1.5;
+}
+.oort-promo-done {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-top: var(--space-lg);
+  padding: var(--space-sm) var(--space-md);
+  font-size: 0.85rem;
+  color: var(--color-success, #2e9e5b);
+}
+.oort-promo-done .icon-sm {
+  flex: 0 0 auto;
 }
 
 /* ── Header ─────────────────────────────────────────────── */

@@ -76,7 +76,10 @@ export const useChatStore = defineStore('chat', () => {
   // 没有任何超时机制时，一旦服务端没回帧（请求被丢弃 / 连接已死），
   // isStreaming 会永久为 true，输入框与发送按钮随之全部禁用。
   // 这里用「首个响应超时」兜底，把界面恢复到可操作状态。
-  const STREAM_WATCHDOG_MS = 30000
+  //
+  // 阈值须**大于**后端单次模型请求的超时（provider 为 60s），否则后端尚在
+  // 连接/生成时就先被误判为「连接中断」，且会遮盖后端稍后回传的真实错误帧。
+  const STREAM_WATCHDOG_MS = 90000
   let streamWatchdog: ReturnType<typeof setTimeout> | null = null
 
   function _clearWatchdog() {

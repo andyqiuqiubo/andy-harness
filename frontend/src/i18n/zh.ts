@@ -429,6 +429,23 @@ export default {
   'integrations.cliNotInstalled': '未安装',
   'integrations.cliNotInstalledHint':
     '未在本机检测到飞书 CLI（lark-cli）。CLI 只是可选接入方式：建云文档 / 发群通知请用「开放 API」，在群里 @机器人请用「飞书频道（入站）」，两者都不需要 CLI。仍想用 CLI 可复制下方命令安装后重试。',
+  'integrations.modeOauth': 'OAuth 授权',
+  'integrations.oauthHint': 'OortCloud 模式：点击「登录领取免费额度」跳转到统一登录页，授权后自动创建 Provider，即可在会话里直接选用免费模型。',
+  'integrations.oauthConnect': '登录领取免费额度',
+  'integrations.oauthUnlimited': '无限额度',
+  'integrations.oauthCredits': '剩余积分',
+
+  // OortCloud 免费额度领取
+  'oortcloud.promoTitle': '免费领取 OortCloud 10 元模型额度',
+  'oortcloud.promoDesc': '无需自有 API Key：登录授权后自动下发免费 NewAPI 令牌，并在本机创建 OortCloud 模型 Provider。',
+  'oortcloud.promoBtn': '免费领取',
+  'oortcloud.promoDone': '已领取 OortCloud 免费额度（Provider：OortCloud）',
+  'oortcloud.callbackProcessing': '正在领取免费额度…',
+  'oortcloud.callbackSuccess': '已成功领取 OortCloud 免费额度',
+  'oortcloud.callbackFail': '领取失败',
+  'oortcloud.callbackNoToken': '登录回调缺少 access_token，授权可能未完成。',
+  'oortcloud.callbackRedirecting': '即将返回原页面…',
+  'oortcloud.callbackBack': '返回设置',
   'plugins.config': '插件配置',
   'plugins.saveConfig': '保存配置',
   'plugins.cancelConfig': '取消',

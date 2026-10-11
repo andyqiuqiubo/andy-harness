@@ -4,6 +4,7 @@ import { apiClient } from '../api/client'
 import { useProviderStore } from '../stores/providers'
 import { useLanguage } from '../composables/useLanguage'
 import { modelsForProvider } from '../utils/modelCatalog'
+import { usableProviders as filterUsableProviders } from '../utils/providerFilter'
 
 const { t } = useLanguage()
 const providerStore = useProviderStore()
@@ -106,7 +107,9 @@ const runDetail = ref<EvalRun | null>(null)
 const runError = ref('')
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
-const usableProviders = computed(() => providerStore.providers.filter((p) => p.enabled !== false && p.has_api_key))
+// 只列出可用厂商（已启用 + 已配 Key）；判定统一走 utils/providerFilter，
+// 避免各处各写一份导致行为不一致（会话页 / 工作流页曾漏过滤）。
+const usableProviders = computed(() => filterUsableProviders(providerStore.providers))
 const selectedDataset = computed(() => datasets.value.find((d) => d.id === selectedDatasetId.value))
 
 /** 目录化模型选项（与对话页同一份目录：DeepSeek 只显示两款） */

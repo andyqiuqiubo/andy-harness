@@ -203,28 +203,64 @@ class APIClientImpl {
       }
     },
 
-    connect() {
-      // 先关闭已有连接，避免多个 socket 同时存在导致 token 重复
-      if (this.socket) {
-        this.shouldReconnect = false
-        try {
-          this.socket.close()
-        } catch {
-          // ignore
-        }
-        this.socket = null
-      }
+    /**
+     * 关闭当前 socket 并**摘除其事件处理器**。
+     *
+     * ⚠️ 重连风暴根因（本次修复）：
+     * `WebSocket.close()` 是**异步**的 —— 它的 `onclose` 会在稍后的事件循环里才触发。
+     * 旧实现在关闭前把 `shouldReconnect` 置 false、紧接着又同步改回 true，等旧 socket
+     * 的 `onclose` 真正执行时看到的已是 `true`，于是它又排一次重连；1s 后那次重连会把
+     * **刚建立好的健康连接**关掉，新连接的 `onclose` 再排一次……如此往复。
+     * 更糟的是每次 `onopen` 都会把 `reconnectAttempts` 归零，`maxReconnects` 永远
+     * 触达不到，连接会无限空转、界面持续闪「重连中」。
+     *
+     * 因此主动关闭前必须先把处理器置 null（让这次关闭**不进入**重连判定），
+     * 并把 socket 引用清空；各回调内的归属校验是第二道防线。
+     */
+    _teardown() {
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer)
         this.reconnectTimer = null
       }
+      const old = this.socket
+      if (!old) return
+      this.socket = null
+      old.onopen = null
+      old.onclose = null
+      old.onerror = null
+      old.onmessage = null
+      try {
+        old.close()
+      } catch {
+        // ignore
+      }
+    },
+
+    /** 排一次重连。保证同一时刻只有一个定时器，避免旧 handle 被覆盖成孤儿定时器。 */
+    _scheduleReconnect(delay: number) {
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer)
+        this.reconnectTimer = null
+      }
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null
+        this.connect()
+      }, delay)
+    },
+
+    connect() {
+      // 先关闭已有连接（并摘除其处理器），避免多个 socket 同时存在导致 token 重复
+      this._teardown()
 
       this.shouldReconnect = true
       wsConnectionStatus.value = this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting'
 
-      this.socket = new WebSocket(wsBase())
+      const sock = new WebSocket(wsBase())
+      this.socket = sock
 
-      this.socket.onopen = () => {
+      sock.onopen = () => {
+        // 归属校验：已被 connect() / disconnect() 替换掉的旧 socket 一律忽略
+        if (this.socket !== sock) return
         console.log('[WS] 已连接')
         this.reconnectAttempts = 0
         wsConnectionStatus.value = 'connected'
@@ -232,7 +268,7 @@ class APIClientImpl {
         if (this.pendingQueue.length) {
           for (const data of this.pendingQueue.splice(0)) {
             try {
-              this.socket?.send(JSON.stringify(data))
+              sock.send(JSON.stringify(data))
             } catch {
               // 极端情况下 socket 已失效，忽略即可（上层有超时兜底）
             }
@@ -240,7 +276,9 @@ class APIClientImpl {
         }
       }
 
-      this.socket.onclose = (ev: CloseEvent) => {
+      sock.onclose = (ev: CloseEvent) => {
+        // 归属校验：主动替换 / 主动断开产生的 onclose 不参与重连决策
+        if (this.socket !== sock) return
         console.log('[WS] 已断开')
         // E12：1008 Policy Violation —— token 无效 / 过期，回到登录门。
         if (ev.code === 1008) {
@@ -253,30 +291,31 @@ class APIClientImpl {
           this.reconnectAttempts++
           console.log(`[WS] 重连 ${this.reconnectAttempts}/${this.maxReconnects}，${delay}ms 后重试`)
           wsConnectionStatus.value = 'reconnecting'
-          this.reconnectTimer = setTimeout(() => this.connect(), delay)
+          this._scheduleReconnect(delay)
         } else if (this.reconnectAttempts >= this.maxReconnects) {
           console.warn('[WS] 已达最大重连次数，停止重连')
           wsConnectionStatus.value = 'disconnected'
         }
       }
 
-      this.socket.onerror = (e) => {
+      sock.onerror = (e) => {
+        if (this.socket !== sock) return
         console.error('[WS] 错误', e)
       }
 
-      // Set onmessage on the new socket every time connect() is called
-      this.socket.onmessage = (e: MessageEvent) => this._onMessage(e)
+      // 绑定到本次新建的 socket（旧 socket 的处理器已在 _teardown 中摘除）
+      sock.onmessage = (e: MessageEvent) => {
+        if (this.socket !== sock) return
+        this._onMessage(e)
+      }
     },
 
     disconnect() {
       this.shouldReconnect = false
       this.reconnectAttempts = 0
-      if (this.reconnectTimer) {
-        clearTimeout(this.reconnectTimer)
-        this.reconnectTimer = null
-      }
-      this.socket?.close()
-      this.socket = null
+      this._teardown()
+      // 主动断开时丢弃未发出的排队消息，避免它们被「续」到下一次连接
+      this.pendingQueue.length = 0
       wsConnectionStatus.value = 'disconnected'
     },
 
@@ -310,10 +349,8 @@ class APIClientImpl {
 
     onMessage(handler: (data: unknown) => void) {
       this.messageHandlers.add(handler)
-      // Also set onmessage on the current socket if it exists
-      if (this.socket) {
-        this.socket.onmessage = (e: MessageEvent) => this._onMessage(e)
-      }
+      // 注意：socket.onmessage 统一由 connect() 绑定（带归属校验），
+      // 这里不要再覆盖它——旧的覆盖写法会摘掉归属校验，让陈旧 socket 的消息也能进来。
       // 返回取消注册函数，避免组件卸载后重复处理
       return () => {
         this.messageHandlers.delete(handler)

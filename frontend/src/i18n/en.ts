@@ -428,6 +428,23 @@ export default {
   'integrations.cliNotInstalled': 'Not installed',
   'integrations.cliNotInstalledHint':
     'Feishu CLI (lark-cli) was not detected on this machine. CLI is an optional mode: use "Open API" to create docs / send group notifications, and "Feishu Channel (inbound)" to get @-mentioned in groups — neither needs the CLI. To still use CLI, copy the install command below and retry.',
+  'integrations.modeOauth': 'OAuth',
+  'integrations.oauthHint': 'OortCloud mode: click "Login & Claim Free Quota" to open the unified login page. After authorization, a Provider is created automatically so you can use the free models right in chat.',
+  'integrations.oauthConnect': 'Login & Claim Free Quota',
+  'integrations.oauthUnlimited': 'Unlimited',
+  'integrations.oauthCredits': 'Credits',
+
+  // OortCloud free quota claim
+  'oortcloud.promoTitle': 'Claim OortCloud $10 Free Model Quota',
+  'oortcloud.promoDesc': 'No API key required: after login authorization, a free NewAPI token is issued and an OortCloud model Provider is created on this machine.',
+  'oortcloud.promoBtn': 'Claim Free',
+  'oortcloud.promoDone': 'OortCloud free quota claimed (Provider: OortCloud)',
+  'oortcloud.callbackProcessing': 'Claiming free quota…',
+  'oortcloud.callbackSuccess': 'Successfully claimed OortCloud free quota',
+  'oortcloud.callbackFail': 'Claim failed',
+  'oortcloud.callbackNoToken': 'Login callback is missing access_token; authorization may be incomplete.',
+  'oortcloud.callbackRedirecting': 'Redirecting…',
+  'oortcloud.callbackBack': 'Back to settings',
   'plugins.config': 'Plugin Configuration',
   'plugins.saveConfig': 'Save Config',
   'plugins.cancelConfig': 'Cancel',

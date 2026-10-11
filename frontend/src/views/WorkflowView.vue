@@ -8,11 +8,16 @@ import { apiClient } from '../api/client'
 import { useProviderStore } from '../stores/providers'
 import { useLanguage } from '../composables/useLanguage'
 import VarRefField from '../components/VarRefField.vue'
+import { usableProviders } from '../utils/providerFilter'
 
 const { t } = useLanguage()
 const providerStore = useProviderStore()
 const route = useRoute()
 const router = useRouter()
+
+// LLM 节点的厂商选项只列出可用厂商（已启用 + 已配 Key）：
+// 停用 / 未配 Key 的选了也必然失败，不应出现在选框里（与会话页同一判定）。
+const usableProviderList = computed(() => usableProviders(providerStore.providers))
 
 // ── 节点定义（Dify 风格：输入输出端口 + 默认配置） ──────────
 // 默认 data 对齐 Dify 节点能力文档 https://docs.dify.ai/zh/cloud/use-dify/nodes/*
@@ -840,7 +845,7 @@ const availableVars = computed(() => (selectedId.value ? upstreamVars(selectedId
           <template v-else-if="selected.type === 'llm'">
             <div class="wf-cfg-row"><label>{{ t('wfEditor.provider') }}</label>
               <select v-model="selected.data.provider_id" class="form-input">
-                <option v-for="p in providerStore.providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+                <option v-for="p in usableProviderList" :key="p.id" :value="p.id">{{ p.name }}</option>
               </select>
             </div>
             <div class="wf-cfg-row"><label>{{ t('wfEditor.model') }}</label>

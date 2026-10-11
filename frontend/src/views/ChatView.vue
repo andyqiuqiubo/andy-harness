@@ -16,7 +16,16 @@ import MarkdownRenderer from '../components/MarkdownRenderer.vue'
 import ProcessTrace from '../components/ProcessTrace.vue'
 import type { Message, ProcessStep } from '../api/types'
 import { pickOnboardingTarget } from '../utils/onboarding'
-import { modelsForProvider } from '../utils/modelCatalog'
+import {
+  pickInitialProvider,
+  readStoredModel,
+  readStoredProvider,
+  reconcileModel,
+  storeModel,
+  storeProvider,
+} from '../utils/chatSelection'
+import { startOortcloudLogin } from '../composables/useOortcloud'
+import { isUsableProvider, usableProviders } from '../utils/providerFilter'
 
 const chatStore = useChatStore()
 const providerStore = useProviderStore()
@@ -25,9 +34,23 @@ const authStore = useAuthStore()
 const todoStore = useTodoStore()
 const { t } = useLanguage()
 
+// OortCloud 免费额度是否已领取（未领取时在会话区展示领取入口）
+const oortcloudClaimed = computed(() =>
+  providerStore.providers.some((p) => p.id === 'custom_oortcloud' && p.has_api_key),
+)
+function claimOortcloud() {
+  startOortcloudLogin('/chat')
+}
+
 const inputText = ref('')
-const selectedModel = ref(settingsStore.sessionSettings.model || 'deepseek-flash')
-const selectedProvider = ref('')
+// 厂商 / 模型选择必须跨页面保留：ChatView 没有 KeepAlive，切到设置页再回来会
+// 卸载重建、组件内的 ref 归零。旧实现里 provider 恒以 '' 起步并被「优先 deepseek」
+// 接管，于是用户刚选好的厂商+模型被打回 deepseek（用户反馈的缺陷）。
+// 这里从 localStorage 恢复「最后一次选择」，变化时写回（见 utils/chatSelection）。
+const selectedModel = ref(
+  readStoredModel(settingsStore.sessionSettings.model || 'deepseek-flash'),
+)
+const selectedProvider = ref(readStoredProvider())
 const messagesContainer = ref<HTMLElement | null>(null)
 // 是否位于消息列表底部（用户上滑时停止自动滚动）
 const isAtBottom = ref(true)
@@ -239,17 +262,12 @@ watch(
   },
 )
 
-// 初始化 provider 选择：优先 deepseek（且已配置 Key、已启用）
+// 初始化 provider 选择：优先恢复「最后一次选择」；无记录 / 该 provider 已被删除时
+// 才回退到 deepseek（其次第一个已启用且已配 Key 的 provider）。
+// pickInitialProvider 只在当前值不存在于列表里时才改写，不会与用户手动选择打架。
 watch(() => providerStore.providers, (providers) => {
-  if (providers.length > 0 && !selectedProvider.value) {
-    const usable = providers.filter((p) => p.enabled !== false && p.has_api_key)
-    const deepseek = usable.find((p) => p.id === 'deepseek' || p.id.includes('deepseek'))
-    if (deepseek) {
-      selectedProvider.value = deepseek.id
-    } else if (usable.length > 0) {
-      selectedProvider.value = usable[0].id
-    }
-  }
+  const picked = pickInitialProvider(selectedProvider.value, providers)
+  if (picked !== selectedProvider.value) selectedProvider.value = picked
 }, { immediate: true })
 
 // ── 模型区三态（右上角 provider/模型选项） ──────────
@@ -261,26 +279,36 @@ const modelAreaState = computed<'loading' | 'unconfigured' | 'all-disabled' | 'r
   const providers = providerStore.providers
   if (providers.length === 0) return 'unconfigured'
   if (!providers.some((p) => p.has_api_key)) return 'unconfigured'
-  if (!providers.some((p) => p.has_api_key && p.enabled !== false)) return 'all-disabled'
+  if (!providers.some(isUsableProvider)) return 'all-disabled'
   return 'ready'
 })
+
+// 厂商选框只列出「可用」厂商（已启用 + 已配 Key）。
+// 旧实现直接遍历全部 providers，于是**已停用 / 未配 Key 的厂商也出现在会话页选框里**
+// （用户反馈：「停用或者被删除的模型不应该出现在会话界面的选框里，目前是停用了也存在」），
+// 选中后发送必然失败。已删除的 provider 本就不在列表内，自然消失。
+const usableProviderList = computed(() => usableProviders(providerStore.providers))
 
 // selectedModel 与所选 provider 的可用模型保持同步：
 // localStorage 里可能存着已下线的旧模型名（如 deepseek-v4-flash），
 // 不校正会让下拉显示为空白、发消息时模型 404。
+// 注意：模型仍在该 provider 的可用列表里时必须**原样保留**（这是「记住最后一次
+// 选择」的关键，旧实现无条件对比后只在不在列表时才改，行为一致但更显式）。
 watch(
   [selectedProvider, () => providerStore.providers],
   () => {
     if (modelAreaState.value !== 'ready' || !selectedProvider.value) return
     const p = providerStore.providers.find((x) => x.id === selectedProvider.value)
-    const available = modelsForProvider(selectedProvider.value, p?.models || [])
-    if (available.length === 0) return
-    if (!available.some((o) => o.id === selectedModel.value)) {
-      selectedModel.value = available[0].id
-    }
+    const next = reconcileModel(selectedProvider.value, selectedModel.value, p?.models || [])
+    if (next !== selectedModel.value) selectedModel.value = next
   },
   { immediate: true },
 )
+
+// 记住「最后一次选择」：切页 / 刷新后由上面的初始化逻辑恢复。
+// 空值不落盘（见 chatSelection.storeProvider），因此不会覆盖掉已有记录。
+watch(selectedProvider, (v) => storeProvider(v))
+watch(selectedModel, (v) => storeModel(v))
 
 // ── 人工确认（Human-in-the-loop） ──────────────────
 interface ConfirmRequest {
@@ -788,7 +816,7 @@ onUnmounted(() => {
           <template v-if="modelAreaState === 'ready'">
             <div class="select-wrapper">
               <select v-model="selectedProvider" class="provider-select">
-                <option v-for="p in providerStore.providers" :key="p.id" :value="p.id">
+                <option v-for="p in usableProviderList" :key="p.id" :value="p.id">
                   {{ p.name }}
                 </option>
               </select>
@@ -935,6 +963,23 @@ onUnmounted(() => {
                 {{ t('chat.onboardLater') }}
               </button>
             </div>
+          </div>
+
+          <!-- OortCloud 免费额度领取入口：配置 DeepSeek 下方常驻，未领取时提示 -->
+          <div v-if="!oortcloudClaimed" class="oort-promo card">
+            <div class="oort-promo-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
+                <line x1="7" y1="7" x2="7.01" y2="7" />
+              </svg>
+            </div>
+            <div class="oort-promo-body">
+              <div class="oort-promo-title">{{ t('oortcloud.promoTitle') }}</div>
+              <p class="oort-promo-desc">{{ t('oortcloud.promoDesc') }}</p>
+            </div>
+            <button class="btn-primary oort-promo-btn" @click="claimOortcloud">
+              {{ t('oortcloud.promoBtn') }}
+            </button>
           </div>
 
           <!-- 历史消息：按提问分组为多版本问答对。每个提问只展示一次，
@@ -1671,6 +1716,48 @@ onUnmounted(() => {
 
 .onboarding-later:hover {
   color: var(--color-text-secondary);
+}
+
+/* ── OortCloud 免费额度领取入口 ── */
+.oort-promo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  margin-bottom: var(--space-lg);
+}
+.oort-promo-icon {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  background: var(--color-primary-light, rgba(99, 102, 241, 0.12));
+  color: var(--color-primary);
+}
+.oort-promo-icon svg {
+  width: 20px;
+  height: 20px;
+}
+.oort-promo-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.oort-promo-title {
+  font-weight: 600;
+  font-size: 0.92rem;
+  color: var(--color-text);
+}
+.oort-promo-desc {
+  margin: 2px 0 0;
+  font-size: 0.8rem;
+  color: var(--color-text-tertiary);
+  line-height: 1.5;
+}
+.oort-promo-btn {
+  flex: 0 0 auto;
 }
 
 /* ── Streaming message ── */
