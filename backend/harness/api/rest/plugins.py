@@ -290,9 +290,7 @@ def setup_plugin_routes(registry: ServiceRegistry) -> None:
         loader = _get_loader(registry)
 
         installer = PackageInstaller()
-        res = await asyncio.to_thread(
-            installer.materialize, req.source, req.kind, ref=req.ref, subdir=req.subdir
-        )
+        res = await asyncio.to_thread(installer.materialize, req.source, req.kind, ref=req.ref, subdir=req.subdir)
         if not res.success:
             raise APIError("PACKAGE_MATERIALIZE_FAILED", res.error, 400)
 
