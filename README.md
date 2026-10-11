@@ -14,7 +14,7 @@
 
 ## 项目状态
 
-- **当前版本：v1.0.0（开发者预览版）** —— 首个对外版本号，完整变更见 [GitHub Releases](https://github.com/andyqiuqiubo/andy-harness/releases)；1.0.0 之后已增量落地**工作流编排 / 模板分享中心 / 洞察看板 / 评测实验室 / 插件开发者工作台 / 集成中心（飞书）/ 权限审计**等新能力（详见下方功能特性）。
+- **当前版本：v1.0.0（开发者预览版）** —— 首个对外版本号，完整变更见 [GitHub Releases](https://github.com/andyqiuqiubo/andy-harness/releases)；1.0.0 之后已增量落地**工作流编排 / 模板分享中心 / 洞察看板 / 评测实验室 / 插件开发者工作台 / 集成中心（飞书 + OortCloud 免费额度）/ 权限审计**等新能力（详见下方功能特性）。
 - 上手请先读 [用户使用手册](docs/andy-harness-v1.0.0用户使用手册.md)（图文、含 16 张界面截图）。
 - 本仓库由作者在 **Windows 10** 个人 PC 下创建与开发，**尚未在 macOS / Linux 等其他操作系统上验证**，跨平台运行存在未知风险。
 - 目前仅对 **DeepSeek `deepseek-v4-flash`** 模型做了深度调试与联调；Qwen / Doubao 等其它模型尚未充分验证，实际使用时可能遇到预期外的问题。
@@ -48,6 +48,7 @@
 - **前后端插件联动**：UI 插件通过 backend_plugin_id 与后端插件联动，启用/停用实时同步
 - **会话管理**：多轮对话持久化、自动生成标题、归档/删除；存在空会话时点击"新建"自动跳转并提示
 - **Token 用量展示**：基于 DeepSeek 官方 usage API，每条 AI 回答下方显示「本次用量」（输入 / 缓存 / 未命中 / 输出 / 合计）
+- **AI 生成内容合规提示**：对话输入框下方常驻「内容由 AI 生成」标注条，满足 AI 内容合规展示要求（输入框紧凑化、起始 1 行）
 - **聊天滚动控制**：流式回复中上滑即停止自动滚动，固定「向下」按钮一键回到最新回复或下一条提问
 - **工具调用可视化**：工具卡片完整展示工具名、参数与执行结果，历史会话回看同样完整
 - **上下文管理**：滑动窗口 / 摘要压缩 / 消息钉住，token 预算可控
@@ -76,6 +77,7 @@
 - **洞察看板（Insights Dashboard）**：会话 / 消息 / Token / 工具调用等内置指标 + 插件自定义指标聚合展示，入口 `/insights`
 - **插件开发者工作台（DevKit）**：面向二次开发者的插件脚手架与开发辅助工具，入口 `/devkit`
 - **集成中心（Integration Hub）**：飞书三模式接入——`api`（app_id/app_secret 直调开放接口）/ `cli`（lark-cli 子进程）/ `channel`（WebSocket 长连，群里 @机器人即答，可选 `feishu` extra：`lark-oapi>=1.7.0`）；出网代理经 `backend/.env.local` 注入（已 git-ignore，启动脚本与后端统一读取）
+- **OortCloud 免费额度集成（智连器）**：智连器新增 **OortCloud** 接入——点击「免费领取」跳转统一登录页授权后，后端自动领取平台下发的 **10 元免费模型额度**（免费 NewAPI 令牌），并自动创建 `OortCloud` 模型 Provider，会话里即可直接选用免费模型，**无需自有 API Key、无需付费**。领取流程含 state 防重放、令牌密钥本地加密存储；`appid` / `secretkey` 为可选应用凭证（多租户部署仅靠用户登录令牌即可领取，已与对接方确认无需填写）。管理接口对齐 NewAPI 规范（`accesstoken` + `requesttype=app`），对话流为 OpenAI 兼容 `/v1/chat/completions` 并补 `X-Roo-App-Version` 头。REST `/api/integrations/oortcloud/*` + 前端领取入口（设置页 Providers 标签 + 智连器面板）/ 回调页 `/oauth/oortcloud/callback`。
 - **权限审计与审计日志**：管理员校验（`require_admin`）之上记录状态变更审计事件，设置页「审计日志」标签可查询操作流水
 
 ---
@@ -479,6 +481,18 @@ Jev 是 TypeSafe AI 的结构化决策模型，支持三种原语：
 4. **已启用状态**：测试连接、停用、编辑按钮可点击，删除按钮置灰（需先停用才能删除）
 5. **已停用状态**：测试连接、启用、编辑、删除按钮均可点击
 6. 停用 Provider 后，其模型从模型选择器中自动隐藏，聊天时不可调用
+
+### 领取 OortCloud 免费模型额度
+
+无需准备任何 API Key，即可在本项目里使用 OortCloud 平台下发的 **10 元免费模型额度**（免费 NewAPI 令牌）进行对话：
+
+1. 进入设置页 → Providers 标签（或「智连器」面板），找到 **OortCloud 免费额度** 卡片；未领取时显示「免费领取 OortCloud 10 元模型额度」提示与「免费领取」按钮。
+2. 点击「免费领取」→ 浏览器跳转到 OortCloud 统一登录页，按提示登录并授权（一般无需填写 `appid` / `secretkey`）。
+3. 授权后自动回跳本应用回调页，后台领取平台下发的 **10 元免费模型额度** 并自动创建 `OortCloud` Provider（令牌密钥经本地加密保存）。
+4. 回到会话页，右上角 Provider 列表即可选用 **OortCloud** 及其免费模型，**不产生自有 API Key 费用**。
+5. 在智连器面板可点击刷新查看剩余积分；若需解除，可在对应入口断开（清除本地 Provider 与状态文件）。
+
+> 该能力属于「集成中心（Integration Hub）」插件，领取流程仅依赖用户登录令牌；`appid` / `secretkey` 等应用凭证为可选，仅在平台要求时填写（见 `backend/.env.local`）。
 
 ### 从插件市场安装插件
 
