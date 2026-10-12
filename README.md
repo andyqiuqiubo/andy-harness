@@ -84,9 +84,9 @@
 
 ## 演示
 
-![andy-harness 演示](gif/screenshot_2026-09-28_14-00-40.gif)
+![andy-harness 演示](gif/screenshot_2026-10-12_20-40-59.gif)
 
-> 演示 MCP 客户端（接入远程服务并调用工具）、设置页各标签（MCP / 输出制品 / 记忆 / 轨迹 / 定时任务 / Skills / 权限）、插件管理、会话导出/导入/分叉等特性（GIF）。
+> 演示 AI 对话（OortCloud 接入）、评测实验室（评测数据集与 provider × 模型对比矩阵）、设置页各标签（插件集成 / Skills 技能市场 / 安全权限）、元气伙伴宠物插件等特性（GIF）。
 
 ---
 
