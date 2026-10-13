@@ -13,6 +13,7 @@ ChannelManager 共享，避免每个渠道各写一套对话流程。
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -113,8 +114,23 @@ class WebhookChannel(Channel):
         return self._running
 
     def check_secret(self, provided: str) -> bool:
-        """校验调用方密钥；未配置 secret 时放行。"""
-        return not self.secret or provided == self.secret
+        """校验调用方密钥（常数时间比较，fail-closed）。
+
+        SEC-14：`/api/channels/inbound/**` 是唯一被认证中间件**显式豁免**的
+        入站面，未配置 secret 时若放行，任何知道 URL 的人都能以任意 user_id
+        驱动 agent（含触发高危工具）。因此：
+
+        - 未配置 secret → **拒绝**并打 error 日志（fail-closed，不再 fail-open）；
+        - 比较用 `hmac.compare_digest`，消除字符串 `==` 的时序侧信道。
+        """
+        if not self.secret:
+            logger.error(
+                "Webhook 渠道 '%s' 未配置 secret：入站请求一律拒绝。"
+                "请在渠道配置中设置 secret 后再启用入站。",
+                self.name,
+            )
+            return False
+        return hmac.compare_digest(str(provided or ""), self.secret)
 
 
 @dataclass

@@ -121,6 +121,21 @@ class ScheduleSpec:
         return self.type
 
 
+def schedule_period_minutes(spec: ScheduleSpec) -> int | None:
+    """调度周期（分钟）；一次性任务无周期返回 ``None``。
+
+    SEC-33：供 missed-run 判定使用——停机后重启时，若某周期任务的应跑时刻
+    已过去超过 N 个完整周期，则历史欠账不再补跑（补跑会形成重启风暴）。
+    """
+    if spec.type == INTERVAL:
+        return max(1, spec.interval_minutes)
+    if spec.type == DAILY:
+        return 24 * 60
+    if spec.type == WEEKLY:
+        return 7 * 24 * 60
+    return None  # once：一次性任务无周期概念，照常补跑
+
+
 def compute_next_run(spec: ScheduleSpec, now: datetime | None = None) -> str:
     """计算下一次运行时间（返回带偏移的 ISO 字符串；无下次则空串）。"""
     now = now or _now_local()
@@ -197,6 +212,8 @@ class ScheduledTask:
     fail_count: int = 0
     created_at: str = ""
     updated_at: str = ""
+    # SEC-31：归属用户（认证启用后按用户隔离；空串表示无归属/旧数据）
+    user_id: str = ""
 
     @classmethod
     def from_row(cls, row: Any) -> ScheduledTask:
@@ -229,6 +246,8 @@ class ScheduledTask:
             fail_count=int(row["fail_count"] or 0),
             created_at=row["created_at"] or "",
             updated_at=row["updated_at"] or "",
+            # 旧库（迁移前）没有该列，用 _row_get 容错读取
+            user_id=_row_get(row, "user_id", ""),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -256,7 +275,17 @@ class ScheduledTask:
             "fail_count": self.fail_count,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "user_id": self.user_id,
         }
+
+
+def _row_get(row: Any, key: str, default: str = "") -> str:
+    """从 sqlite3.Row 读取列，列不存在（旧库未迁移）时回落到默认值。"""
+    try:
+        value = row[key]
+    except (IndexError, KeyError, TypeError):
+        return default
+    return str(value or default)
 
 
 def _safe_json(raw: Any) -> dict[str, Any]:
@@ -320,13 +349,29 @@ class SchedulerService:
 
     # ── 查询 ──────────────────────────────────────────
 
-    def list_tasks(self) -> list[ScheduledTask]:
-        rows = self._db.query("SELECT * FROM scheduled_tasks ORDER BY created_at DESC")
+    def list_tasks(self, user_id: str | None = None) -> list[ScheduledTask]:
+        """列出任务。
+
+        ``user_id`` 非空时只返回该用户的任务（SEC-31：管理员传空串看全部）。
+        """
+        if user_id:
+            rows = self._db.query(
+                "SELECT * FROM scheduled_tasks WHERE user_id = ? ORDER BY created_at DESC",
+                (user_id,),
+            )
+        else:
+            rows = self._db.query("SELECT * FROM scheduled_tasks ORDER BY created_at DESC")
         return [ScheduledTask.from_row(r) for r in rows]
 
-    def get_task(self, task_id: str) -> ScheduledTask | None:
+    def get_task(self, task_id: str, user_id: str | None = None) -> ScheduledTask | None:
+        """读取任务；``user_id`` 非空时校验归属，非本人任务视为不存在（fail-closed）。"""
         row = self._db.query_one("SELECT * FROM scheduled_tasks WHERE id = ?", (task_id,))
-        return ScheduledTask.from_row(row) if row else None
+        if row is None:
+            return None
+        task = ScheduledTask.from_row(row)
+        if user_id and task.user_id != user_id:
+            return None
+        return task
 
     def due_tasks(self, now: datetime | None = None) -> list[ScheduledTask]:
         """已到期需要执行的任务。"""
@@ -339,6 +384,43 @@ class SchedulerService:
             (stamp,),
         )
         return [ScheduledTask.from_row(r) for r in rows]
+
+    # SEC-33：missed-run 宽限倍数。停机/长离线后重启时，周期任务的应跑时刻
+    # 可能已过去成百上千个周期；若把历史欠账全部补跑会形成「重启风暴」——
+    # 调度循环连续执行几百次任务，白烧 provider token、堆出大量重复会话。
+    # 迟到超过「周期 × 该倍数」的任务直接跳过补跑（记录 skipped 并推进到未来）。
+    MISSED_RUN_GRACE_FACTOR = 3
+
+    def is_missed_too_long(self, task: ScheduledTask, now: datetime | None = None) -> bool:
+        """SEC-33：任务的应跑时刻是否已错过太久（超过宽限倍数的周期）。
+
+        - 周期任务（daily/weekly/interval）：``now - next_run_at > 周期 × 3`` 判定为
+          错过太久，跳过补跑；
+        - 一次性（once）任务：无周期概念，长时间欠账也照常补跑（用户明确指定了
+          这个时刻，跳过反而是静默丢任务）；
+        - ``next_run_at`` 缺失/不可解析：按未错过处理（交给正常流程）。
+        """
+        if not task.next_run_at:
+            return False
+        due = _parse_datetime(task.next_run_at)
+        if due is None:
+            return False
+        period = schedule_period_minutes(task.schedule)
+        if period is None:
+            return False
+        now = now or _now_local()
+        grace = timedelta(minutes=period * self.MISSED_RUN_GRACE_FACTOR)
+        return (now - due) > grace
+
+    def missed_late_minutes(self, task: ScheduledTask, now: datetime | None = None) -> int:
+        """SEC-33：应跑时刻已迟到多少分钟（供日志/记录；无法解析时返回 0）。"""
+        if not task.next_run_at:
+            return 0
+        due = _parse_datetime(task.next_run_at)
+        if due is None:
+            return 0
+        now = now or _now_local()
+        return max(0, int((now - due).total_seconds() // 60))
 
     def list_runs(self, task_id: str, limit: int = 20) -> list[TaskRun]:
         rows = self._db.query(
@@ -363,25 +445,33 @@ class SchedulerService:
         raw = (spec.run_at or "").strip()
         if not raw:
             raise ValueError("一次性任务必须设置运行时间（run_at）")
-        target = _parse_datetime(raw)
-        if target is None:
+        if _parse_datetime(raw) is None:
             raise ValueError(f"一次性任务的运行时间格式无效: {raw}（应为 YYYY-MM-DD HH:MM）")
-        if target <= _now_local():
+        # 拒绝过去时间：一次性任务若设在过去，``compute_next_run`` 返回空串导致
+        # ``due_tasks``（``next_run_at != ''``）永不选中——任务显示为已启用却永远
+        # 不执行且无任何提示（回归测试 ``test_once_task_requires_future_run_at`` 守护点）。
+        # SEC-33 的「once 不计入 missed-run 跳过」语义作用于运行时 next_run_at 被拨回
+        # 过去的存量任务（见 test_once_task_never_skipped 的 DB 覆盖模拟），而非创建入口。
+        if _parse_datetime(raw) <= _now_local():
             raise ValueError(f"一次性任务的运行时间必须晚于当前时间: {raw}")
 
-    def create_task(self, data: dict[str, Any]) -> ScheduledTask:
+    def create_task(
+        self, data: dict[str, Any], user_id: str | None = None
+    ) -> ScheduledTask:
         task_id = f"task_{uuid.uuid4().hex[:12]}"
         schedule = ScheduleSpec.from_dict(data.get("schedule"))
         enabled = bool(data.get("enabled", True))
         self.validate_schedule(schedule, enabled=enabled)
         now = _to_iso(_now_local())
         next_run = compute_next_run(schedule) if enabled else ""
+        # user_id 优先级：显式参数 > data 内嵌；空值（含 ''）记为 ''
+        uid = user_id if user_id is not None else data.get("user_id")
         self._db.execute(
             "INSERT INTO scheduled_tasks "
             "(id, name, description, enabled, schedule_type, schedule_json, prompt, "
             " mcp_servers_json, skills_json, tools_json, provider_id, model, "
-            " max_iterations, timeout_seconds, next_run_at, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " max_iterations, timeout_seconds, next_run_at, created_at, updated_at, user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 task_id,
                 str(data.get("name") or "未命名任务"),
@@ -400,14 +490,15 @@ class SchedulerService:
                 next_run,
                 now,
                 now,
+                str(uid or ""),
             ),
         )
         created = self.get_task(task_id)
         assert created is not None
         return created
 
-    def update_task(self, task_id: str, data: dict[str, Any]) -> ScheduledTask | None:
-        task = self.get_task(task_id)
+    def update_task(self, task_id: str, data: dict[str, Any], user_id: str | None = None) -> ScheduledTask | None:
+        task = self.get_task(task_id, user_id=user_id)
         if task is None:
             return None
 
@@ -461,15 +552,20 @@ class SchedulerService:
         )
         return self.get_task(task_id)
 
-    def delete_task(self, task_id: str) -> bool:
-        if self.get_task(task_id) is None:
+    def delete_task(self, task_id: str, user_id: str | None = None) -> bool:
+        if self.get_task(task_id, user_id=user_id) is None:
             return False
         self._db.execute("DELETE FROM scheduled_task_runs WHERE task_id = ?", (task_id,))
         self._db.execute("DELETE FROM scheduled_tasks WHERE id = ?", (task_id,))
         return True
 
-    def clear_runs(self, task_id: str) -> int:
-        rows = self._db.query("SELECT COUNT(*) AS n FROM scheduled_task_runs WHERE task_id = ?", (task_id,))
+    def clear_runs(self, task_id: str, user_id: str | None = None) -> int | None:
+        """清空运行历史；``user_id`` 非空时校验归属，越权返回 None（由路由转 404）。"""
+        if self.get_task(task_id, user_id=user_id) is None:
+            return None
+        rows = self._db.query(
+            "SELECT COUNT(*) AS n FROM scheduled_task_runs WHERE task_id = ?", (task_id,)
+        )
         count = int(rows[0]["n"]) if rows else 0
         if count:
             self._db.execute("DELETE FROM scheduled_task_runs WHERE task_id = ?", (task_id,))

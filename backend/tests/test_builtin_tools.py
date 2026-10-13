@@ -67,6 +67,54 @@ class TestCalculatorTool:
         assert "expression" in schema["properties"]
 
 
+class TestCalculatorDosGuards:
+    """SEC-01 修复验证：计算器 DoS 防护（幂规模 / 节点预算 / 长度上限）。"""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "2**999999999",  # 超大指数
+            "9**9**9",  # 右结合链式超大幂
+            "(2**4096)**4096",  # 嵌套幂累积出超大中间结果
+            "2**100000",  # 指数超绝对值上限
+        ],
+    )
+    async def test_pow_dos_rejected(self, expr: str) -> None:
+        tool = CalculatorTool()
+        result = await tool.execute({"expression": expr})
+        assert result.startswith("错误")
+        assert "上限" in result or "过大" in result
+
+    @pytest.mark.asyncio
+    async def test_reasonable_pow_still_works(self) -> None:
+        """合理幂运算不受影响（2**64 等常见计算）。"""
+        tool = CalculatorTool()
+        result = await tool.execute({"expression": "2**64"})
+        assert result == "18446744073709551616"
+
+    @pytest.mark.asyncio
+    async def test_too_many_nodes_rejected(self) -> None:
+        """超宽链式运算（999 字符 / 999 节点，长度内但超 500 节点预算）被拒。"""
+        tool = CalculatorTool()
+        expr = "1+" * 499 + "1"  # 999 字符，999 个 AST 节点
+        result = await tool.execute({"expression": expr})
+        assert "错误" in result and "复杂" in result
+
+    @pytest.mark.asyncio
+    async def test_too_long_expression_rejected(self) -> None:
+        tool = CalculatorTool()
+        result = await tool.execute({"expression": "1+" * 2000 + "1"})
+        assert "错误" in result and "过长" in result
+
+    @pytest.mark.asyncio
+    async def test_string_constant_rejected(self) -> None:
+        """字符串常量不得进入运算（与 tool_calculator 行为对齐）。"""
+        tool = CalculatorTool()
+        result = await tool.execute({"expression": "'abc'"})
+        assert "错误" in result
+
+
 class TestCurrentTimeTool:
     """当前时间工具测试。"""
 

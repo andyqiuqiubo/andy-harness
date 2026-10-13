@@ -172,6 +172,48 @@ class TestFork:
         sid, _ids = _seed(service)
         assert service.fork_session(sid, at_message_id="bad-id") is None
 
+    def test_fork_concurrent_is_atomic(self, service: SessionServiceImpl) -> None:
+        """SEC-20：多线程并发 fork 同一会话，每条分支都必须完整。
+
+        锁应保证「读快照 → create → 逐条 append」整体串行，避免并发 fork 交错
+        导致某条分支只拷到一半消息（半条分支）或读到不一致快照。
+        """
+        import threading
+
+        sid, _ids = _seed(service)
+        forks: list[Any] = []
+        errors: list[BaseException] = []
+        barrier = threading.Barrier(8)
+
+        def _worker() -> None:
+            try:
+                barrier.wait(timeout=10)  # 尽量同时进入 fork，制造交错窗口
+                forks.append(service.fork_session(sid))
+            except BaseException as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [threading.Thread(target=_worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        assert not errors, f"并发 fork 抛出异常: {errors}"
+        assert not any(t.is_alive() for t in threads), "存在未能退出的 fork 线程"
+        # 每个 fork 都成功且拷全 3 条消息（无半条分支）
+        assert len(forks) == 8
+        assert all(f is not None for f in forks)
+        counts = {service.count_messages(f.id) for f in forks}
+        assert counts == {3}, f"存在半条分支，消息条数集合={counts}"
+        # 分支 id 两两不同，且各自消息 id 不与源会话重复（uuid 唯一）
+        fork_ids = [f.id for f in forks]
+        assert len(set(fork_ids)) == 8
+        for f in forks:
+            src_ids = {m.id for m in service.list_messages(sid)}
+            new_ids = {m.id for m in service.list_messages(f.id)}
+            assert src_ids.isdisjoint(new_ids), "分支消息复用了源消息 id"
+
+
 
 class TestSessionPortabilityAPI:
     """导出/导入/分叉 REST 测试。"""
@@ -399,3 +441,49 @@ class TestMessageDeleteAPI:
             assert client.delete("/api/sessions/nope/messages/nope").status_code == 404
         finally:
             client.delete(f"/api/sessions/{sid}")
+
+
+# ── SEC-20：并发 fork 串行化 ──────────────────────────────────
+class TestForkConcurrency:
+    """fork 复合写在锁内整体原子：并发 fork 同一源会话不得产生半条分支。"""
+
+    def test_concurrent_forks_produce_complete_branches(
+        self, service: SessionServiceImpl
+    ) -> None:
+        """多线程并发 fork 同一会话，每个分支都应完整复制全部消息。"""
+        import threading
+
+        sid, ids = _seed(service)  # 3 条消息
+        n_threads = 8
+        results: list[Any] = [None] * n_threads
+        barrier = threading.Barrier(n_threads)
+
+        def _worker(i: int) -> None:
+            # 用 barrier 让所有线程尽量同时进入 fork，放大竞态窗口
+            barrier.wait(timeout=5)
+            results[i] = service.fork_session(sid)
+
+        threads = [threading.Thread(target=_worker, args=(i,)) for i in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+            assert not t.is_alive(), "fork 线程未结束（可能死锁）"
+
+        forked = [r for r in results if r is not None]
+        assert len(forked) == n_threads, "部分并发 fork 失败"
+        # 每个分支都完整：消息数一致、内容与原会话一致（无半条/缺条/串读）
+        for f in forked:
+            assert f.id != sid
+            msgs = service.list_messages(f.id)
+            assert len(msgs) == 3, f"分支 {f.id} 消息数异常: {len(msgs)}"
+            assert [m.content for m in msgs] == ["第一个问题", "第一个回答", "第二个问题"]
+
+    def test_fork_lock_is_reentrant(self, service: SessionServiceImpl) -> None:
+        """fork 内部会再次写消息/会话，锁必须可重入（否则自锁死）。"""
+        # 若锁不可重入，_fork_locked 内 create_session/append_message 二次进入
+        # 同一 RLock 会死锁；这里能返回即证明可重入生效。
+        sid, _ids = _seed(service)
+        forked = service.fork_session(sid)
+        assert forked is not None
+        assert service.count_messages(forked.id) == 3

@@ -84,6 +84,11 @@ def setup_artifact_routes(registry: ServiceRegistry) -> None:
         record = svc.get(artifact_id)
         if record is None:
             raise APIError("ARTIFACT_NOT_FOUND", f"未找到工件 {artifact_id}", 404)
+        # 边界校验：offset 非负、limit 受上限保护，避免非法范围导致的资源浪费或异常。
+        if offset < 0:
+            raise APIError("ARTIFACT_BAD_RANGE", "offset 必须为非负整数", 400)
+        if limit is not None and (limit <= 0 or limit > 10_000_000):
+            raise APIError("ARTIFACT_BAD_RANGE", "limit 必须介于 1 与 10,000,000 之间", 400)
         # E12：启用认证时，工件归属的会话必须属于当前用户（两跳：artifact→session→user）。
         owner = _owner_user_id(request)
         if owner:

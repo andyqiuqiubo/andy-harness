@@ -58,6 +58,21 @@ MAX_FILES_PER_MESSAGE: int = 8
 MAX_DOCUMENT_SIZE: int = 200 * 1024  # 200 KB
 MAX_IMAGE_SIZE: int = int(1.5 * 1024 * 1024)  # 1.5 MB
 
+
+def size_limit_for_ext(ext: str) -> int | None:
+    """按扩展名返回单文件大小上限（字节）。
+
+    SEC-29：供上传端在 **读取字节之前** 预判大小上限——据此流式读取到
+    「上限 + 1」字节即可判定超限，避免把数百 MB 的恶意文件整体读进内存。
+    不支持的类型返回 ``None``（由 ``classify`` 另行抛「类型不支持」）。
+    """
+    ext = ext.lower()
+    if ext in DOCUMENT_EXTENSIONS:
+        return MAX_DOCUMENT_SIZE
+    if ext in IMAGE_EXTENSIONS:
+        return MAX_IMAGE_SIZE
+    return None
+
 # 图像最大边长：超过则用 Pillow 缩放，控制视觉 token 成本
 MAX_IMAGE_DIMENSION: int = 1280
 

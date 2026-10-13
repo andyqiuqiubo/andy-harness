@@ -44,11 +44,20 @@ from typing import Any
 import httpx
 
 from harness.infra import subproc
+from harness.infra.net_guard import assert_url_safe
 
 from .feishu_channel import FeishuChannelConnector
 from .integration_base import ActionSpec, AuthResult, IntegrationProvider, IntegrationResult
+from .state_store import load_state, needs_upgrade, save_state
 
 logger = logging.getLogger("harness.plugin.integration_hub.feishu")
+
+# 落盘前必须加密的敏感字段（SEC-10：token/app_secret/webhook 凭据曾明文落盘）
+# - token：tenant_access_token（API 模式）
+# - app_secret：应用密钥（api/cli/channel 三模式均可能写入）
+# - webhook_url：自定义群机器人地址内嵌 hook token
+# - webhook_secret：群机器人签名密钥
+_SENSITIVE_FIELDS = ("token", "app_secret", "webhook_url", "webhook_secret")
 
 # 飞书开放平台 API 根地址（api 兜底模式使用）
 FEISHU_OPEN_API_BASE = "https://open.feishu.cn/open-apis"
@@ -66,6 +75,21 @@ FEISHU_CLI_INSTALL = "npx @larksuite/cli@latest install"
 # lark-cli 读取应用身份的环境变量（官方 CLI 文档明确）
 LARK_CLI_APP_ID_ENV = "LARKSUITE_CLI_APP_ID"
 LARK_CLI_APP_SECRET_ENV = "LARKSUITE_CLI_APP_SECRET"
+
+# ── CLI 子进程超时（SEC-16） ─────────────────────────
+# lark-cli 在某些场景（首次运行触发授权确认、多账号选择、SDK 交互提示、网络挂起）
+# 会**停在交互等待而不退出**。原实现调用 subprocess 时不传 timeout，该子进程会永久
+# 挂起，连带占住一个线程（asyncio.to_thread）与 provider 实例，飞书集成彻底卡死且
+# 无任何错误上报。这里给每条命令设上限，超时即 kill 并返回可操作的错误提示。
+FEISHU_CLI_TIMEOUT = float(os.environ.get("HARNESS_FEISHU_CLI_TIMEOUT", "60"))
+# 一键安装（npx 拉包 + 下载二进制）允许更长时间
+FEISHU_CLI_INSTALL_TIMEOUT = float(os.environ.get("HARNESS_FEISHU_CLI_INSTALL_TIMEOUT", "300"))
+
+# ── tenant_access_token 换取重试（PLG-03） ────────────
+# 原实现失败即返回 False（零重试）：一次网络抖动/限流/时钟偏差就让集成断连，
+# 而调用方只看到「尚未认证」，排查成本极高。这里做有限次重试 + 线性退避。
+_TOKEN_MAX_ATTEMPTS = 3
+_TOKEN_RETRY_BACKOFF = 0.5
 
 
 def _resolve_lark_cli_home() -> str:
@@ -153,6 +177,15 @@ class FeishuIntegration(IntegrationProvider):
         self._webhook_secret: str | None = None
         self._message_handler: Any = None
         self._channel = FeishuChannelConnector()
+        # 并发保护锁（SEC-16 / PLG-03）
+        # - _token_lock：token 过期瞬间并发刷新会重复消耗配额且互相覆盖
+        # - _cli_lock：多协程并发拉起 lark-cli 子进程会互相踩配置/token 缓存
+        # 两者都惰性创建并绑定到「首次使用的事件循环」，避免跨循环复用触发
+        # RuntimeError（插件实例可能跨测试/重载被复用）。
+        self._token_lock: asyncio.Lock | None = None
+        self._token_lock_loop: asyncio.AbstractEventLoop | None = None
+        self._cli_lock: asyncio.Lock | None = None
+        self._cli_lock_loop: asyncio.AbstractEventLoop | None = None
         self._state_dir = state_dir or os.environ.get(
             "INTEGRATION_HUB_STATE_DIR",
             os.path.join(
@@ -164,6 +197,29 @@ class FeishuIntegration(IntegrationProvider):
         self._state_file = os.path.join(self._state_dir, "feishu_state.json")
         self._load_state()
 
+    def _bound_lock(self, attr: str) -> asyncio.Lock:
+        """获取与**当前事件循环**绑定的互斥锁。
+
+        ``asyncio.Lock`` 在 Python 3.10+ 采用惰性绑定：首次 await 时记录所属循环，
+        之后若被另一个循环 await 会抛 ``RuntimeError: ... is bound to a different
+        event loop``。插件实例可能跨循环被复用（测试每次新建 loop、后端重载），
+        故这里记录绑定循环并在检测到切换时重建锁。
+        """
+        loop = asyncio.get_running_loop()
+        lock: asyncio.Lock | None = getattr(self, attr)
+        loop_attr = f"{attr}_loop"
+        if lock is None or getattr(self, loop_attr) is not loop:
+            lock = asyncio.Lock()
+            setattr(self, attr, lock)
+            setattr(self, loop_attr, loop)
+        return lock
+
+    def _get_token_lock(self) -> asyncio.Lock:
+        return self._bound_lock("_token_lock")
+
+    def _get_cli_lock(self) -> asyncio.Lock:
+        return self._bound_lock("_cli_lock")
+
     # ── 依赖注入（由插件 activate 时设置） ─────────────
     def set_message_handler(self, handler: Any) -> None:
         """注入入站消息处理器：channel 收到用户消息后调用它获取 Agent 回复。"""
@@ -172,47 +228,53 @@ class FeishuIntegration(IntegrationProvider):
 
     # ── 状态持久化 ──────────────────────────────────
     def _load_state(self) -> None:
-        """从本地状态文件恢复 token / 认证模式 / 凭证 / CLI 信息（用于重启后自动刷新）。"""
+        """从本地状态文件恢复 token / 认证模式 / 凭证 / CLI 信息（用于重启后自动刷新）。
+
+        敏感字段（token/app_secret/webhook 凭据）经 state_store 解密后载入；
+        兼容旧版明文文件，检测到明文即自动升级为密文存储。
+        """
+        data = load_state(self._state_file, _SENSITIVE_FIELDS)
+        self._token = data.get("token")
+        self._token_expire_at = self._safe_float(data.get("expire_at"), 0.0)
+        self._auth_mode = data.get("auth_mode")
+        self._cli_binary = data.get("cli_binary")
+        self._cli_profile = data.get("cli_profile")
+        # API 模式恢复 app_secret，使 token 过期后可自动静默刷新；
+        # CLI 模式恢复 app_id/app_secret，用于以应用身份注入环境变量
+        self._app_id = data.get("app_id")
+        self._app_secret = data.get("app_secret")
+        self._webhook_url = data.get("webhook_url")
+        self._webhook_secret = data.get("webhook_secret")
+        if needs_upgrade(self._state_file, _SENSITIVE_FIELDS):
+            logger.info("检测到旧版明文敏感字段，自动升级为加密存储")
+            self._save_state()
+
+    @staticmethod
+    def _safe_float(value: Any, default: float) -> float:
+        """宽容解析 expire_at：损坏文件/缺字段时回落默认值而不是抛异常。"""
         try:
-            if os.path.exists(self._state_file):
-                with open(self._state_file, encoding="utf-8") as f:
-                    data = json.load(f)
-                self._token = data.get("token")
-                self._token_expire_at = float(data.get("expire_at", 0.0))
-                self._auth_mode = data.get("auth_mode")
-                self._cli_binary = data.get("cli_binary")
-                self._cli_profile = data.get("cli_profile")
-                # API 模式恢复 app_secret，使 token 过期后可自动静默刷新；
-                # CLI 模式恢复 app_id/app_secret，用于以应用身份注入环境变量
-                self._app_id = data.get("app_id")
-                self._app_secret = data.get("app_secret")
-                self._webhook_url = data.get("webhook_url")
-                self._webhook_secret = data.get("webhook_secret")
-        except Exception as e:  # noqa: BLE001
-            logger.warning("读取飞书状态文件失败: %s", e)
+            return float(value)
+        except (TypeError, ValueError):
+            return default
 
     def _save_state(self) -> None:
-        """持久化当前认证状态（含 app_id/app_secret，供重启后静默刷新/应用身份注入）。"""
-        try:
-            os.makedirs(self._state_dir, exist_ok=True)
-            with open(self._state_file, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "token": self._token,
-                        "expire_at": self._token_expire_at,
-                        "auth_mode": self._auth_mode,
-                        "cli_binary": self._cli_binary,
-                        "cli_profile": self._cli_profile,
-                        "app_id": self._app_id,
-                        "app_secret": self._app_secret,
-                        "webhook_url": self._webhook_url,
-                        "webhook_secret": self._webhook_secret,
-                    },
-                    f,
-                    ensure_ascii=False,
-                )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("写入飞书状态文件失败: %s", e)
+        """持久化当前认证状态（敏感字段加密 + 原子写 + 0o600 权限）。"""
+        save_state(
+            self._state_dir,
+            self._state_file,
+            {
+                "token": self._token,
+                "expire_at": self._token_expire_at,
+                "auth_mode": self._auth_mode,
+                "cli_binary": self._cli_binary,
+                "cli_profile": self._cli_profile,
+                "app_id": self._app_id,
+                "app_secret": self._app_secret,
+                "webhook_url": self._webhook_url,
+                "webhook_secret": self._webhook_secret,
+            },
+            _SENSITIVE_FIELDS,
+        )
 
     def disconnect(self) -> None:
         """断开并清除本地认证状态（删除状态文件、撤销 MCP 注册、停止渠道）。"""
@@ -780,32 +842,59 @@ class FeishuIntegration(IntegrationProvider):
             return result
 
     async def _fetch_token(self, app_id: str, app_secret: str) -> bool:
-        """换取 tenant_access_token（api 兜底模式）。"""
-        try:
-            payload = await self._api_call(
-                "POST",
-                "/auth/v3/tenant_access_token/internal",
-                json_body={"app_id": app_id, "app_secret": app_secret},
-                auth=False,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.error("飞书 token 请求失败: %s", e)
-            return False
-        if payload.get("code") != 0:
-            logger.error("飞书 token 错误: %s", payload)
-            return False
-        self._token = payload.get("tenant_access_token")
-        expire = float(payload.get("expire", 7200))
-        self._token_expire_at = time.time() + expire - 60  # 提前 60s 刷新
-        return True
+        """换取 tenant_access_token（api 兜底模式）。
+
+        PLG-03：原实现「一次失败即断连」——网络抖动、开放平台限流或本机时钟偏差
+        都会让集成直接不可用，而调用方只看到「尚未认证」。这里改为有限次重试 +
+        线性退避，且只在**确实拿到新 token** 时才覆盖旧值（避免失败路径把有效
+        token 清成 None）。
+        """
+        last_error = ""
+        for attempt in range(1, _TOKEN_MAX_ATTEMPTS + 1):
+            try:
+                payload = await self._api_call(
+                    "POST",
+                    "/auth/v3/tenant_access_token/internal",
+                    json_body={"app_id": app_id, "app_secret": app_secret},
+                    auth=False,
+                )
+            except Exception as e:  # noqa: BLE001
+                last_error = str(e)
+                logger.warning(
+                    "飞书 token 请求异常（第 %d/%d 次）: %s", attempt, _TOKEN_MAX_ATTEMPTS, e
+                )
+            else:
+                token = payload.get("tenant_access_token")
+                if payload.get("code") == 0 and token:
+                    self._token = token
+                    expire = self._safe_float(payload.get("expire"), 7200.0)
+                    self._token_expire_at = time.time() + expire - 60  # 提前 60s 刷新
+                    return True
+                last_error = str(payload)
+                logger.warning(
+                    "飞书 token 返回错误（第 %d/%d 次）: %s", attempt, _TOKEN_MAX_ATTEMPTS, payload
+                )
+            if attempt < _TOKEN_MAX_ATTEMPTS:
+                await asyncio.sleep(_TOKEN_RETRY_BACKOFF * attempt)
+        logger.error("飞书 token 换取失败（已重试 %d 次）: %s", _TOKEN_MAX_ATTEMPTS, last_error)
+        return False
 
     async def _ensure_token(self) -> bool:
-        """确保 token 有效；若已过期且仍有凭证则静默刷新（api 兜底模式）。"""
+        """确保 token 有效；若已过期且仍有凭证则静默刷新（api 兜底模式）。
+
+        SEC-16：并发调用（多渠道/多会话同时触发动作）会在 token 过期瞬间各起一次
+        刷新请求——飞书 tenant_access_token 有换取频次限制，并发刷新既浪费配额，
+        也可能让「后到的旧响应」覆盖「先到的新 token」。故加互斥锁 + 双重检查。
+        """
         if self._token and time.time() < self._token_expire_at:
             return True
-        if self._app_id and self._app_secret:
+        if not (self._app_id and self._app_secret):
+            return False
+        async with self._get_token_lock():
+            # 双重检查：等待锁期间可能已有别的协程刷新成功
+            if self._token and time.time() < self._token_expire_at:
+                return True
             return await self._fetch_token(self._app_id, self._app_secret)
-        return False
 
     # ── CLI 封装（主路径，可被测替换） ───────────────
     def _cli_auth_status_sync(self) -> str | None:
@@ -873,7 +962,15 @@ class FeishuIntegration(IntegrationProvider):
         result = await subproc.run(
             ["npx", "@larksuite/cli@latest", "install"],
             env={**dict(os.environ), "npm_config_yes": "true"},
+            timeout=FEISHU_CLI_INSTALL_TIMEOUT,
         )
+        if result.timed_out:
+            return (
+                -1,
+                result.stdout,
+                f"安装超时（{FEISHU_CLI_INSTALL_TIMEOUT:.0f}s 未完成），已终止；"
+                "请检查网络后重试，或手动执行 npx @larksuite/cli@latest install。",
+            )
         if result.returncode == -1 and not result.stderr:
             return (-1, "", "未找到 npx，请先安装 Node.js")
         return (result.returncode, result.stdout, result.stderr)
@@ -890,7 +987,19 @@ class FeishuIntegration(IntegrationProvider):
         ``uvicorn --reload`` 的 SelectorEventLoop 不支持 asyncio 子进程
         （抛裸 NotImplementedError 且消息为空），同步执行与事件循环种类无关。
         """
-        result = await subproc.run(cmd, env=env, stdin_data=stdin_data)
+        result = await subproc.run(
+            cmd, env=env, stdin_data=stdin_data, timeout=FEISHU_CLI_TIMEOUT
+        )
+        if result.timed_out:
+            # 退出码用 -9（SIGKILL 语义）：既区别于 CLI 自身非零退出，也让上层
+            # 一眼看出是「被超时终止」而非业务失败。
+            return (
+                -9,
+                result.stdout,
+                f"lark-cli 执行超时（{FEISHU_CLI_TIMEOUT:.0f}s 未返回），已终止子进程。"
+                "常见原因是 CLI 停在交互等待（授权确认 / 多账号选择 / 首次运行初始化），"
+                "请在本机手动执行 `lark-cli auth login` 后再试。",
+            )
         return result.returncode, result.stdout, result.stderr
 
     async def _run_cli(
@@ -909,10 +1018,30 @@ class FeishuIntegration(IntegrationProvider):
         自愈：若因注入的 profile 在 CLI 配置里不存在而报 not_configured
         （该错误发生在请求发出前，无副作用），自动去掉 profile 按默认应用重试一次，
         避免配置漂移后所有调用集体失败。
+
+        串行化（SEC-16）：多个协程并发拉起 lark-cli 子进程会共享同一份
+        ``.lark-cli`` 配置与 token 缓存，并发读改写会互相覆盖（表现与
+        「两个协程并发读同一连接」一致：状态机损坏且错误信息极具误导性）。
+        这里用实例级互斥锁把 CLI 调用串成一条，配合 :data:`FEISHU_CLI_TIMEOUT`
+        保证单次持锁时间有上界，不会永久占住。
         """
         if not self._cli_binary:
             return (-1, "", "CLI 未初始化")
-        cmd = [self._cli_binary]
+        async with self._get_cli_lock():
+            return await self._run_cli_locked(args, profile=profile, env=env, stdin_data=stdin_data)
+
+    async def _run_cli_locked(
+        self,
+        args: list[str],
+        profile: str | None = None,
+        env: dict[str, str] | None = None,
+        stdin_data: bytes | None = None,
+    ) -> tuple[int, str, str]:
+        """持锁后的实际执行体（拆分仅为让 :meth:`_run_cli` 专注加锁/串行化）。"""
+        binary = self._cli_binary
+        if not binary:
+            return (-1, "", "CLI 未初始化")
+        cmd = [binary]
         profile = profile or self._cli_profile
         if profile:
             cmd += ["--profile", str(profile)]
@@ -920,7 +1049,7 @@ class FeishuIntegration(IntegrationProvider):
         rc, out, err = await self._exec_cli(cmd, env or self._cli_env(), stdin_data)
         if rc != 0 and profile and self._NOT_CONFIGURED_RE.search(f"{out}\n{err}"):
             logger.warning("lark-cli profile '%s' 不可用（not_configured），降级为默认应用重试", profile)
-            retry_cmd = [self._cli_binary] + [str(a) for a in args]
+            retry_cmd = [binary] + [str(a) for a in args]
             rc2, out2, err2 = await self._exec_cli(retry_cmd, env or self._cli_env(), stdin_data)
             if rc2 == 0 or not self._NOT_CONFIGURED_RE.search(f"{out2}\n{err2}"):
                 return (
@@ -1285,6 +1414,12 @@ class FeishuIntegration(IntegrationProvider):
                 body["sign"] = sign
             except Exception as e:  # noqa: BLE001
                 logger.warning("生成 Webhook 签名失败: %s", e)
+        try:
+            # SEC-11：webhook_url 由用户配置但仍需校验——配置被污染/误填内网地址时，
+            # 推送会把本机会话内容发到不可信目标（也防 DNS 重绑定探测内网）。
+            assert_url_safe(self._webhook_url)
+        except ValueError as e:
+            return IntegrationResult(ok=False, error=f"Webhook 地址被安全策略拒绝: {e}")
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.post(self._webhook_url, json=body)

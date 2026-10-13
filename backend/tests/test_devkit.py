@@ -82,6 +82,51 @@ def test_scaffold_rejects_duplicate_and_bad_id(tmp_path: Path) -> None:
         scaffold(plugins_dir, "nope", "tool_x", "x")
 
 
+class TestScaffoldCodeInjection:
+    """SEC-03 修复验证：name/description 不得向生成源码注入可执行代码。"""
+
+    @pytest.mark.parametrize(
+        "bad_name",
+        [
+            'x"; import os; os.system("calc"); "',  # 字符串字面量逃逸
+            'x"""\nimport os\nos.system("calc")\n"""',  # docstring 逃逸
+            "x')\nimport subprocess\nsubprocess.run(['calc'])#",  # 注释/括号逃逸
+            "x\\\nimport os",  # 反斜杠续行
+            "x`import os`",  # 反引号
+            "x;drop",  # 分号
+        ],
+    )
+    def test_malicious_name_rejected(self, tmp_path: Path, bad_name: str) -> None:
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        with pytest.raises(ValueError):
+            scaffold(plugins_dir, "tool", "tool_inj", bad_name)
+
+    @pytest.mark.parametrize(
+        "bad_desc",
+        [
+            'ok"""\nimport os\nos.system("calc")',
+            'ok" ; import os ; "',
+            "ok\\\nimport os",
+        ],
+    )
+    def test_malicious_description_rejected(self, tmp_path: Path, bad_desc: str) -> None:
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        with pytest.raises(ValueError):
+            scaffold(plugins_dir, "tool", "tool_inj", "正常名称", bad_desc)
+
+    def test_generated_source_is_valid_python(self, tmp_path: Path) -> None:
+        """白名单内输入生成的源码必须语法合法（ast.parse 自检生效）。"""
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        result = scaffold(plugins_dir, "tool", "tool_ok", "问候工具", "生成 echo 问候，支持中文。")
+        import ast as _ast
+
+        src = (Path(result["dir"]) / "main.py").read_text(encoding="utf-8")
+        _ast.parse(src)  # 不抛即合法
+
+
 def test_reload_missing_manifest(tmp_path: Path, loader: PluginLoader) -> None:
     with pytest.raises(ValueError, match="plugin.json"):
         asyncio.run(reload_plugin(loader, tmp_path, "tool_absent"))

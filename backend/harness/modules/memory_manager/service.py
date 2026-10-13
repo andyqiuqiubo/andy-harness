@@ -13,8 +13,11 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import uuid
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -26,6 +29,8 @@ from harness.modules.memory_manager.embedding import (
     cosine_similarity,
 )
 
+logger = logging.getLogger("harness.memory_manager")
+
 SCOPE_GLOBAL = "global"
 SCOPE_SESSION = "session"
 _VALID_SCOPES = {SCOPE_GLOBAL, SCOPE_SESSION}
@@ -36,6 +41,30 @@ _HINT_DEFAULT_COUNT = 8
 
 # 向量检索的默认最小相似度（低于此值视为不相关）。
 _DEFAULT_MIN_SIMILARITY = 0.15
+
+# ── SEC-18：向量检索热点保护 ──────────────────────────
+# embedding 解码结果缓存条数上限（LRU）。选择依据：缓存的是「记忆条数」而非
+# 请求数，单用户长期记忆一般几十到几百条，512 足以覆盖全量且内存可控
+# （每条向量默认 256 维 float ≈ 数 KB）。
+_EMBED_CACHE_MAX = 512
+# 单次向量检索最多扫描的行数。向量检索无法在 SQL 侧剪枝，必须全表读取后逐条
+# 比对；这里设一个安全上限，避免记忆表膨胀后单次检索把主线程拖死（超限仅告警，
+# 仍按相关性排序返回，不静默丢弃「更新」的记忆——见 _vector_search）。
+_MAX_VECTOR_SCAN_ROWS = 20_000
+
+# ── tool_memory 总条数上限（SEC-34 归纳 / PLG 项） ──────────────────────────
+# 记忆表无内置增长上限，长期运行的 agent 可能无限堆积（尤其 session 作用域的记忆）。
+# 这里设一个全局总条数上限，超出后按 updated_at 最早的优先淘汰（环形淘汰）。
+# 默认 10000 条，可通过 HARNESS_MEMORIES_MAX 调整；下限 100 防止误配导致功能失效。
+_MAX_MEMORIES_TOTAL = 10_000
+
+
+def _max_memories_total() -> int:
+    try:
+        v = int(os.environ.get("HARNESS_MEMORIES_MAX", str(_MAX_MEMORIES_TOTAL)))
+        return max(100, v)
+    except (TypeError, ValueError):
+        return _MAX_MEMORIES_TOTAL
 
 
 def _now_iso() -> str:
@@ -164,6 +193,20 @@ class MemoryServiceImpl(MemoryService):
         # 默认用本地哈希嵌入器（零依赖、可离线）；显式传 None 可只保留 LIKE。
         self._embedder: Embedder | None = HashingEmbedder() if embedder is None else embedder
         self._min_similarity = min_similarity
+        # embedding 解码缓存：row_id -> (embedding 原文, 向量)。以「原文」参与比较，
+        # 记录被改写后原文变化即自动失效，无需依赖写入方全部记得清缓存。
+        self._embed_cache: OrderedDict[str, tuple[Any, list[float]]] = OrderedDict()
+
+    # ── embedding 解码缓存（SEC-18） ──────────────────
+    def _embed_cache_put(self, row_id: str, raw: Any, vec: list[float]) -> None:
+        self._embed_cache[row_id] = (raw, vec)
+        self._embed_cache.move_to_end(row_id)
+        while len(self._embed_cache) > _EMBED_CACHE_MAX:
+            self._embed_cache.popitem(last=False)
+
+    def _embed_cache_invalidate(self, memory_id: str) -> None:
+        """写入路径调用：记录被新增/修改/删除后立刻失效，避免检索读到旧向量。"""
+        self._embed_cache.pop(str(memory_id), None)
 
     def _embed_text(self, key: str, value: str, tags_str: str) -> str | None:
         """生成一条记忆的嵌入并序列化为 JSON 字符串。"""
@@ -200,6 +243,7 @@ class MemoryServiceImpl(MemoryService):
                 "UPDATE memories SET value = ?, tags = ?, embedding = ?, updated_at = ? WHERE id = ?",
                 (value, tags_str, embedding_json, now, existing["id"]),
             )
+            self._embed_cache_invalidate(existing["id"])
             record = self.get(existing["id"], user_id=user_id)
             assert record is not None
             return record
@@ -223,9 +267,41 @@ class MemoryServiceImpl(MemoryService):
                 user_id,
             ),
         )
+        self._embed_cache_invalidate(mid)
+        self._evict_if_over_cap()
         record = self.get(mid, user_id=user_id)
         assert record is not None
         return record
+
+    def _evict_if_over_cap(self) -> None:
+        """环形淘汰：记忆总条数超过上限时，按 updated_at 最早优先删除多余条目。
+
+        仅作用于「新增」路径（update 不产生新行），且新建条目 updated_at=now 必为最新，
+        不会被自身触发淘汰。下限保护在 :func:`_max_memories_total` 内。
+        """
+        cap = _max_memories_total()
+        row = self._db.query_one("SELECT COUNT(*) AS n FROM memories")
+        total = int(row["n"]) if row else 0
+        if total <= cap:
+            return
+        excess = total - cap
+        # 按物理插入顺序（rowid 单调自增）淘汰最早写入的条目，而非 updated_at ——
+        # 因为 _now_iso() 精确到秒，高频写入会大量碰撞同一秒，updated_at 排序无法区分
+        # 新旧，误删刚写入的条目；rowid 保证最新写入的永远在队尾，不会被自身淘汰。
+        rows = self._db.query(
+            "SELECT id FROM memories ORDER BY rowid ASC LIMIT ?",
+            (excess,),
+        )
+        if not rows:
+            return
+        ids = [r["id"] for r in rows]
+        placeholders = ",".join("?" * len(ids))
+        self._db.execute(
+            f"DELETE FROM memories WHERE id IN ({placeholders})", tuple(ids)
+        )
+        for rid in ids:
+            self._embed_cache_invalidate(rid)
+        logger.info("记忆总数 %d 超出上限 %d，已淘汰最早 %d 条", total, cap, excess)
 
     def get(self, memory_id: str, user_id: str = "") -> MemoryRecord | None:
         row = self._db.query_one("SELECT * FROM memories WHERE id = ?", (memory_id,))
@@ -278,7 +354,16 @@ class MemoryServiceImpl(MemoryService):
         sql = "SELECT * FROM memories"
         if where:
             sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(_MAX_VECTOR_SCAN_ROWS)
         rows = self._db.query(sql, tuple(params))
+        if len(rows) >= _MAX_VECTOR_SCAN_ROWS:
+            # 仅告警：截断会让「最久未更新」的记忆退出检索，静默丢弃比慢更危险，
+            # 故上限取 2 万（远超正常使用）并在此提示需要归档。
+            logger.warning(
+                "记忆表行数达到向量检索扫描上限 %d，超出部分不参与相似度排序；建议归档旧记忆",
+                _MAX_VECTOR_SCAN_ROWS,
+            )
 
         scored: list[tuple[float, MemoryRecord]] = []
         for row in rows:
@@ -294,27 +379,46 @@ class MemoryServiceImpl(MemoryService):
         return [rec for _, rec in scored[: max(1, limit)]]
 
     def _row_vector_or_backfill(self, row: Any) -> list[float]:
-        """读取行内向量；缺失（旧数据）时现算并持久化（best-effort）。"""
+        """读取行内向量；缺失（旧数据）时现算并持久化（best-effort）。
+
+        SEC-18：向量检索无法在 SQL 侧剪枝，必须全表取出后逐条比相似度，原实现对
+        每一行都做一次 ``json.loads``——数千条记忆 × 每个会话每次检索，是纯粹的
+        CPU 热点。这里按「行 id + embedding 原文」缓存解码结果（LRU + 条数上限）；
+        缓存值里带上原文，记录被改写后原文变化即自动失效，写入路径另外显式失效。
+        """
         raw = row["embedding"]
+        row_id = str(row["id"])
+        cached = self._embed_cache.get(row_id)
+        if cached is not None and cached[0] == raw:
+            self._embed_cache.move_to_end(row_id)
+            return cached[1]
+
+        vec: list[float] = []
         if raw:
             try:
-                vec = json.loads(raw)
-                if isinstance(vec, list) and vec:
-                    return [float(x) for x in vec]
+                decoded = json.loads(raw)
+                if isinstance(decoded, list) and decoded:
+                    vec = [float(x) for x in decoded]
             except (json.JSONDecodeError, ValueError, TypeError):
+                vec = []
+        if not vec:
+            # 旧行没有向量：补算并写回，使后续检索能命中。
+            if self._embedder is None:
+                self._embed_cache_put(row_id, raw, [])
+                return []
+            vector = self._embedder.embed([f"{row['key']} {row['value']} {row['tags']}".strip()])[0]
+            new_raw = json.dumps(vector, ensure_ascii=False)
+            try:
+                self._db.execute(
+                    "UPDATE memories SET embedding = ? WHERE id = ?",
+                    (new_raw, row["id"]),
+                )
+                raw = new_raw
+            except Exception:
                 pass
-        # 旧行没有向量：补算并写回，使后续检索能命中。
-        if self._embedder is None:
-            return []
-        vector = self._embedder.embed([f"{row['key']} {row['value']} {row['tags']}".strip()])[0]
-        try:
-            self._db.execute(
-                "UPDATE memories SET embedding = ? WHERE id = ?",
-                (json.dumps(vector), row["id"]),
-            )
-        except Exception:
-            pass
-        return vector
+            vec = vector
+        self._embed_cache_put(row_id, raw, vec)
+        return vec
 
     def _like_search(
         self,
@@ -398,12 +502,14 @@ class MemoryServiceImpl(MemoryService):
         params.append(_now_iso())
         params.append(memory_id)
         self._db.execute(f"UPDATE memories SET {', '.join(sets)} WHERE id = ?", tuple(params))
+        self._embed_cache_invalidate(memory_id)
         return self.get(memory_id)
 
     def delete(self, memory_id: str, user_id: str = "") -> bool:
         if self.get(memory_id, user_id=user_id) is None:
             return False
         self._db.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+        self._embed_cache_invalidate(memory_id)
         return True
 
     def render_hint(self, user_id: str = "") -> str:

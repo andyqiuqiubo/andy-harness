@@ -68,6 +68,7 @@ class Message:
         reasoning: str = "",
         parent_id: str | None = None,
         created_at: str | None = None,
+        stopped: bool = False,
     ) -> None:
         self.id: str = id or str(uuid.uuid4())
         self.session_id: str = session_id
@@ -84,6 +85,8 @@ class Message:
         # 回答版本：assistant 答案的 parent_id 指向它回答的 user 消息 id；
         # 同一条 user 消息下的多条 assistant 即为同一提问的多次重新回答。
         self.parent_id: str | None = parent_id
+        # 用户停止生成：被 stop 中断时仍保留已生成的部分内容，此标记为 True。
+        self.stopped: bool = stopped
         self.created_at: str = created_at or datetime.now().isoformat()
 
     def to_dict(self) -> dict[str, Any]:
@@ -103,6 +106,7 @@ class Message:
             "attachments": self.attachments,
             "reasoning": self.reasoning,
             "parent_id": self.parent_id,
+            "stopped": self.stopped,
             "created_at": self.created_at,
         }
 
@@ -258,8 +262,8 @@ class MessageRepository:
 
         self._db.execute(
             "INSERT INTO messages (id, session_id, role, content, tool_calls_json, "
-            "tokens, latency_ms, attachments, reasoning, parent_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "tokens, latency_ms, attachments, reasoning, parent_id, stopped, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 message.id,
                 message.session_id,
@@ -271,6 +275,7 @@ class MessageRepository:
                 json.dumps(message.attachments or []),
                 message.reasoning or "",
                 message.parent_id,
+                1 if message.stopped else 0,
                 message.created_at,
             ),
         )
@@ -346,6 +351,7 @@ class MessageRepository:
             attachments=json.loads(row["attachments"]) if row["attachments"] else [],
             reasoning=(row["reasoning"] if "reasoning" in row.keys() else "") or "",
             parent_id=(row["parent_id"] if "parent_id" in row.keys() else None) or None,
+            stopped=bool(row["stopped"]) if "stopped" in row.keys() else False,
             created_at=row["created_at"],
         )
 

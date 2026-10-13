@@ -7,6 +7,69 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+class _RecordingUpload:
+    """模拟 UploadFile：按块 read(n)，并记录累计读入的字节数与调用次数。
+
+    SEC-29：用来断言流式读取「到上限即止」，而非把整个文件读进内存。
+    """
+
+    def __init__(self, data: bytes, filename: str, chunk_behavior: bool = True) -> None:
+        self._buf = io.BytesIO(data)
+        self._total = len(data)
+        self.filename = filename
+        self.bytes_read = 0
+        self.read_calls = 0
+        self._chunked = chunk_behavior
+
+    async def read(self, size: int = -1) -> bytes:
+        self.read_calls += 1
+        if size is None or size < 0:
+            size = self._total
+        chunk = self._buf.read(size)
+        self.bytes_read += len(chunk)
+        return chunk
+
+
+class TestSec29StreamedSizeCheck:
+    """SEC-29：附件大小校验必须在全量读入内存**之前**（流式到上限即止）。"""
+
+    @pytest.mark.asyncio
+    async def test_small_file_read_fully(self) -> None:
+        from harness.api.rest.attachments import _read_capped
+
+        data = b"hello world"
+        up = _RecordingUpload(data, "note.txt")
+        out = await _read_capped(up, limit=200 * 1024)
+        assert out == data
+
+    @pytest.mark.asyncio
+    async def test_file_at_limit_read_fully(self) -> None:
+        from harness.api.rest.attachments import _read_capped
+
+        limit = 1000
+        data = b"a" * limit
+        up = _RecordingUpload(data, "note.txt")
+        out = await _read_capped(up, limit=limit)
+        assert len(out) == limit
+
+    @pytest.mark.asyncio
+    async def test_oversize_file_aborts_without_full_read(self) -> None:
+        """超限文件被中止：读入内存的字节仅约上限+一块，绝不等于整个文件大小。"""
+        from harness.api.rest.attachments import _READ_CHUNK, _read_capped
+        from harness.modules.attachment.service import AttachmentError
+
+        limit = 1000
+        total = 50 * 1024 * 1024  # 50MB，远超上限
+        data = b"a" * total
+        up = _RecordingUpload(data, "big.txt")
+        with pytest.raises(AttachmentError):
+            await _read_capped(up, limit=limit)
+        # 关键断言：远未读入整个 50MB——只读到越过上限的某一小块即停
+        assert up.bytes_read < total
+        assert up.bytes_read <= limit + _READ_CHUNK
+
+
+
 @pytest.fixture
 def client() -> TestClient:
     from harness.main import app

@@ -8,12 +8,18 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from harness.api.deps import require_admin
 from harness.api.errors import APIError
 from harness.kernel.services import ServiceRegistry
 from harness.modules.scheduler.service import VALID_TYPES, SchedulerService
+
+
+def _uid(admin: dict[str, Any] | None) -> str | None:
+    """当前操作者 id；认证未启用（单用户模式）时为 None，此时不做归属过滤。"""
+    return (admin or {}).get("id") if admin else None
 
 logger = logging.getLogger("harness.api.schedules")
 
@@ -166,13 +172,15 @@ def setup_schedule_routes(registry: ServiceRegistry) -> None:
         return result
 
     @router.get("", summary="列出定时任务")
-    async def list_tasks() -> dict[str, Any]:
+    async def list_tasks(_admin: dict[str, Any] | None = Depends(require_admin)) -> dict[str, Any]:
         svc = _get_service(registry)
-        tasks = svc.list_tasks()
+        tasks = svc.list_tasks(user_id=_uid(_admin))
         return {"available": True, "tasks": [t.to_dict() for t in tasks], "count": len(tasks)}
 
     @router.post("", summary="新建定时任务")
-    async def create_task(body: TaskCreate) -> dict[str, Any]:
+    async def create_task(
+        body: TaskCreate, _admin: dict[str, Any] | None = Depends(require_admin)
+    ) -> dict[str, Any]:
         svc = _get_service(registry)
         if not body.name.strip():
             raise APIError("SCHEDULE_INVALID", "任务名称不能为空", 400)
@@ -180,20 +188,24 @@ def setup_schedule_routes(registry: ServiceRegistry) -> None:
             raise APIError("SCHEDULE_INVALID", "任务内容（prompt）不能为空", 400)
         if body.schedule.type not in VALID_TYPES:
             raise APIError("SCHEDULE_INVALID", f"无效的调度类型: {body.schedule.type}", 400)
+        data = body.model_dump()
+        data["user_id"] = _uid(_admin)  # None（认证关闭）= 系统归属；否则记创建者 id
         try:
-            task = svc.create_task(body.model_dump())
+            task = svc.create_task(data)
         except ValueError as e:
             raise APIError("SCHEDULE_INVALID", str(e), 400) from e
         return {"task": task.to_dict()}
 
     @router.patch("/{task_id}", summary="更新定时任务")
-    async def update_task(task_id: str, body: TaskUpdate) -> dict[str, Any]:
+    async def update_task(
+        task_id: str, body: TaskUpdate, _admin: dict[str, Any] | None = Depends(require_admin)
+    ) -> dict[str, Any]:
         svc = _get_service(registry)
         data = body.model_dump(exclude_none=True)
         if "schedule" in data and data["schedule"].get("type") not in VALID_TYPES:
             raise APIError("SCHEDULE_INVALID", "无效的调度类型", 400)
         try:
-            updated = svc.update_task(task_id, data)
+            updated = svc.update_task(task_id, data, user_id=_uid(_admin))
         except ValueError as e:
             raise APIError("SCHEDULE_INVALID", str(e), 400) from e
         if updated is None:
@@ -201,18 +213,22 @@ def setup_schedule_routes(registry: ServiceRegistry) -> None:
         return {"task": updated.to_dict()}
 
     @router.delete("/{task_id}", summary="删除定时任务")
-    async def delete_task(task_id: str) -> dict[str, Any]:
+    async def delete_task(
+        task_id: str, _admin: dict[str, Any] | None = Depends(require_admin)
+    ) -> dict[str, Any]:
         svc = _get_service(registry)
-        if not svc.delete_task(task_id):
+        if not svc.delete_task(task_id, user_id=_uid(_admin)):
             raise APIError("SCHEDULE_NOT_FOUND", f"任务不存在: {task_id}", 404)
         return {"removed": task_id}
 
     @router.post("/{task_id}/run", summary="立即执行一次（同步等待结果）")
-    async def run_now(task_id: str) -> dict[str, Any]:
+    async def run_now(
+        task_id: str, _admin: dict[str, Any] | None = Depends(require_admin)
+    ) -> dict[str, Any]:
         from harness.modules.scheduler.runner import TaskRunner
 
         svc = _get_service(registry)
-        task = svc.get_task(task_id)
+        task = svc.get_task(task_id, user_id=_uid(_admin))
         if task is None:
             raise APIError("SCHEDULE_NOT_FOUND", f"任务不存在: {task_id}", 404)
         try:
@@ -220,23 +236,28 @@ def setup_schedule_routes(registry: ServiceRegistry) -> None:
         except Exception as e:
             raise APIError("SCHEDULER_UNAVAILABLE", "任务执行器未启用", 503) from e
         outcome = await runner.run_task(task, trigger="manual")
-        refreshed = svc.get_task(task_id)
+        refreshed = svc.get_task(task_id, user_id=_uid(_admin))
         return {
             "outcome": outcome.to_dict(),
             "task": refreshed.to_dict() if refreshed else None,
         }
 
     @router.get("/{task_id}/runs", summary="运行历史")
-    async def list_runs(task_id: str, limit: int = 20) -> dict[str, Any]:
+    async def list_runs(
+        task_id: str, limit: int = 20, _admin: dict[str, Any] | None = Depends(require_admin)
+    ) -> dict[str, Any]:
         svc = _get_service(registry)
-        if svc.get_task(task_id) is None:
+        if svc.get_task(task_id, user_id=_uid(_admin)) is None:
             raise APIError("SCHEDULE_NOT_FOUND", f"任务不存在: {task_id}", 404)
         runs = svc.list_runs(task_id, limit=max(1, min(limit, 100)))
         return {"runs": [r.to_dict() for r in runs], "count": len(runs)}
 
     @router.delete("/{task_id}/runs", summary="清空运行历史")
-    async def clear_runs(task_id: str) -> dict[str, Any]:
+    async def clear_runs(
+        task_id: str, _admin: dict[str, Any] | None = Depends(require_admin)
+    ) -> dict[str, Any]:
         svc = _get_service(registry)
-        if svc.get_task(task_id) is None:
+        if svc.get_task(task_id, user_id=_uid(_admin)) is None:
             raise APIError("SCHEDULE_NOT_FOUND", f"任务不存在: {task_id}", 404)
-        return {"removed": svc.clear_runs(task_id)}
+        removed = svc.clear_runs(task_id, user_id=_uid(_admin))
+        return {"removed": removed if removed is not None else 0}

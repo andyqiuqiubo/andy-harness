@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urljoin
 
+from harness.infra.net_guard import assert_url_safe
+
 logger = logging.getLogger("harness.mcp")
 
 # MCP 协议版本（2024-11-05 为广泛兼容版本）
@@ -43,6 +45,18 @@ _HTTP_LIKE = {SSE, "http", "streamable-http", "streamable_http"}
 # 等待服务端下发 SSE endpoint 的最长时间（超时后退回直接 POST 模式）。
 # 抽成模块常量便于测试把它调小，无需真的等 20 秒。
 _OPEN_ENDPOINT_TIMEOUT = 20.0
+
+# 单个 JSON-RPC 请求的等待上限（抽成常量便于测试调小）
+_REQUEST_TIMEOUT = 60.0
+
+# ── stdio 传输的资源上限（SEC-15） ──
+# 单行 JSON-RPC 上限：失控/恶意 server 输出超长单行时，超出部分直接丢弃并断开，
+# 避免 `readline()` 无上限把内存打满。
+_MAX_LINE_BYTES = 1 * 1024 * 1024  # 1 MB
+# 丢弃超长行时最多再吞掉多少字节后放弃（防无限吞）
+_MAX_SKIP_BYTES = 64 * 1024 * 1024  # 64 MB
+# stderr 最多记录多少行（之后仍继续抽干，只是不再打日志）
+_MAX_STDERR_LINES = 200
 
 
 def _default_config_paths() -> tuple[str, ...]:
@@ -215,7 +229,7 @@ class BaseMCPConnection(ABC):
             self._pending[req_id] = future
             await self._send(payload)
             try:
-                return await asyncio.wait_for(future, timeout=60)
+                return await asyncio.wait_for(future, timeout=_REQUEST_TIMEOUT)
             except TimeoutError as e:
                 self._pending.pop(req_id, None)
                 raise RuntimeError(f"MCP request timeout: {method} server={self.config.name}") from e
@@ -238,8 +252,14 @@ class BaseMCPConnection(ABC):
                     e,
                 )
 
-    async def _dispatch(self, msg: dict[str, Any]) -> None:
-        """把收到的 JSON-RPC 响应配给对应请求。"""
+    def _dispatch_sync(self, msg: dict[str, Any]) -> None:
+        """同步分发（可安全地从读线程经 `call_soon_threadsafe` 调用）。
+
+        必须是同步的：`run_coroutine_threadsafe` 会先排一个回调、再由该回调
+        创建任务，实际执行排在后续 `call_soon_threadsafe` 之后——于是 server
+        「发完最后一条响应就退出」时，`_fail_pending` 会先跑，把刚收到的响应
+        误判为通道关闭。同步分发保证 FIFO 顺序（先解析响应，再处理 EOF）。
+        """
         if "id" in msg and ("result" in msg or "error" in msg):
             req_id = msg["id"]
             fut = self._pending.pop(req_id, None)
@@ -249,6 +269,10 @@ class BaseMCPConnection(ABC):
                 else:
                     fut.set_result(msg.get("result", {}))
         # 通知类消息（无 id）此处忽略
+
+    async def _dispatch(self, msg: dict[str, Any]) -> None:
+        """把收到的 JSON-RPC 响应配给对应请求。"""
+        self._dispatch_sync(msg)
 
     def _fail_pending(self, reason: str) -> None:
         """通道断开时让所有待决请求立即失败，而不是等 60s 超时。"""
@@ -275,6 +299,7 @@ class MCPServerConnection(BaseMCPConnection):
         super().__init__(config)
         self._proc: subprocess.Popen[bytes] | None = None
         self._reader_thread: threading.Thread | None = None
+        self._stderr_thread: threading.Thread | None = None
         self._owner_loop: asyncio.AbstractEventLoop | None = None
 
     @property
@@ -300,12 +325,25 @@ class MCPServerConnection(BaseMCPConnection):
             )
         except (FileNotFoundError, OSError) as e:
             raise RuntimeError(f"无法启动 MCP server '{cfg.name}': {e}") from e
-        self._reader_thread = threading.Thread(
-            target=self._read_loop_sync,
-            name=f"mcp-stdio-{cfg.name}",
-            daemon=True,
-        )
-        self._reader_thread.start()
+        try:
+            self._reader_thread = threading.Thread(
+                target=self._read_loop_sync,
+                name=f"mcp-stdio-{cfg.name}",
+                daemon=True,
+            )
+            self._reader_thread.start()
+            # stderr 必须有消费者：管道缓冲区（通常 64KB）写满后子进程会
+            # 阻塞挂起，表现为「握手超时」这类难以定位的假死。
+            self._stderr_thread = threading.Thread(
+                target=self._drain_stderr_sync,
+                name=f"mcp-stderr-{cfg.name}",
+                daemon=True,
+            )
+            self._stderr_thread.start()
+        except Exception as e:  # noqa: BLE001
+            # 起线程失败（资源耗尽等）：立即回收已启动的子进程，不留僵尸
+            await self.disconnect()
+            raise RuntimeError(f"MCP server '{cfg.name}' 读取线程启动失败: {e}") from e
 
     def _write_sync(self, data: bytes) -> None:
         proc = self._proc
@@ -319,16 +357,29 @@ class MCPServerConnection(BaseMCPConnection):
         await asyncio.to_thread(self._write_sync, line.encode("utf-8"))
 
     def _read_loop_sync(self) -> None:
-        """后台线程：阻塞读子进程 stdout，逐行回投主循环分发。"""
+        """后台线程：阻塞读子进程 stdout，逐行回投主循环分发。
+
+        单行读取带 1MB 上限：恶意/失控 server 输出超长单行时丢弃该行并继续，
+        避免 `readline()` 无上限导致内存被一条消息打满（SEC-15-③）。
+        """
         proc = self._proc
         loop = self._owner_loop
         if proc is None or proc.stdout is None or loop is None:
             return
         try:
             while not self._closed:
-                raw = proc.stdout.readline()
+                raw = proc.stdout.readline(_MAX_LINE_BYTES)
                 if not raw:
                     break
+                if len(raw) >= _MAX_LINE_BYTES and not raw.endswith(b"\n"):
+                    logger.error(
+                        "MCP server '%s' 单行输出超过 %d 字节，已丢弃该行（防内存打满）",
+                        self.config.name,
+                        _MAX_LINE_BYTES,
+                    )
+                    if not self._skip_to_newline(proc.stdout):
+                        break  # 吞到上限仍无换行 → 放弃该通道
+                    continue
                 line = raw.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
@@ -337,7 +388,7 @@ class MCPServerConnection(BaseMCPConnection):
                 except json.JSONDecodeError:
                     continue
                 try:
-                    asyncio.run_coroutine_threadsafe(self._dispatch(msg), loop)
+                    loop.call_soon_threadsafe(self._dispatch_sync, msg)
                 except RuntimeError:
                     return  # 主循环已关闭（应用退出），读线程自行结束
         except OSError:
@@ -350,6 +401,56 @@ class MCPServerConnection(BaseMCPConnection):
                 )
             except RuntimeError:
                 pass
+
+    @staticmethod
+    def _skip_to_newline(stream: Any) -> bool:
+        """吞掉当前行的剩余内容直到换行。
+
+        Returns:
+            True 表示已吞到换行（可继续读下一行）；False 表示达到丢弃上限或 EOF。
+        """
+        skipped = 0
+        try:
+            while skipped < _MAX_SKIP_BYTES:
+                chunk = stream.readline(_MAX_LINE_BYTES)
+                if not chunk:
+                    return False
+                skipped += len(chunk)
+                if chunk.endswith(b"\n"):
+                    return True
+        except OSError:
+            return False
+        return False
+
+    def _drain_stderr_sync(self) -> None:
+        """后台线程：持续抽干子进程 stderr。
+
+        若无人消费，stderr 管道缓冲区（通常 64KB）写满后子进程会阻塞写操作
+        并整体挂死（表现为握手超时）。这里始终抽干，仅前 N 行进日志，
+        避免日志被失控 server 刷爆（SEC-15-②）。
+        """
+        proc = self._proc
+        if proc is None or proc.stderr is None:
+            return
+        logged = 0
+        try:
+            while not self._closed:
+                raw = proc.stderr.readline(_MAX_LINE_BYTES)
+                if not raw:
+                    break
+                if logged < _MAX_STDERR_LINES:
+                    logged += 1
+                    text = raw.decode("utf-8", errors="replace").rstrip()
+                    if text:
+                        logger.warning("MCP server '%s' stderr: %s", self.config.name, text[:500])
+                elif logged == _MAX_STDERR_LINES:
+                    logged += 1
+                    logger.warning(
+                        "MCP server '%s' stderr 输出过多，后续仅抽干不再记录",
+                        self.config.name,
+                    )
+        except (OSError, ValueError):
+            pass
 
     @staticmethod
     def _terminate_sync(proc: subprocess.Popen[bytes]) -> None:
@@ -371,10 +472,25 @@ class MCPServerConnection(BaseMCPConnection):
     async def disconnect(self) -> None:
         self._closed = True
         proc = self._proc
-        if proc is not None:
-            self._proc = None
-            await asyncio.to_thread(self._terminate_sync, proc)
-        # 读线程在 EOF / _closed 后自行退出（daemon，不阻塞进程退出）
+        if proc is None:
+            return
+        self._proc = None
+        # 先关 stdin：行为良好的 server 读到 EOF 会自行退出，
+        # 比直接 terminate 更干净（避免留下半写状态）。
+        if proc.stdin is not None:
+            try:
+                proc.stdin.close()
+            except Exception:  # noqa: BLE001
+                pass
+        await asyncio.to_thread(self._terminate_sync, proc)
+        # 显式关闭管道，尽快释放 fd（长驻进程反复重连时不累积句柄）
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None:
+                try:
+                    pipe.close()
+                except Exception:  # noqa: BLE001
+                    pass
+        # 读线程 / stderr 线程在 EOF 后自行退出（daemon，不阻塞进程退出）
 
 
 # ────────────────────────── SSE / HTTP 传输 ──────────────────────────
@@ -411,6 +527,12 @@ class MCPSSEConnection(BaseMCPConnection):
         cfg = self.config
         if not cfg.url:
             raise RuntimeError(f"MCP server '{cfg.name}' 缺少 url（sse 传输）")
+        # SEC-12：MCP server 地址来自配置文件；对内网/回环地址做 SSRF 校验，
+        # 避免被诱导连到云元数据或本机其它服务。内网自建源可显式放开。
+        try:
+            assert_url_safe(cfg.url)
+        except ValueError as e:
+            raise RuntimeError(f"MCP server '{cfg.name}' 地址被安全策略拒绝: {e}") from e
         self._endpoint_ready.clear()
         self._post_url = None
         # read=None：SSE 长连接不能有读超时
@@ -730,7 +852,9 @@ class MCPClientService:
         return self._config_paths[0]
 
     def _save(self) -> None:
-        """把当前 _configs 写回主配置文件。"""
+        """把当前 _configs 写回主配置文件（SEC-24：原子写，避免崩溃损坏 mcp.json）。"""
+        from harness.infra.atomic_write import atomic_write_json
+
         path = self._primary_path()
         servers: dict[str, Any] = {}
         for name, cfg in self._configs.items():
@@ -750,9 +874,7 @@ class MCPClientService:
                     "description": cfg.description,
                     "disabled": not cfg.enabled,
                 }
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"mcpServers": servers}, f, ensure_ascii=False, indent=2)
+        atomic_write_json(path, {"mcpServers": servers})
 
     def add_server(self, cfg: MCPServerConfig, *, overwrite: bool = False) -> None:
         """添加一个 server 配置并持久化。
@@ -795,8 +917,13 @@ class MCPClientService:
         try:
             return await conn.connect()
         except Exception:
-            # 连接失败不留残连接
+            # 连接失败不留残连接**也不留子进程**：握手失败若只 pop 不 disconnect，
+            # stdio server 的进程会一直存活（僵尸累积，SEC-15-①）。
             self._servers.pop(cfg.name, None)
+            try:
+                await conn.disconnect()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("清理 MCP server '%s' 失败连接时出错: %s", cfg.name, e)
             raise
 
     async def disconnect_server(self, name: str) -> None:
@@ -820,8 +947,12 @@ class MCPClientService:
         return result
 
     async def disconnect_all(self) -> None:
-        for conn in self._servers.values():
-            await conn.disconnect()
+        """断开全部连接：单个失败不得中断其余清理（否则泄漏级联放大）。"""
+        for name, conn in list(self._servers.items()):
+            try:
+                await conn.disconnect()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("断开 MCP server '%s' 失败: %s", name, e)
         self._servers.clear()
 
     def list_tools(self) -> list[MCPToolSpec]:

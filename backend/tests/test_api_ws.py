@@ -129,3 +129,63 @@ class TestWebSocketChat:
             # 应收到 error 帧
             response = ws.receive_json()
             assert response["type"] in ("error", "context_snapshot", "token_delta", "done")
+
+
+class TestSec30DisconnectCancelsRun:
+    """SEC-30：客户端断开时，进行中的 AgentLoop run 协程必须被立即取消。
+
+    旧实现 ``await loop.run(...)`` 内联等待——run 执行期间主循环无法响应
+    断开事件，用户在「长工具执行/非流式阶段」关闭页面后，run 作为僵尸协程
+    继续烧 provider token / 制造工具副作用，直到下次 send_json 才间接中断。
+    """
+
+    def test_disconnect_cancels_running_agent_loop(self, client: TestClient, monkeypatch) -> None:
+        import asyncio
+        import time as time_mod
+
+        from harness.engine import agent_loop as agent_loop_mod
+        from harness.modules.model_manager import provider_registry as pr_mod
+
+        state: dict[str, bool] = {"started": False, "cancelled": False}
+
+        class _SlowAgentLoop:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                pass
+
+            async def run(self, **kwargs: object) -> object:
+                state["started"] = True
+                try:
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    state["cancelled"] = True
+                    raise
+                return None
+
+        monkeypatch.setattr(agent_loop_mod, "AgentLoop", _SlowAgentLoop)
+        monkeypatch.setattr(
+            pr_mod.ProviderRegistry,
+            "get_provider",
+            lambda self, pid=None: object(),
+        )
+
+        create_resp = client.post("/api/sessions", json={"title": "SEC-30 断连取消"})
+        session_id = create_resp.json()["id"]
+
+        with client.websocket_connect("/ws/chat") as ws:
+            ws.send_text(
+                json.dumps(
+                    {"session_id": session_id, "content": "开始一个长任务", "provider_id": "any"}
+                )
+            )
+            # 等 run 协程真正启动
+            deadline = time_mod.time() + 10
+            while not state["started"] and time_mod.time() < deadline:
+                time_mod.sleep(0.05)
+        # with 退出 = 客户端断开；run 若不被取消会 sleep 30 秒（僵尸）
+        deadline = time_mod.time() + 10
+        while not state["cancelled"] and time_mod.time() < deadline:
+            time_mod.sleep(0.05)
+
+        assert state["started"], "AgentLoop run 未启动（fixture/依赖异常）"
+        assert state["cancelled"], "客户端断开后 run 未被取消（僵尸 run：白烧 token/副作用）"
+

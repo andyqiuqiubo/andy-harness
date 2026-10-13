@@ -5,7 +5,7 @@ TelegramChannel 并挂入；未配置 token 时渠道保持已注册但不启动
 
 环境变量：
 - HARNESS_TELEGRAM_BOT_TOKEN：BotFather 申请的 token（必填才会真正启动）
-- HARNESS_TELEGRAM_ALLOWED_USERS：逗号分隔的允许用户 ID（为空则不限制）
+- HARNESS_TELEGRAM_ALLOWED_USERS：逗号分隔的允许用户 ID（为空则拒绝所有入站，fail-closed）
 - HARNESS_TELEGRAM_POLL_INTERVAL：空批次后的轮询间隔（秒，默认 1）
 """
 

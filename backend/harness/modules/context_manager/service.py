@@ -7,6 +7,7 @@ token 预算分配：system > pinned > 近期消息 > 摘要。
 
 from __future__ import annotations
 
+import copy
 import logging
 import uuid
 from abc import ABC, abstractmethod
@@ -17,6 +18,9 @@ from harness.kernel.contracts.token_counter import TokenCounter
 from harness.kernel.services import ServiceRegistry
 
 logger = logging.getLogger("harness.context_manager")
+
+# 上下文构建缓存的会话数上限（简易 LRU，防多会话长时间运行无界增长）
+_BUILD_CACHE_MAX = 8
 
 
 class ContextStrategy(ABC):
@@ -390,26 +394,89 @@ class ContextServiceImpl:
         self._strategy: ContextStrategy = strategy or SlidingWindowStrategy()
         self._system_prompt_template: str = system_prompt_template
         self._pinned_messages: dict[str, set[int]] = {}  # session_id -> pinned indices
+        # 上下文构建缓存（MOD-01：工具迭代每轮都全量重建 → token 计数 /
+        # 压缩 / 快照持久化重复三次。缓存按「内容签名」自失效：消息追加
+        # （新 id）或内容变更（hash 变）都会自动 miss；pin / 策略 / 提示词
+        # 变更由各自的写入点显式失效。）
+        self._build_cache: dict[str, tuple[str, list[dict[str, Any]]]] = {}
+        self._build_cache_order: list[str] = []  # 简易 LRU（防多会话无界增长）
+
+    # ── 缓存 ──────────────────────────────────────────
+    def invalidate_cache(self, session_id: str | None = None) -> None:
+        """失效上下文缓存（写入后调用；不传 session_id 则清空全部）。"""
+        if session_id is None:
+            self._build_cache.clear()
+            self._build_cache_order.clear()
+            return
+        self._build_cache.pop(session_id, None)
+        if session_id in self._build_cache_order:
+            self._build_cache_order.remove(session_id)
+
+    def _build_signature(
+        self,
+        session_id: str,
+        messages: list[Any],
+        budget: int,
+        model: str,
+        regenerate_of_message_id: str | None,
+        run_message_ids: list[str] | None,
+    ) -> str:
+        """计算上下文输入签名：缓存命中的唯一判据。
+
+        包含所有会影响输出的输入项；只用 id + role + 内容长度 + 内容哈希，
+        避免为算签名再跑一次昂贵的 token 化（str hash 由 CPython 缓存，
+        单个字符串只算一次，成本远低于 encode）。
+        """
+        parts = [
+            session_id,
+            str(budget),
+            model,
+            regenerate_of_message_id or "",
+            ",".join(run_message_ids or ()),
+            str(id(self._strategy)),
+            type(self._strategy).__name__,
+            self._system_prompt_template or "",
+            ",".join(str(i) for i in sorted(self.get_pinned_indices(session_id))),
+        ]
+        for m in messages:
+            content = getattr(m, "content", "") or ""
+            parts.append(f"{getattr(m, 'id', '')}:{getattr(m, 'role', '')}:{len(content)}:{hash(content)}")
+        return "|".join(parts)
+
+    def _cache_put(self, session_id: str, sig: str, value: list[dict[str, Any]]) -> None:
+        # 存深拷贝：build() 的 miss 分支把 result 原样返回给调用方，
+        # 若此处存同一对象，调用方就地改 content 会直接污染缓存。
+        self._build_cache[session_id] = (sig, copy.deepcopy(value))
+        if session_id in self._build_cache_order:
+            self._build_cache_order.remove(session_id)
+        self._build_cache_order.append(session_id)
+        while len(self._build_cache_order) > _BUILD_CACHE_MAX:
+            oldest = self._build_cache_order.pop(0)
+            self._build_cache.pop(oldest, None)
 
     def set_strategy(self, strategy: ContextStrategy) -> None:
         """设置压缩策略（运行时可切换）。"""
         self._strategy = strategy
+        self.invalidate_cache()  # 策略变更 → 全部缓存失效
         logger.info("上下文策略已切换: %s", strategy.__class__.__name__)
 
     def set_system_prompt_template(self, template: str) -> None:
         """设置系统提示词模板。"""
         self._system_prompt_template = template
+        self.invalidate_cache()  # 提示词变更 → 全部缓存失效
 
     def pin_message(self, session_id: str, message_index: int) -> None:
         """钉住指定消息。"""
         if session_id not in self._pinned_messages:
             self._pinned_messages[session_id] = set()
         self._pinned_messages[session_id].add(message_index)
+        self.invalidate_cache(session_id)
 
     def unpin_message(self, session_id: str, message_index: int) -> None:
         """取消钉住指定消息。"""
         if session_id in self._pinned_messages:
             self._pinned_messages[session_id].discard(message_index)
+            self.invalidate_cache(session_id)
 
     def get_pinned_indices(self, session_id: str) -> set[int]:
         """获取钉住的消息索引。"""
@@ -461,6 +528,17 @@ class ContextServiceImpl:
 
         session_service = self._services.get(SessionService)
         messages = session_service.list_messages(session_id)
+
+        # MOD-01：签名一致时直接复用上次结果，跳过「逐条 token 计数 +
+        # 压缩 + 快照持久化」这三段最贵的开销（工具迭代每轮都会走到这里）。
+        signature = self._build_signature(
+            session_id, messages, budget, model, regenerate_of_message_id, run_message_ids
+        )
+        cached = self._build_cache.get(session_id)
+        if cached is not None and cached[0] == signature:
+            logger.debug("上下文构建命中缓存: session=%s", session_id)
+            # 返回深拷贝，避免调用方就地修改污染缓存内容（含嵌套 tool_calls）
+            return copy.deepcopy(cached[1])
 
         # 本次运行已持久化的新消息（工具迭代中途重建上下文时）：先从折叠输入中
         # 摘出，折叠后按原顺序追加到末尾——模型必须仍能看到本轮刚产出的
@@ -594,6 +672,8 @@ class ContextServiceImpl:
             token_count,
             budget,
         )
+
+        self._cache_put(session_id, signature, result)
 
         return result
 

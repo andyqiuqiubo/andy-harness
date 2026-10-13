@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import platform
+import re
 import subprocess
 import uuid
 
@@ -153,3 +154,59 @@ def mask_api_key(api_key: str) -> str:
     if len(api_key) <= 8:
         return "****"
     return api_key[:4] + "****"
+
+
+# 需要抹除其值的 URL 查询参数 / 头字段名（大小写不敏感）。
+_SENSITIVE_KEY_NAMES = (
+    "api_key", "apikey", "access_token", "accesstoken", "token", "secret",
+    "secretkey", "secret_key", "password", "passwd", "auth", "authorization",
+    "bearer", "sk", "key", "credential", "credentials", "x-api-key",
+)
+
+# 头字段形态专用名表：仅含真正的 HTTP 头名（排除 bearer / sk，分别由步骤 1 / 2
+# 处理；也不含 api_key/token 等查询参数名，避免与步骤 3 重复处理）。
+_SENSITIVE_HEADER_NAMES = (
+    "accesstoken", "secretkey", "secret_key", "authorization", "x-api-key",
+)
+
+# 兜底：连续 >=20 位的高熵 base64/hex 串，常见于 API Key / 令牌。
+_SECRET_TOKEN_RE = re.compile(r"[A-Za-z0-9_\-]{20,}")
+
+
+def redact_secrets(text: str) -> str:
+    """把文本中可能泄露的密钥/令牌抹成 ****（SEC-32）。
+
+    用于错误消息与日志，避免 ``sk-`` 密钥、``Bearer`` 凭据、``accesstoken`` /
+    ``secretkey`` 头、URL 查询串中的令牌经 HTTP 响应或落盘日志外泄。
+
+    策略（按顺序，避免重复替换）：
+    1. ``Bearer <token>``（先于 sk-，整体吞掉后续高熵 token）。
+    2. ``sk-`` 前缀密钥（保留前缀便于定位，主体抹除）。
+    3. URL 查询串中敏感键对应的值（``?api_key=...``，值不跨 ``&``/空格）。
+    4. ``Header: <value>`` / ``Header=<value>`` 形态的凭据头（值不跨 ``&``/空格）。
+    5. 兜底：连续 >=20 位的高熵串（避免遗漏自定义命名）。
+
+    注意：仅做文本级抹除，不解析结构；返回文本若本就无密钥则原样返回。
+    """
+    if not text:
+        return text
+    out = text
+    # 1. Bearer <token>（先于 sk-，避免 Bearer sk-xxx 被拆成两段 ****）
+    out = re.sub(r"(?i)Bearer\s+[A-Za-z0-9._\-]+", "Bearer ****", out)
+    # 2. sk- 密钥
+    out = re.sub(r"sk-[A-Za-z0-9_\-]{8,}", "sk-****", out, flags=re.IGNORECASE)
+    # 3. URL 查询串敏感键值（?x= / &x=，值不跨 & 与空格）
+    out = re.sub(
+        rf"(?i)(?<=[?&])({'|'.join(_SENSITIVE_KEY_NAMES)})=[^&#\s]+",
+        lambda m: f"{m.group(1)}=****",
+        out,
+    )
+    # 4. 头字段形态（accesstoken: xxx / secretkey=xxx / Authorization: ...，值不跨 & 与空格）
+    out = re.sub(
+        rf"(?i)({'|'.join(_SENSITIVE_HEADER_NAMES)})\s*[:=]\s*[^&\s]+",
+        lambda m: f"{m.group(1)}: ****",
+        out,
+    )
+    # 5. 兜底高熵长串
+    out = _SECRET_TOKEN_RE.sub("****", out)
+    return out

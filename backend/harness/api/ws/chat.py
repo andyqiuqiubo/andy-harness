@@ -33,6 +33,18 @@ router = APIRouter()
 # 人工确认等待超时（秒）。超时按拒绝处理，避免请求永久挂起。
 CONFIRM_TIMEOUT = 120.0
 
+# SEC-30：入向帧队列上限（背压）。reader 读 socket 的速度远快于主循环消费
+# （主循环在处理一次对话时可能要跑完整轮 AgentLoop），若队列无上限，一个狂发
+# 消息的客户端就能把服务端内存撑爆。控制帧阈值略小（stop/confirm_reply 属于
+# 低延迟小消息），对话帧阈值略大（用户可能批量排队几轮提问）。
+_QUEUE_MAX_FRAMES = 64
+_CONTROL_QUEUE_MAX_FRAMES = 32
+
+# SEC-30：出向发送超时（秒）。慢客户端（网络拥塞 / 不读 socket）会让
+# `websocket.send_json` 阻塞，进而拖住整个 run 协程无法结束、无法响应 stop。
+# 超过该时长判定为不可达，断开连接并触发 run 取消。
+_SEND_TIMEOUT = 60.0
+
 
 class WSMessage(BaseModel):
     """WebSocket 消息格式。"""
@@ -335,8 +347,15 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
         # 新实现：仅一个 reader 协程读 socket，按帧类型分发到两条队列：
         #   - control_queue：stop / confirm_reply（由 dispatcher 处理）
         #   - message_queue：普通对话帧（由主循环处理），避免丢帧。
-        message_queue: asyncio.Queue[Any] = asyncio.Queue()
-        control_queue: asyncio.Queue[Any] = asyncio.Queue()
+        # SEC-30：两条队列都设上限（背压）。reader 在 put 时会因满而等待（见
+        # _reader），从而对「狂发消息」的客户端形成反压，不再无界堆内存。
+        message_queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=_QUEUE_MAX_FRAMES)
+        control_queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=_CONTROL_QUEUE_MAX_FRAMES)
+        # SEC-30：客户端断开事件。reader 一检测到断开即置位，主循环据此取消正在
+        # 执行的 AgentLoop run 协程——否则用户在「长工具执行/非流式阶段」断开后，
+        # 已发送的 send_json 不会再抛异常，run 会作为僵尸协程继续跑完整个循环
+        # （白烧 provider token / 工具副作用），直到下次发帧才间接中断。
+        disconnected_event = asyncio.Event()
 
         async def _reader() -> None:
             """唯一读取 WebSocket 入向帧的协程。"""
@@ -360,6 +379,10 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
                 logger.error("WS reader 异常", exc_info=True)
                 _reject_pending_confirms()
             finally:
+                # SEC-30：无论何种原因退出，先标记断开，再唤醒主循环的 None 哨兵。
+                # 必须**在** put(None) 之前置位：主循环可能正阻塞在 loop.run()，
+                # 需靠 disconnected_event 才能被唤醒去取消 run。
+                disconnected_event.set()
                 # 通知主循环与 dispatcher 结束
                 await message_queue.put(None)
                 await control_queue.put(None)
@@ -549,7 +572,7 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
                         await websocket.send_json(
                             {
                                 "type": "token_delta",
-                                "data": {"delta": chunk["delta"]},
+                                "data": {"delta": chunk["delta"], "session_id": msg.session_id},
                             }
                         )
                         # S17: 旁路广播到 EventBus
@@ -565,26 +588,57 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
                         await websocket.send_json(
                             {
                                 "type": "token_delta",
-                                "data": {"reasoning_content": chunk["reasoning_content"]},
+                                "data": {
+                                    "reasoning_content": chunk["reasoning_content"],
+                                    "session_id": msg.session_id,
+                                },
                             }
                         )
 
                 stream_provider = _StreamingProviderProxy(provider, msg.session_id, _emit_chunk)
 
                 try:
-                    result = await loop.run(
-                        session_id=msg.session_id,
-                        user_message=user_message_for_loop,
-                        provider=stream_provider,
-                        model=msg.model,
-                        budget=msg.budget,
-                        attachments=att_metas,
-                        on_tool_event=_on_tool_event,
-                        confirm_callback=_request_confirm,
-                        user_id=auth_user_id,
-                        parent_message_id=msg.parent_message_id or None,
+                    run_task = asyncio.ensure_future(
+                        loop.run(
+                            session_id=msg.session_id,
+                            user_message=user_message_for_loop,
+                            provider=stream_provider,
+                            model=msg.model,
+                            budget=msg.budget,
+                            attachments=att_metas,
+                            on_tool_event=_on_tool_event,
+                            confirm_callback=_request_confirm,
+                            user_id=auth_user_id,
+                            parent_message_id=msg.parent_message_id or None,
+                        )
                     )
+                    # SEC-30：同时监听「run 完成」与「客户端断开」。旧实现是
+                    # ``await loop.run(...)`` 内联等待——run 执行期间主循环无法
+                    # 响应任何事件，断开后 run 会作为僵尸协程继续烧 provider
+                    # token / 制造工具副作用，直到下次 send_json 抛异常才间接中断。
+                    disconnected_waiter = asyncio.ensure_future(disconnected_event.wait())
+                    try:
+                        done, _ = await asyncio.wait(
+                            {run_task, disconnected_waiter},
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                    except asyncio.CancelledError:
+                        run_task.cancel()
+                        raise
+                    if disconnected_waiter in done and run_task not in done:
+                        # 客户端已断开而 run 仍在跑：立刻取消，白烧的 token 与
+                        # 工具副作用到此为止；结果不再发送（无人接收）。
+                        run_task.cancel()
+                        try:
+                            await run_task
+                        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                            pass
+                        logger.info("客户端断开，已取消进行中的 AgentLoop run: %s", client_id)
+                        break
+                    result = run_task.result()
                 finally:
+                    if "disconnected_waiter" in locals() and not disconnected_waiter.done():
+                        disconnected_waiter.cancel()
                     current_loop = None
                     # 未决的确认请求一律按拒绝处理，避免协程永久挂起
                     _reject_pending_confirms()
@@ -606,7 +660,9 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
                     )
                     final_snapshot = context_service.get_snapshot(msg.session_id)
                     if final_snapshot:
-                        await websocket.send_json({"type": "context_snapshot", "data": final_snapshot})
+                        snapshot_payload = dict(final_snapshot)
+                        snapshot_payload["session_id"] = msg.session_id
+                        await websocket.send_json({"type": "context_snapshot", "data": snapshot_payload})
                 except Exception:
                     pass  # 上下文服务可能未注册
 
@@ -631,6 +687,12 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
                                 "iterations": result.iterations,
                                 "latency_ms": result.latency_ms,
                                 "short_circuited": result.short_circuited,
+                                # 用户停止生成：内容为已生成的部分回答，
+                                # 前端据此在回答下方标注「用户已停止回答」。
+                                "stopped": bool(result.short_circuited),
+                                # 流式归属：前端据此丢弃「非当前会话」的迟到帧，
+                                # 避免生成途中切换/新建会话时跨会话串数据。
+                                "session_id": msg.session_id,
                                 "usage": result.usage,
                                 # 用 agent run 自己的 trace_id（与 spans 表一致），
                                 # 而不是 WS 连接的 uuid4，否则前端若拿它去查轨迹会对不上。

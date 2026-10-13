@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,19 @@ logger = logging.getLogger("harness.tools.file_manager")
 
 # 单次读取最多返回的字符数（防止巨型文件撑爆上下文）
 _MAX_READ_CHARS = 20000
+
+# SEC-22：默认受控根目录。绝不再回退到 ``Path.cwd()``——后端进程的启动目录
+# 可能是源码树（含 .env、密钥、后端虚拟环境）或任意部署路径，把 Agent 的受控
+# 文件工具默认根落在那里等于把整个项目目录暴露给模型。改为用户级受管工作区，
+# 与 skill_manager / mcp_client 的 ``~/.andy-harness`` 约定一致，跨平台稳定。
+# 仅在 ``Path.home()`` 不可用（极端受限环境）时兜底到系统临时目录下的同名子目录。
+def _default_base_dir() -> Path:
+    """受控默认根目录：优先 ``~/.andy-harness/workspaces/files``。"""
+    try:
+        root = Path.home() / ".andy-harness" / "workspaces" / "files"
+    except (OSError, RuntimeError, ValueError):  # pragma: no cover - 极少见
+        root = Path(tempfile.gettempdir()) / "harness_workspaces" / "files"
+    return root
 
 
 class FileManagerTool(ToolPlugin):
@@ -145,7 +159,8 @@ class FileManagerPlugin(BasePlugin):
         from harness.engine.tool_registry import ToolRegistry
 
         raw = ctx.config.get("base_dir", "") if ctx.config else ""
-        base = Path(raw).resolve() if raw else Path.cwd()
+        # SEC-22：配置留空时收敛到受管工作区，绝不回退 Path.cwd()。
+        base = Path(raw).resolve() if raw else _default_base_dir()
         base.mkdir(parents=True, exist_ok=True)
 
         if not ctx.services.has(ToolRegistry):

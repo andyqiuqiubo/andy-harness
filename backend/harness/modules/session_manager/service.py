@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -95,6 +96,12 @@ class SessionServiceImpl:
     def __init__(self, db: Database, services: Any = None) -> None:
         self._session_repo = SessionRepository(db)
         self._message_repo = MessageRepository(db)
+        # SEC-20：fork 的多步写（读全部消息 → create → 逐条 append → 拷附件 → 存
+        # todo）必须整体串行。虽然 Message.id 用 uuid4 不会碰撞，但 Database 是跨
+        # 线程共享单例；若并发 fork / fork 与 delete 在消息读取与落盘之间交错，
+        # 会留下「半条分支」或读到不一致的快照。用可重入锁（与 infra/database 的
+        # SEC-31 同款原语）包裹，fork 内再调 create/append 不会自锁。
+        self._fork_lock = threading.RLock()
         # 可选：服务注册表，用于读取附属数据（如任务清单）。
         # 未注入时导出/导入仍可工作，只是不含 todo。
         self._services = services
@@ -217,11 +224,13 @@ class SessionServiceImpl:
         attachments: list[dict[str, Any]] | None = None,
         reasoning: str = "",
         parent_id: str | None = None,
+        stopped: bool = False,
     ) -> Message:
         """追加消息到会话。
 
         parent_id：assistant 答案所回答的 user 消息 id。同一 user 消息下的多条
         assistant（首次回答 + 后续「重新回答」版本）据此归并为同一提问的版本组。
+        stopped：用户停止生成产生的部分回答（保留已生成内容，前端加停止标注）。
         """
         message = Message(
             session_id=session_id,
@@ -234,6 +243,7 @@ class SessionServiceImpl:
             attachments=attachments,
             reasoning=reasoning,
             parent_id=parent_id,
+            stopped=stopped,
         )
         return self._message_repo.create(message)
 
@@ -451,7 +461,22 @@ class SessionServiceImpl:
         at_message_id: str | None = None,
         user_id: str = "",
     ) -> Session | None:
-        """从某条消息处分叉出新会话（含该消息及其之前的历史）。"""
+        """从某条消息处分叉出新会话（含该消息及其之前的历史）。
+
+        SEC-20：整段「读快照 → create → 逐条 append → 拷附件 → 存 todo」在
+        ``_fork_lock`` 内整体串行，杜绝并发 fork / fork 与 delete 在读取与落盘
+        之间交错导致半条分支或不一致快照。
+        """
+        with self._fork_lock:
+            return self._fork_locked(session_id, at_message_id, user_id)
+
+    def _fork_locked(
+        self,
+        session_id: str,
+        at_message_id: str | None,
+        user_id: str,
+    ) -> Session | None:
+        """持 ``_fork_lock`` 的分叉实现。"""
         session = self._session_repo.get(session_id, user_id=user_id)
         if session is None:
             return None
@@ -482,6 +507,7 @@ class SessionServiceImpl:
                 # P1-3：分叉出的会话需要**自己的**附件副本，不能复用原 id
                 # （复用会让新会话与原会话共享磁盘文件，删除任一方都会破坏另一方）
                 attachments=self._clone_attachments_by_ids(forked.id, m.attachments),
+                stopped=m.stopped,
             )
 
         self._save_todos(forked.id, self._load_todos(session_id))

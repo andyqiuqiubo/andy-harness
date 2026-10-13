@@ -40,6 +40,24 @@ logger = logging.getLogger("harness.workflow.engine")
 
 _REF_RE = re.compile(r"\{\{\s*([^}]+?)\s*\}\}")
 
+# 模板节点渲染上限（SEC-02：模板字符串用户可控，限制长度防 parse 放大）
+_MAX_TEMPLATE_LEN = 20000
+
+
+def _to_primitives(value: Any) -> Any:
+    """将任意值收敛为 JSON 原始类型（dict/list/str/num/bool/None）。
+
+    用于模板渲染上下文：杜绝把可调用对象 / 任意 Python 对象暴露给
+    Jinja2——即使沙箱未来被绕过，上下文里也无对象可攀爬。
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _to_primitives(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_primitives(v) for v in value]
+    return str(value)
+
 
 class WorkflowValidationError(Exception):
     """工作流图不合法。"""
@@ -506,28 +524,47 @@ class GraphEngine:
     def _run_template(self, data: dict[str, Any]) -> dict[str, Any]:
         tmpl = str(data.get("template", "") or "")
         try:
-            from jinja2 import Environment
-
-            env = Environment(autoescape=False)
-            rendered = env.from_string(tmpl).render(**self._jinja_context())
+            rendered = self._render_jinja(tmpl)
         except Exception:  # noqa: BLE001
             # 回退：简单 {{ node.field }} 文本替换（向后兼容非 Jinja2 模板）
             rendered = self.render(tmpl)
         return {"output": rendered}
 
+    def _render_jinja(self, tmpl: str) -> str:
+        """沙箱化 Jinja2 渲染（SEC-02 修复：模板节点内容用户可控）。
+
+        原实现用普通 ``Environment(autoescape=False).from_string``——
+        模板字符串可含 ``{{ ''.__class__.__mro__[1].__subclasses__() }}``
+        之类 SSTI 载荷，直达任意 Python 对象并组合出 RCE。
+
+        三层防护：
+        1. ``SandboxedEnvironment``：禁止 ``__`` 前缀属性访问
+           （抛 SecurityError 而非求值通过）；
+        2. 渲染上下文经 :func:`_to_primitives` 收敛为 JSON 原始类型，
+           无可攀爬对象；
+        3. 模板长度上限。
+        """
+        from jinja2 import sandbox as jinja_sandbox
+
+        if len(tmpl) > _MAX_TEMPLATE_LEN:
+            raise ValueError(f"模板过长（上限 {_MAX_TEMPLATE_LEN} 字符）")
+        env = jinja_sandbox.SandboxedEnvironment(autoescape=False)
+        return env.from_string(tmpl).render(**self._jinja_context())
+
     def _jinja_context(self) -> dict[str, Any]:
         """构造模板/表达式渲染上下文。
 
         每个上游节点输出以 nodeId 暴露（支持 {{node.field}}），
-        并以 nodeId_field 扁平键冗余。
+        并以 nodeId_field 扁平键冗余。所有值经 :func:`_to_primitives`
+        收敛为 JSON 原始类型（SEC-02：防 SSTI 对象攀爬）。
         """
         ctx: dict[str, Any] = {}
         for nid, outs in self._node_outputs.items():
             if isinstance(outs, dict):
-                ctx[nid] = outs
+                ctx[nid] = _to_primitives(outs)
                 for k, v in outs.items():
-                    ctx[f"{nid}_{k}"] = v
-        ctx.update(self._globals)
+                    ctx[f"{nid}_{k}"] = _to_primitives(v)
+        ctx.update({k: _to_primitives(v) for k, v in self._globals.items()})
         return ctx
 
     def _run_assign(self, data: dict[str, Any]) -> dict[str, Any]:

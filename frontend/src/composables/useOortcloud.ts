@@ -17,18 +17,37 @@ import { apiClient } from '../api/client'
 
 const PROVIDER = 'oortcloud'
 
+/** 生成随机 state（防 CSRF，同标签页内发起/回调比对）。 */
+function randomState(): string {
+  const arr = new Uint32Array(2)
+  crypto.getRandomValues(arr)
+  return Array.from(arr)
+    .map((n) => n.toString(36))
+    .join('')
+}
+
 /** 向后端请求组装好的 OortCloud 统一登录页地址。 */
-export async function fetchOortcloudLoginUrl(returnTo: string): Promise<string> {
+export async function fetchOortcloudLoginUrl(
+  returnTo: string,
+  state?: string,
+): Promise<string> {
   const origin = window.location.origin
   const redirectUri = `${origin}/oauth/oortcloud/callback?returnTo=${encodeURIComponent(returnTo)}`
+  const qs = new URLSearchParams({
+    redirect_uri: redirectUri,
+  })
+  if (state) qs.set('state', state)
   const res = await apiClient.get<{ login_url: string }>(
-    `/integrations/${PROVIDER}/login-url?redirect_uri=${encodeURIComponent(redirectUri)}`,
+    `/integrations/${PROVIDER}/login-url?${qs.toString()}`,
   )
   return res.login_url
 }
 
 /** 跳转浏览器到 OortCloud 登录页，授权后由统一回调页回传 token。 */
 export async function startOortcloudLogin(returnTo: string): Promise<void> {
-  const url = await fetchOortcloudLoginUrl(returnTo)
+  const state = randomState()
+  // 写入同标签页 sessionStorage，回调页比对（CSRF 防护）。
+  sessionStorage.setItem('oortcloud_oauth_state', state)
+  const url = await fetchOortcloudLoginUrl(returnTo, state)
   window.location.href = url
 }

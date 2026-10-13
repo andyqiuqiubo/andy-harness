@@ -44,7 +44,9 @@
         "title": "受限目录（逗号分隔，硬性拦截）",
         "title_en": "Restricted Paths (comma-separated)"
       },
-      "working_dir": { "type": "string", "default": "", "title": "工作目录（留空为系统临时目录）", "title_en": "Working Directory (blank = system temp)" }
+      "working_dir": { "type": "string", "default": "", "title": "工作目录（留空为系统临时目录）", "title_en": "Working Directory (blank = system temp)" },
+      "allow_interpreters": { "type": "boolean", "default": false, "title": "允许解释器内联执行代码（python -c / node -e 等，等同放权，默认关闭）", "title_en": "Allow Interpreter Inline Code Execution (default off)" },
+      "pending_ttl": { "type": "number", "default": 3600, "title": "待审批任务存活时间（秒，超时作废）", "title_en": "Pending Approval TTL (seconds)" }
     }
   },
   "description": "基于 DeepSeek V4.1 Flash（模型 id: deepseek-v4-flash）的 Computer Use 能力：自主操作桌面（截图/鼠标/键盘）、读写文件、执行命令。内置安全围栏：白名单或人工授权二选一、危险命令与受限目录硬性拦截、单步/整体超时、失败重试、结果截断、异常兜底，避免模型失控。"

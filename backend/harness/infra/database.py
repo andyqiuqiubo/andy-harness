@@ -18,6 +18,10 @@ logger = logging.getLogger("harness.db")
 # 默认数据库路径（项目本地）
 DEFAULT_DB_PATH = str(Path(__file__).parent.parent.parent / "data" / "harness.db")
 
+# 应用主库单例（见 Database.__new__ 的说明）
+_DB_SINGLETON_LOCK = threading.Lock()
+_DB_SINGLETON: Database | None = None
+
 # 建表 SQL
 _CREATE_SESSIONS = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -43,6 +47,7 @@ CREATE TABLE IF NOT EXISTS messages (
     attachments TEXT NOT NULL DEFAULT '[]',
     reasoning TEXT NOT NULL DEFAULT '',
     parent_id TEXT,
+    stopped INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
@@ -331,18 +336,51 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_session ON context_snapshots(session_id
 
 
 class Database:
-    """SQLite 数据库连接管理器。"""
+    """SQLite 数据库连接管理器。
+
+    **进程内单例**（仅限无参构造）：``Database()`` 语义是「应用主库」，全进程共享
+    同一个实例；显式传入 ``db_path`` 则构造独立实例（测试用 ``:memory:`` 隔离）。
+
+    为什么要做单例：
+
+    1. REST 层多处直接用 ``Database()`` 取库（insights / permission_audit /
+       templates_hub / workflows / evals_lab）。修复前每次调用都会新建一条 sqlite
+       连接并跑一遍 :meth:`init_schema`（20 张表 + 10 个索引的 DDL），是纯粹的
+       请求级浪费。
+    2. 更严重的是：应用生命周期被重复触发时（测试里 ``TestClient`` 反复进出、
+       未来可能的多次 lifespan），每次都会造出一个**新的** Database，而部分服务是
+       "不存在才注册"，于是一次启动后不同服务会绑定不同实例，跨库写入直接触发
+       ``FOREIGN KEY constraint failed``。单例让所有服务稳定指向同一个库。
+    """
+
+    def __new__(cls, db_path: str | None = None) -> Database:
+        if db_path is not None:
+            # 显式指定路径 → 独立实例（不进单例池）
+            return super().__new__(cls)
+        global _DB_SINGLETON
+        if _DB_SINGLETON is not None:
+            return _DB_SINGLETON
+        with _DB_SINGLETON_LOCK:
+            if _DB_SINGLETON is None:
+                _DB_SINGLETON = super().__new__(cls)
+            return _DB_SINGLETON
 
     def __init__(self, db_path: str | None = None) -> None:
-        # 支持环境变量覆盖（测试隔离用），db_path 显式传入优先级最高
-        self.db_path = db_path or os.environ.get("HARNESS_DB_PATH") or DEFAULT_DB_PATH
-        self._conn: sqlite3.Connection | None = None
-        # 单共享连接上的并发保护：WAL 允许读写分离，但同一连接仍不可被多线程同时访问。
-        # 用可重入锁包裹所有数据库操作，避免多会话 / 后台任务并写时的连接损坏与交错。
-        self._lock = threading.RLock()
+        # 单例重复构造时不得重置连接/锁，否则正在进行的查询会被打断。
+        # 用模块锁保证「检查 _initialized → 初始化 → 置位」整体原子。
+        with _DB_SINGLETON_LOCK:
+            if getattr(self, "_initialized", False):
+                return
+            # 支持环境变量覆盖（测试隔离用），db_path 显式传入优先级最高
+            self.db_path = db_path or os.environ.get("HARNESS_DB_PATH") or DEFAULT_DB_PATH
+            self._conn: sqlite3.Connection | None = None
+            # 单共享连接上的并发保护：WAL 允许读写分离，但同一连接仍不可被多线程同时访问。
+            # 用可重入锁包裹所有数据库操作，避免多会话 / 后台任务并写时的连接损坏与交错。
+            self._lock = threading.RLock()
 
-        # 确保数据目录存在
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+            # 确保数据目录存在
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+            self._initialized = True
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -408,6 +446,10 @@ class Database:
         # 同一 user 消息下的多条 assistant 即为「同一提问的多次重新回答」版本。
         if "parent_id" not in cols:
             self._conn.execute("ALTER TABLE messages ADD COLUMN parent_id TEXT")
+        # 用户停止生成标记：被 stop 中断的 assistant 答案仍会持久化（保留已生成
+        # 的部分内容），stopped=1 供前端在回答下方标注「用户已停止回答」。
+        if "stopped" not in cols:
+            self._conn.execute("ALTER TABLE messages ADD COLUMN stopped INTEGER NOT NULL DEFAULT 0")
         # 工作流画布图（方案二/P4 升级为图编排）：存储 nodes/edges 的 JSON
         wf_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(workflows)")}
         if "graph_json" not in wf_cols:
@@ -419,6 +461,10 @@ class Database:
         mem_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(memories)")}
         if "user_id" not in mem_cols:
             self._conn.execute("ALTER TABLE memories ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+        # SEC-31：定时任务补用户归属列（认证启用后按用户隔离，避免越权触发/改写他人任务）
+        sched_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(scheduled_tasks)")}
+        if "user_id" not in sched_cols:
+            self._conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
         self._conn.commit()
         logger.info("数据库 schema 已初始化: %s", self.db_path)
 

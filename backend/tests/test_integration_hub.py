@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import sys
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -21,6 +22,7 @@ BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
 
+from plugins.integration_hub import feishu_provider  # noqa: E402
 from plugins.integration_hub.feishu_provider import FeishuIntegration  # noqa: E402
 from plugins.integration_hub.integration_base import (  # noqa: E402
     AuthResult,
@@ -201,10 +203,14 @@ async def test_feishu_send_webhook(feishu, monkeypatch):
             return _Resp()
 
     monkeypatch.setattr(
-        __import__("plugins.integration_hub.feishu_provider", fromlist=["x"]).httpx,
+        feishu_provider.httpx,
         "AsyncClient",
         _Client,
     )
+    # 出站 SSRF 过滤器会做真实 DNS 解析，测试环境无外网 DNS、``hook.test`` 不可解析
+    # 会被 fail-closed 拒绝。本用例只验证 webhook 发送链路，SSRF 拦截由
+    # tests/test_ssrf_guard.py 专项覆盖，故在此放行解析。
+    monkeypatch.setattr(feishu_provider, "assert_url_safe", lambda url, **kw: None)
     await feishu.authenticate("api", {"app_id": "a", "app_secret": "s", "webhook_url": "https://hook.test/x"})
     res = await feishu.call("send_webhook", {"text": "hello"})
     assert res.ok
@@ -800,3 +806,239 @@ async def test_channel_provider_resolution_falls_back_to_first_enabled(monkeypat
 
     provider, model = await _resolve_channel_provider_and_model(services)
     assert provider is not None and model == "model-a1"
+
+
+# ── SEC-16 / PLG-03：飞书 CLI 超时、串行化、token 刷新加锁与重试 ──────────
+async def test_feishu_exec_cli_passes_timeout(feishu, monkeypatch):
+    """CLI 子进程必须带超时：否则进入交互等待会永久挂起，拖死整个集成。"""
+    captured: dict[str, Any] = {}
+
+    async def fake_run(cmd, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return SimpleNamespace(returncode=0, stdout="{}", stderr="", timed_out=False)
+
+    monkeypatch.setattr(feishu_provider.subproc, "run", fake_run)
+    rc, out, _err = await feishu._exec_cli(["lark", "whoami"], env={})
+    assert rc == 0 and out == "{}"
+    assert captured["timeout"] is not None and captured["timeout"] > 0
+
+
+async def test_feishu_exec_cli_timeout_returns_actionable_error(feishu, monkeypatch):
+    """超时（timed_out=True）必须转成明确的错误码 -9 与可操作提示，而不是假装成功。"""
+
+    async def fake_run(cmd, **kwargs):
+        return SimpleNamespace(returncode=-1, stdout="partial", stderr="", timed_out=True)
+
+    monkeypatch.setattr(feishu_provider.subproc, "run", fake_run)
+    rc, out, err = await feishu._exec_cli(["lark", "whoami"], env={})
+    assert rc == -9
+    assert out == "partial"  # 已产出的部分输出尽量带回
+    assert "超时" in err and "auth login" in err
+
+
+async def test_feishu_npx_install_timeout_surfaces_error(feishu, monkeypatch):
+    """一键安装超时需给出可操作提示（原实现会永久挂起且无任何反馈）。"""
+
+    async def fake_run(cmd, **kwargs):
+        return SimpleNamespace(returncode=-1, stdout="", stderr="", timed_out=True)
+
+    monkeypatch.setattr(feishu_provider.subproc, "run", fake_run)
+    rc, _out, err = await feishu._run_npx_install()
+    assert rc == -1
+    assert "安装超时" in err
+
+
+async def test_feishu_cli_calls_are_serialized(feishu, monkeypatch):
+    """并发 _run_cli 必须串行：lark-cli 共享同一份配置/token 缓存，并发读改写会互踩。"""
+    monkeypatch.setattr(feishu, "_detect_cli", lambda: "/usr/bin/lark")
+    await feishu.authenticate("cli", {})
+
+    state = {"inflight": 0, "peak": 0}
+
+    async def fake_exec(cmd, env, stdin_data=None):
+        state["inflight"] += 1
+        state["peak"] = max(state["peak"], state["inflight"])
+        await asyncio.sleep(0.02)
+        state["inflight"] -= 1
+        return (0, "{}", "")
+
+    monkeypatch.setattr(feishu, "_exec_cli", fake_exec)
+    await asyncio.gather(*[feishu._run_cli(["whoami"]) for _ in range(5)])
+    assert state["peak"] == 1, f"CLI 调用发生并发（峰值 {state['peak']}），共享状态会被踩坏"
+
+
+async def test_feishu_concurrent_token_refresh_fetches_once(feishu, monkeypatch):
+    """token 过期瞬间并发刷新：必须只换取一次（加锁 + 双重检查）。"""
+    calls = {"n": 0}
+
+    async def fake_api(method, path, **kwargs):
+        calls["n"] += 1
+        await asyncio.sleep(0.02)
+        return {"code": 0, "tenant_access_token": "t_new", "expire": 7200}
+
+    monkeypatch.setattr(feishu, "_api_call", fake_api)
+    feishu._app_id, feishu._app_secret = "a", "s"
+    feishu._token, feishu._token_expire_at = None, 0.0
+
+    results = await asyncio.gather(*[feishu._ensure_token() for _ in range(6)])
+    assert all(results)
+    assert calls["n"] == 1, f"并发刷新触发了 {calls['n']} 次换取（应仅 1 次）"
+    assert feishu._token == "t_new"
+
+
+async def test_feishu_token_fetch_retries_then_gives_up(feishu, monkeypatch):
+    """token 换取失败需有限次重试（PLG-03），耗尽后才返回 False。"""
+    monkeypatch.setattr(feishu_provider, "_TOKEN_RETRY_BACKOFF", 0.001)
+    calls = {"n": 0}
+
+    async def fake_api(method, path, **kwargs):
+        calls["n"] += 1
+        raise RuntimeError("network blip")
+
+    monkeypatch.setattr(feishu, "_api_call", fake_api)
+    assert not await feishu._fetch_token("a", "s")
+    assert calls["n"] == feishu_provider._TOKEN_MAX_ATTEMPTS
+
+
+async def test_feishu_token_fetch_retry_succeeds_on_later_attempt(feishu, monkeypatch):
+    """瞬时故障：第二次尝试成功即整体成功（原实现一次失败即断连）。"""
+    monkeypatch.setattr(feishu_provider, "_TOKEN_RETRY_BACKOFF", 0.001)
+    calls = {"n": 0}
+
+    async def fake_api(method, path, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient")
+        return {"code": 0, "tenant_access_token": "t_ok", "expire": 7200}
+
+    monkeypatch.setattr(feishu, "_api_call", fake_api)
+    assert await feishu._fetch_token("a", "s")
+    assert feishu._token == "t_ok" and calls["n"] == 2
+
+
+async def test_feishu_failed_refresh_keeps_existing_token(feishu, monkeypatch):
+    """刷新失败不得把仍在有效期内的 token 清成 None（避免自伤式断连）。"""
+    monkeypatch.setattr(feishu_provider, "_TOKEN_RETRY_BACKOFF", 0.001)
+    feishu._token, feishu._token_expire_at = "t_old", 0.0  # 已过期但非空
+
+    async def fake_api(method, path, **kwargs):
+        return {"code": 999, "msg": "internal error"}
+
+    monkeypatch.setattr(feishu, "_api_call", fake_api)
+    assert not await feishu._fetch_token("a", "s")
+    assert feishu._token == "t_old"
+
+
+async def test_feishu_locks_survive_event_loop_switch(feishu):
+    """插件实例跨事件循环复用时，锁需重建而不是抛 'bound to a different event loop'。"""
+    import threading
+
+    lock_a = feishu._get_cli_lock()
+    assert feishu._get_cli_lock() is lock_a
+
+    box: dict[str, Any] = {}
+
+    def _worker() -> None:
+        async def _main() -> None:
+            lock = feishu._get_cli_lock()
+            async with lock:  # 在新循环里 await：若复用旧锁会抛 RuntimeError
+                pass
+            box["lock"] = lock
+
+        asyncio.run(_main())
+
+    t = threading.Thread(target=_worker)
+    t.start()
+    t.join(timeout=10)
+    assert not t.is_alive(), "新事件循环内的加锁未能完成（可能抛了跨循环异常）"
+    assert box["lock"] is not lock_a
+
+
+# ── SEC-16(WS)：渠道 start/stop 生命周期串行化与幂等 ──────────
+def _stub_channel_sdk(monkeypatch, feishu, started: dict[str, Any]) -> None:
+    """装一个最小可用的 lark SDK 桩：构造即视为“已起连接”，start() 记录调用。"""
+    import types as _types
+
+    builder = _types.SimpleNamespace(handler=None)
+
+    def _register(f):
+        builder.handler = f
+        return builder
+
+    builder.register_p2_im_message_receive_v1 = _register
+    builder.build = lambda: "EVENT_HANDLER"
+
+    class _StubClient:
+        def __init__(self, app_id: str, app_secret: str, **kwargs: Any) -> None:
+            started.setdefault("clients", []).append(self)
+            self._auto_reconnect = True
+
+        def start(self) -> None:
+            started["calls"] = started.get("calls", 0) + 1
+
+    sdk = _types.SimpleNamespace(
+        LogLevel=_types.SimpleNamespace(INFO="INFO"),
+        EventDispatcherHandler=_types.SimpleNamespace(builder=lambda a, b: builder),
+        ws=_types.SimpleNamespace(Client=_StubClient),
+    )
+
+    async def _no_bot(app_id: str, app_secret: str) -> None:
+        return None
+
+    monkeypatch.setattr(feishu._channel, "_import_sdk", lambda: sdk)
+    monkeypatch.setattr(feishu._channel, "_fetch_bot_open_id", _no_bot)
+    feishu.set_message_handler(lambda text, ctx: text)
+
+
+async def test_channel_concurrent_start_serialized(feishu, monkeypatch):
+    """并发 start 必须串行且只起一条连接：否则各自覆盖 _client/_thread/_ws_loop，
+    先起的连接成为泄漏孤儿（无法 stop、持续重连）。"""
+    started: dict[str, Any] = {}
+    _stub_channel_sdk(monkeypatch, feishu, started)
+
+    results = await asyncio.gather(*[feishu.start_channel({"app_id": "a", "app_secret": "s"}) for _ in range(5)])
+    assert all(r.ok for r in results)
+    # 只有一个 client 被真正构造并启动（幂等守卫拦下其余）
+    assert len(started.get("clients", [])) == 1, "并发 start 产生了多个 client（孤儿连接泄漏）"
+    assert started.get("calls") == 1
+
+    await feishu.stop_channel()
+    assert feishu._channel.status()["running"] is False
+
+
+async def test_channel_stop_is_idempotent(feishu, monkeypatch):
+    """重复 stop 不得报错或误伤尚未存在的连接。"""
+    started: dict[str, Any] = {}
+    _stub_channel_sdk(monkeypatch, feishu, started)
+
+    await feishu.start_channel({"app_id": "a", "app_secret": "s"})
+    r1 = await feishu.stop_channel()
+    r2 = await feishu.stop_channel()
+    assert r1.ok and r2.ok
+    assert feishu._channel.status()["running"] is False
+
+
+async def test_channel_lifecycle_lock_survives_event_loop_switch(feishu):
+    """连接器跨事件循环复用时，生命周期锁需重建而非抛 'bound to a different loop'。"""
+    import threading
+
+    lock_a = feishu._channel._get_lifecycle_lock()
+    assert feishu._channel._get_lifecycle_lock() is lock_a
+
+    box: dict[str, Any] = {}
+
+    def _worker() -> None:
+        async def _main() -> None:
+            lock = feishu._channel._get_lifecycle_lock()
+            async with lock:  # 新循环 await：若复用旧锁会抛 RuntimeError
+                pass
+            box["lock"] = lock
+
+        asyncio.run(_main())
+
+    t = threading.Thread(target=_worker)
+    t.start()
+    t.join(timeout=10)
+    assert not t.is_alive(), "新事件循环内获取生命周期锁失败（可能抛跨循环异常）"
+    assert box["lock"] is not lock_a
+

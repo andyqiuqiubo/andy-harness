@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
+import logging
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -13,6 +16,7 @@ from pydantic import BaseModel
 
 from harness.api.deps import require_admin
 from harness.api.errors import APIError
+from harness.infra.crypto import redact_secrets
 from harness.kernel.loader import PluginLoader
 from harness.kernel.services import ServiceRegistry
 from harness.modules.package_installer.service import (
@@ -22,11 +26,60 @@ from harness.modules.package_installer.service import (
 
 router = APIRouter(prefix="/api/plugins", tags=["plugins"])
 
+logger = logging.getLogger("harness.api.plugins")
+
 # 插件目录
 _PLUGINS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "plugins"
 
 # 插件市场目录（内置可安装插件包）
 _MARKETPLACE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "marketplace"
+
+# SEC-05 修复：plugin_id 会直接拼接为目录路径
+# （_PLUGINS_DIR / plugin_id、_MARKETPLACE_DIR / plugin_id），
+# 未校验时 "../../x" 可穿越到任意目录写文件。统一按白名单校验。
+_PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]{2,48}$")
+
+# 自定义插件源码体积上限（代码包不会很大，异常值直接拒）
+MAX_PLUGIN_CODE_BYTES = 2 * 1024 * 1024
+
+
+def _validate_plugin_id(plugin_id: str) -> None:
+    """校验插件 id（小写字母开头，仅小写字母/数字/下划线，3-49 位）。"""
+    if not _PLUGIN_ID_RE.match(plugin_id or ""):
+        raise APIError(
+            "INVALID_PLUGIN_ID",
+            "插件 id 需以小写字母开头，仅含小写字母/数字/下划线（3-49 位）",
+            400,
+        )
+
+
+_SECRET_MASK = "••••••••"
+
+
+def _mask_secret_fields(data: dict[str, Any]) -> dict[str, Any]:
+    """按 config_schema 把标记 `"secret": true` 的配置值替换为占位符。
+
+    同时兼容 schema 缺失的情况：键名含 key/secret/token/password 的一并脱敏。
+    """
+    schema = data.get("config_schema") or {}
+    props = schema.get("properties") if isinstance(schema, dict) else None
+    config = data.get("config")
+    if not isinstance(config, dict):
+        return data
+    masked = dict(config)
+    secret_keys: set[str] = set()
+    if isinstance(props, dict):
+        for key, spec in props.items():
+            if isinstance(spec, dict) and spec.get("secret") is True:
+                secret_keys.add(key)
+    for key, value in config.items():
+        lowered = str(key).lower()
+        looks_secret = any(t in lowered for t in ("key", "secret", "token", "password", "passwd", "credential"))
+        if key in secret_keys or looks_secret:
+            if isinstance(value, str) and value:
+                masked[key] = _SECRET_MASK
+    data["config"] = masked
+    return data
 
 
 def _get_loader(registry: ServiceRegistry) -> PluginLoader:
@@ -50,6 +103,9 @@ class InstallPluginRequest(BaseModel):
     description: str = ""
     config_schema: dict[str, Any] | None = None
     plugin_code: str  # Python 源码
+    # SEC-05：安装自定义源码等价于在本机执行任意代码，必须由调用方
+    # 显式确认（防误触 / 自动化脚本静默植入），并留审计日志。
+    confirm_dangerous: bool = False
 
 
 class UpdateConfigRequest(BaseModel):
@@ -125,6 +181,26 @@ def setup_plugin_routes(registry: ServiceRegistry) -> None:
         """安装新插件到 plugins 目录。"""
         loader = _get_loader(registry)
 
+        # SEC-05：插件 id 会被拼进目录路径，必须先白名单校验（防路径穿越）
+        _validate_plugin_id(req.plugin_id)
+        # SEC-05：自定义源码执行需显式确认 + 语法合法性校验
+        if not req.confirm_dangerous:
+            raise APIError(
+                "DANGEROUS_ACTION_NOT_CONFIRMED",
+                "安装自定义插件源码等价于在本机执行任意代码；"
+                "确认无误后请在请求中带上 confirm_dangerous=true",
+                400,
+            )
+        if len(req.plugin_code.encode("utf-8", "replace")) > MAX_PLUGIN_CODE_BYTES:
+            raise APIError("PLUGIN_CODE_TOO_LARGE", "插件源码超过 2MB 上限", 400)
+        try:
+            ast.parse(req.plugin_code)
+        except SyntaxError as e:
+            raise APIError("PLUGIN_CODE_INVALID", f"插件源码语法非法: {redact_secrets(str(e))}", 400) from e
+        logger.warning(
+            "安装自定义插件源码（等价于本机执行代码）: plugin_id=%s name=%s", req.plugin_id, req.name
+        )
+
         # 检查是否已存在
         if loader.get_plugin(req.plugin_id):
             raise APIError(
@@ -179,7 +255,7 @@ def setup_plugin_routes(registry: ServiceRegistry) -> None:
             import shutil
 
             shutil.rmtree(plugin_dir, ignore_errors=True)
-            raise APIError("PLUGIN_INSTALL_FAILED", f"插件加载失败: {e}", 500) from e
+            raise APIError("PLUGIN_INSTALL_FAILED", f"插件加载失败: {redact_secrets(str(e))}", 500) from e
 
         return {
             "status": "installed",
@@ -195,6 +271,9 @@ def setup_plugin_routes(registry: ServiceRegistry) -> None:
     async def install_marketplace_plugin(plugin_id: str) -> dict[str, Any]:
         """从插件市场目录安装插件（服务端直装，写入 source=marketplace）。"""
         loader = _get_loader(registry)
+
+        # SEC-05：plugin_id 拼接 _MARKETPLACE_DIR，需白名单校验（防路径穿越读到目录外）
+        _validate_plugin_id(plugin_id)
 
         # 检查是否已安装
         if loader.get_plugin(plugin_id):
@@ -276,7 +355,7 @@ def setup_plugin_routes(registry: ServiceRegistry) -> None:
             import shutil
 
             shutil.rmtree(plugin_dir, ignore_errors=True)
-            raise APIError("PLUGIN_INSTALL_FAILED", f"插件加载失败: {e}", 500) from e
+            raise APIError("PLUGIN_INSTALL_FAILED", f"插件加载失败: {redact_secrets(str(e))}", 500) from e
 
         return {
             "status": "installed",
@@ -304,6 +383,8 @@ def setup_plugin_routes(registry: ServiceRegistry) -> None:
             raise APIError("INVALID_PACKAGE", "plugin.json 解析失败", 400)
 
         plugin_id = meta.get("id") or pkg_dir.name
+        # SEC-05：id 来自外部包的 plugin.json（不可信），必须校验后才能拼路径
+        _validate_plugin_id(plugin_id)
         if loader.get_plugin(plugin_id):
             raise APIError(
                 "PLUGIN_ALREADY_EXISTS",
@@ -347,7 +428,7 @@ def setup_plugin_routes(registry: ServiceRegistry) -> None:
             await loader.activate(plugin_id)
         except Exception as e:
             shutil.rmtree(dest, ignore_errors=True)
-            raise APIError("PLUGIN_INSTALL_FAILED", f"插件加载失败: {e}", 500) from e
+            raise APIError("PLUGIN_INSTALL_FAILED", f"插件加载失败: {redact_secrets(str(e))}", 500) from e
 
         return {
             "status": "installed",
@@ -359,6 +440,9 @@ def setup_plugin_routes(registry: ServiceRegistry) -> None:
     async def uninstall_plugin(plugin_id: str) -> dict[str, str]:
         """卸载插件（停用 + 删除文件），仅允许市场来源插件。"""
         loader = _get_loader(registry)
+
+        # SEC-05：删除路径 _PLUGINS_DIR / plugin_id，先校验 id 再操作
+        _validate_plugin_id(plugin_id)
 
         plugin = loader.get_plugin(plugin_id)
         if not plugin:
@@ -400,11 +484,17 @@ def setup_plugin_routes(registry: ServiceRegistry) -> None:
 
     @router.get("/{plugin_id}/config", summary="获取插件配置")
     async def get_plugin_config(plugin_id: str) -> dict[str, Any]:
-        """获取插件的配置 schema 和当前配置值。"""
+        """获取插件的配置 schema 和当前配置值（secret 字段脱敏）。
+
+        配置里可能含 API Key / token（schema 中标记 `"secret": true`）。
+        GET 面向前端展示，若原样返回会把密钥暴露给任何可达该端口的调用方；
+        这里统一替换为占位符，真实值仅在插件运行时内部使用。
+        """
         loader = _get_loader(registry)
         if not loader.get_plugin(plugin_id):
             raise APIError("PLUGIN_NOT_FOUND", f"插件不存在: {plugin_id}", 404)
-        return loader.get_plugin_config(plugin_id)
+        data = loader.get_plugin_config(plugin_id)
+        return _mask_secret_fields(data)
 
     @router.patch("/{plugin_id}/config", summary="更新插件配置", dependencies=[Depends(require_admin)])
     async def update_plugin_config(plugin_id: str, req: UpdateConfigRequest) -> dict[str, Any]:

@@ -249,16 +249,13 @@ class PermissionServiceImpl(PermissionService):
             logger.warning("读取权限配置失败: %s", e)
 
     def _save_state(self) -> None:
-        """写入状态文件。"""
+        """写入状态文件（SEC-24：原子写，避免崩溃/并发写导致配置损坏）。"""
+        from harness.infra.atomic_write import atomic_write_json
+
         try:
-            self._state_file.parent.mkdir(parents=True, exist_ok=True)
-            self._state_file.write_text(
-                json.dumps(
-                    {"mode": self._mode, "overrides": self._overrides},
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
+            atomic_write_json(
+                self._state_file,
+                {"mode": self._mode, "overrides": self._overrides},
             )
         except Exception as e:
             logger.warning("写入权限配置失败: %s", e)

@@ -9,6 +9,7 @@ manifest 带 ``config_schema``（DevKit 页据此自动渲染配置表单）。
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import re
@@ -21,6 +22,19 @@ from harness.kernel.loader import PluginLoader
 logger = logging.getLogger("harness.devkit")
 
 _PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]{2,48}$")
+
+# SEC-03 修复：name/description 会被 .replace() 直插进生成的 Python 源码
+# （模块 docstring 与字符串字面量），任意引号 / 反斜杠 / 换行都能组合出
+# 代码注入（生成的 main.py 会被 import 执行）。白名单收敛：
+# - 名称：中英文 / 数字 / 空格 / 点 / 连字符 / 下划线（≤50 字符）
+# - 描述：中英文 / 数字 / ASCII 与 CJK 常见标点（含全角），但不含引号、
+#   反斜杠、换行（≤200 字符）。全角引号（U+FF02 等）不是 Python 定界符，
+#   无注入能力，故全角区间整体放行。
+_NAME_RE = re.compile(r"^[\w\u4e00-\u9fff][\w\u4e00-\u9fff .\-]{0,49}$")
+_DESC_RE = re.compile(
+    r"^[\w\u4e00-\u9fff ,.!?;:()\[\]{}/@%&+=<>~\-"
+    r"\u3000-\u303f\uff00-\uffef\u2014\u2026]{0,200}$"
+)
 
 # 模板占位符：__PLUGIN_ID__ / __CLASS_NAME__ / __PLUGIN_CLASS__ / __PLUGIN_NAME__ / __PLUGIN_DESC__
 
@@ -271,6 +285,20 @@ def _derive_class(id: str, template: str) -> tuple[str, str]:
     return f"{rest}{tool_suffix}", f"{rest}Plugin"
 
 
+def _validate_human_fields(name: str, description: str) -> None:
+    """SEC-03：校验会进入生成源码的名称/描述（白名单，禁一切可构造代码的字符）。"""
+    if not _NAME_RE.match(name):
+        raise ValueError(
+            "插件名称仅支持中英文、数字、空格及 . - _ 字符（1-50 字符），"
+            "不允许引号 / 反斜杠 / 换行等可能注入代码的字符"
+        )
+    if description and not _DESC_RE.match(description):
+        raise ValueError(
+            "插件描述仅支持中英文、数字与常见标点（≤200 字符），"
+            "不允许引号 / 反斜杠 / 换行等可能注入代码的字符"
+        )
+
+
 def scaffold(
     plugins_dir: str | Path,
     template: str,
@@ -285,6 +313,7 @@ def scaffold(
         raise ValueError("插件 id 需以小写字母开头，仅含小写字母/数字/下划线（3-49 位）")
     if not name.strip():
         raise ValueError("插件名称不能为空")
+    _validate_human_fields(name, description)
     cfg = _TEMPLATES[template]
     class_name, plugin_class = _derive_class(plugin_id, template)
 
@@ -302,6 +331,12 @@ def scaffold(
     main_src = cfg["main"]
     for k, v in tokens.items():
         main_src = main_src.replace(k, v)
+
+    # 兜底自检：生成的源码必须语法合法（白名单之外的注入多半会破坏语法）
+    try:
+        ast.parse(main_src)
+    except SyntaxError as e:
+        raise ValueError(f"生成的插件源码语法非法（{e}），请检查名称/描述") from e
 
     manifest = {
         "id": plugin_id,

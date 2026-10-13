@@ -39,6 +39,12 @@ def _free_port() -> int:
     return port
 
 
+@pytest.fixture(autouse=True)
+def _allow_loopback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """本机测试服务器（127.0.0.1）：显式放开 SSRF 护栏（SEC-12 默认拒绝回环）。"""
+    monkeypatch.setenv("HARNESS_ALLOW_PRIVATE_URL", "1")
+
+
 def _start(handler_cls, port: int) -> ThreadingHTTPServer:
     httpd = ThreadingHTTPServer(("127.0.0.1", port), handler_cls)
     httpd.daemon_threads = True

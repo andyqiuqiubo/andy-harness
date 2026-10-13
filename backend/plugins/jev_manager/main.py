@@ -57,6 +57,15 @@ class JevManager:
         }
         payload: dict[str, Any] = {"scene": scene, "queries": queries}
 
+        # SEC-26 审计留痕：jev 决策结果可能驱动后续动作（如工单分级、内容判定），
+        # 且其输入 scene/question 可能来自被提示注入污染的网页/文档内容。三件套
+        # 均为无状态外部 API 调用（不改自身记分牌），但为可追溯「什么场景、基于
+        # 什么问题、得出什么结论」，记录一次结构化审计日志（不落 Authorization，
+        # scene 截断防日志膨胀）。这样即便注入指令诱导 agent 反复调用以操纵下游
+        # 决策，也能在审计中还原调用链。
+        import time
+
+        _t0 = time.monotonic()
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 f"{self.base_url}/jev/decide",
@@ -65,7 +74,28 @@ class JevManager:
             )
             resp.raise_for_status()
             data = resp.json()
-            return data.get("results", [])
+            results = data.get("results", [])
+        _elapsed_ms = int((time.monotonic() - _t0) * 1000)
+
+        # 审计：请求类型 + 各请求问题/选项摘要（截断），不含密钥。
+        _query_summaries = []
+        for q in queries:
+            _qtype = q.get("type", "?")
+            if _qtype == "choice":
+                _detail = f"options={q.get('options', [])}"
+            elif _qtype == "score":
+                _detail = f"scale_len={len(q.get('scale', []))}"
+            else:
+                _detail = str(q.get("proposition", ""))[:200]
+            _query_summaries.append(f"{_qtype}({_detail})")
+        logger.info(
+            "jev.decide 审计: scene=%r, queries=[%s], results=%d, elapsed_ms=%d",
+            (scene or "")[:200],
+            ", ".join(_query_summaries),
+            len(results),
+            _elapsed_ms,
+        )
+        return results
 
     async def choice(
         self,

@@ -36,6 +36,16 @@ def _free_port() -> int:
     return port
 
 
+@pytest.fixture(autouse=True)
+def _allow_loopback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """本节用例起的是本机测试服务器（127.0.0.1），需显式放开 SSRF 护栏。
+
+    生产默认拒绝回环/内网地址（SEC-12），测试通过 HARNESS_ALLOW_PRIVATE_URL
+    明确 opt-in，既保留护栏默认强度，又不影响离线测试。
+    """
+    monkeypatch.setenv("HARNESS_ALLOW_PRIVATE_URL", "1")
+
+
 @pytest.fixture(scope="module")
 def sse_url() -> Iterator[str]:
     """启动本地 SSE echo server，返回其 /sse 地址。"""

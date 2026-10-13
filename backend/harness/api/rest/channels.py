@@ -97,6 +97,11 @@ def setup_channel_routes(registry: ServiceRegistry) -> None:
         if not channel.check_secret(secret or header_secret):
             raise APIError("INVALID_SECRET", "渠道密钥无效", 403)
 
+        # 身份归属校验：user_id 是会话归属与权限判定的唯一依据，
+        # 缺失/空白时拒绝，避免以空身份创建会话或绕过 allowed_users。
+        if not (payload.user_id or "").strip():
+            raise APIError("INVALID_USER_ID", "user_id 不能为空", 400)
+
         msg = InboundMessage(
             channel=name,
             user_id=payload.user_id,

@@ -24,7 +24,6 @@ NewAPI 令牌，并据此在 harness 内创建一个 OpenAI 兼容 Provider（cu
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import secrets
@@ -32,11 +31,16 @@ from typing import Any
 
 import httpx
 
+from harness.infra.crypto import redact_secrets
 from harness.modules.model_manager.openai_compatible import OpenAICompatibleProvider
 
 from .integration_base import ActionSpec, AuthResult, IntegrationProvider, IntegrationResult
+from .state_store import load_state, needs_upgrade, save_state
 
 logger = logging.getLogger("harness.plugin.integration_hub.oortcloud")
+
+# 落盘前必须加密的敏感字段（SEC-09：access_token 曾明文落盘 644 权限）
+_SENSITIVE_FIELDS = ("access_token",)
 
 
 def _env(name: str, default: str = "") -> str:
@@ -108,6 +112,10 @@ class OortCloudIntegration(IntegrationProvider):
         )
         self._state_file = os.path.join(self._state_dir, "oortcloud_state.json")
         self._load_state()
+        # SEC-21：state 文件缺失时，从 providers 表回填的密文自愈恢复。
+        # 注：services 可能在构造后才注入（PluginContext 时序），此处做一次
+        # 尝试即可——若尚未注入则静默跳过，恢复入口也存在于下次 load 前。
+        self._restore_token_from_provider()
 
     # ── 平台配置（从 env 读取，与 feishu 同机制） ──────
     @property
@@ -144,21 +152,19 @@ class OortCloudIntegration(IntegrationProvider):
 
     # ── 状态持久化 ──────────────────────────────────
     def _load_state(self) -> None:
-        try:
-            if os.path.exists(self._state_file):
-                with open(self._state_file, encoding="utf-8") as f:
-                    self._state = json.load(f) or {}
-        except Exception as e:  # noqa: BLE001
-            logger.warning("读取 OortCloud 状态文件失败: %s", e)
-            self._state = {}
+        """读取状态文件；敏感字段（access_token）自动解密。
+
+        兼容旧版明文文件：读取时按明文透传，随后 :func:`needs_upgrade`
+        检测到明文即触发一次重写，把明文无缝升级为密文。
+        """
+        self._state = load_state(self._state_file, _SENSITIVE_FIELDS)
+        if needs_upgrade(self._state_file, _SENSITIVE_FIELDS):
+            logger.info("检测到旧版明文 access_token，自动升级为加密存储")
+            self._save_state()
 
     def _save_state(self) -> None:
-        try:
-            os.makedirs(self._state_dir, exist_ok=True)
-            with open(self._state_file, "w", encoding="utf-8") as f:
-                json.dump(self._state, f, ensure_ascii=False)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("写入 OortCloud 状态文件失败: %s", e)
+        """持久化状态：access_token 加密后原子落盘，权限收敛 0o600。"""
+        save_state(self._state_dir, self._state_file, self._state, _SENSITIVE_FIELDS)
 
     def disconnect(self) -> None:
         """断开并清除本地认证状态（删 Provider + 清状态文件）。"""
@@ -268,8 +274,8 @@ class OortCloudIntegration(IntegrationProvider):
             # ④ base_url（含 /v1）
             provider_base_url = f"{base}/v1"
 
-            # ⑤ 创建 / 更新 Provider
-            await self._upsert_provider(provider_base_url, sk, models)
+            # ⑤ 创建 / 更新 Provider（SEC-21：授权令牌一并回填 providers 表）
+            await self._upsert_provider(provider_base_url, sk, models, access_token=access_token)
 
             # ⑥ 持久化用户态 + 可选用量
             self._state["access_token"] = access_token
@@ -288,7 +294,8 @@ class OortCloudIntegration(IntegrationProvider):
                 detail = f"已领取并创建 Provider：OortCloud 免费额度（剩余积分 {self._state.get('remaining_credits')}）"
             return AuthResult(ok=True, mode=mode, detail=detail)
         except Exception as e:  # noqa: BLE001
-            logger.exception("OortCloud authenticate 失败")
+            # SEC-32：异常文本可能携带 URL / 令牌，日志与回显前统一脱敏。
+            logger.error("OortCloud authenticate 失败: %s", redact_secrets(str(e)))
             return AuthResult(ok=False, mode=mode, error=f"领取失败: {self._describe_error(e)}")
 
     # ── 请求封装 ────────────────────────────────────
@@ -337,7 +344,8 @@ class OortCloudIntegration(IntegrationProvider):
         detail = str(e).strip()
         if isinstance(e, (httpx.TimeoutException, TimeoutError)) or name in _NET_ERROR_NAMES:
             return f"连接 OortCloud 平台超时或中断（{name}），请稍后重试；首次调用可能较慢"
-        return f"{detail}（{name}）" if detail else name
+        # SEC-32：异常文本可能携带 URL 查询串令牌 / 头凭据，回显客户端前脱敏。
+        return redact_secrets(f"{detail}（{name}）" if detail else name)
 
     async def _request_json(
         self, method: str, url: str, headers: dict[str, str], *, json_body: Any = None, retries: int = 2
@@ -442,7 +450,7 @@ class OortCloudIntegration(IntegrationProvider):
             return None
         return await self._fetch_key(base, mgmt, token_id)
 
-    async def _upsert_provider(self, base_url: str, api_key: str, models: list[str]) -> None:
+    async def _upsert_provider(self, base_url: str, api_key: str, models: list[str], access_token: str = "") -> None:
         from harness.infra.crypto import APIKeyEncryptor
         from harness.infra.database import Database
         from harness.modules.model_manager.provider_registry import ProviderRegistry
@@ -451,12 +459,27 @@ class OortCloudIntegration(IntegrationProvider):
         db = self._services.get(Database)
         provider_id = "custom_oortcloud"  # 由 name="OortCloud" 派生
 
-        encrypted_key = APIKeyEncryptor().encrypt(api_key)
+        encryptor = APIKeyEncryptor()
+        encrypted_key = encryptor.encrypt(api_key)
+        # SEC-21：授权令牌回填 providers 表。旧实现 access_token 只写本地集成
+        # 状态文件（oortcloud_state.json），与 providers 表状态分裂——state 文件
+        # 损坏/删除后令牌即永久丢失，用量刷新失效且必须重新走完整 oauth。
+        # 回填后 providers 表成为规范存储（与 api_key_encrypted 同样的密文惯例），
+        # state 文件仅作运行时缓存（_load_state 后可从表内密文自愈恢复）。
+        # 存放位置为 extra_params（providers 表唯一可持久化的扩展 JSON 列）；
+        # 请求体合并层会排除 *_encrypted 私有键（openai_compatible SEC-21 过滤），
+        # 不会把令牌密文发给上游。
+        extra_params: dict[str, Any] = dict(
+            (pr.get_provider_config(provider_id) or {}).get("extra_params") or {}
+        )
+        if access_token:
+            extra_params["oortcloud_access_token_encrypted"] = encryptor.encrypt(access_token)
         config = {
             "name": "OortCloud",
             "api_key_encrypted": encrypted_key,
             "base_url": base_url,
             "models": models or [],
+            "extra_params": extra_params,
             "enabled": True,
         }
         # 统一用模块级 OortCloudProvider（带对话流必需头），并显式落地 enabled=True：
@@ -468,6 +491,30 @@ class OortCloudIntegration(IntegrationProvider):
         if db is not None:
             pr.persist_provider(db, provider_id, config)
 
+    def _restore_token_from_provider(self) -> None:
+        """SEC-21：state 文件缺失/损坏时，从 providers 表回填的密文恢复 access_token。
+
+        使本地状态文件退化为纯缓存：删掉它重启后端即可自愈，无需重新走 oauth。
+        """
+        if self._state.get("access_token") or self._services is None:
+            return
+        try:
+            from harness.infra.crypto import APIKeyEncryptor
+            from harness.modules.model_manager.provider_registry import ProviderRegistry
+
+            pr = self._services.get(ProviderRegistry)
+            if pr is None or not pr.has_provider("custom_oortcloud"):
+                return
+            cfg = pr.get_provider_config("custom_oortcloud") or {}
+            enc = (cfg.get("extra_params") or {}).get("oortcloud_access_token_encrypted")
+            if not enc:
+                return
+            self._state["access_token"] = APIKeyEncryptor().decrypt(str(enc))
+            self._save_state()
+            logger.info("已从 providers 表恢复 OortCloud access_token（SEC-21）")
+        except Exception as e:  # noqa: BLE001 - 恢复失败不应阻断启动
+            logger.debug("无可恢复的 OortCloud access_token: %s", e)
+
     # ── 动作实现 ────────────────────────────────────
     async def call(self, action: str, params: dict[str, Any]) -> IntegrationResult:
         if action == "usage":
@@ -476,6 +523,11 @@ class OortCloudIntegration(IntegrationProvider):
 
     async def _call_usage(self) -> IntegrationResult:
         token = self._state.get("access_token")
+        if not token:
+            # SEC-21：state 文件丢失/后建时自愈——先尝试从 providers 表回填的
+            # 密文恢复，再报「尚未领取」（插件 activate 可能早于表加载）。
+            self._restore_token_from_provider()
+            token = self._state.get("access_token")
         if not token:
             return IntegrationResult(ok=False, error="尚未领取，请先登录领取免费额度")
         try:

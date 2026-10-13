@@ -50,8 +50,15 @@ def auth_client(tmp_path: str, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
     from harness.main import app
 
+    # SEC-28 测试隔离：登录限速计数按 IP+用户名累计，TestClient 的 client.host 恒为
+    # "testclient"，若不在每个测试前清零，前一测试的失败登录会污染后一测试
+    # （尤其限速测试自身会打满配额，导致后续依赖 admin 登录的测试被误限速）。
+    from harness.api.rest import auth as auth_route
+
+    auth_route._login_attempts.clear()
     with TestClient(app) as client:
         yield client
+    auth_route._login_attempts.clear()
 
 
 def _login(client: TestClient, username: str, password: str) -> dict:
@@ -370,3 +377,86 @@ class TestWebSocketAuth:
             frame = ws.receive_json()
             assert frame["type"] == "error"
             assert frame["data"]["code"] == "SESSION_NOT_FOUND"
+
+
+# ── SEC-28：登录限速 + 用户名枚举侧信道消除 ─────────────────────
+
+
+class TestLoginRateLimitAndEnumeration:
+    """登录防爆破限速与统一失败语义。"""
+
+    def test_repeated_login_is_rate_limited(self, auth_client: TestClient) -> None:
+        """同一来源连续错误登录超过阈值后返回 429（防在线爆破）。"""
+        from harness.api.rest.auth import reset_login_rate_limit
+
+        reset_login_rate_limit()  # 复位，避免此前用例的失败计数影响阈值判定
+        statuses = []
+        for _ in range(12):  # 阈值 10，多试几次必然触发
+            r = auth_client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "wrong"},
+            )
+            statuses.append(r.status_code)
+        assert 429 in statuses, f"未触发限速: {statuses}"
+        assert statuses[-1] == 429, f"限速未保持: {statuses}"
+        assert auth_client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "wrong"},
+        ).json()["code"] == "RATE_LIMITED"
+        reset_login_rate_limit()  # 用例结束复位，避免污染后续用例
+
+    def test_unknown_user_and_bad_password_same_response(
+        self, auth_client: TestClient
+    ) -> None:
+        """「用户不存在」与「密码错误」返回完全一致的状态码与错误码。
+
+        消除用户名枚举：响应体不泄露用户名是否存在。
+        """
+        from harness.api.rest.auth import reset_login_rate_limit
+
+        reset_login_rate_limit()
+        r1 = auth_client.post(
+            "/api/auth/login",
+            json={"username": "definitely_not_a_user", "password": "x"},
+        )
+        r2 = auth_client.post(
+            "/api/auth/login",
+            json={"username": ADMIN_USERNAME, "password": "wrong_password"},
+        )
+        assert r1.status_code == r2.status_code == 401
+        assert r1.json()["code"] == r2.json()["code"] == "INVALID_CREDENTIALS"
+        # 错误消息也一致（都是「用户名或密码错误」）
+        assert r1.json()["message"] == r2.json()["message"]
+        reset_login_rate_limit()
+
+    def test_unknown_user_still_hashes_password(self, db: Database, monkeypatch) -> None:
+        """时序侧信道消除：用户不存在时也执行一次等价的 PBKDF2 陪跑哈希。
+
+        这样「立即失败 vs 慢几毫秒」的时间差不复存在，攻击者无法用响应时间
+        枚举有效用户名。
+        """
+        import harness.modules.auth_manager.service as svc_mod
+
+        calls: list[str] = []
+        real_hash = svc_mod.hash_password
+
+        def _spy(password: str, salt: str) -> str:
+            calls.append(salt)
+            return real_hash(password, salt)
+
+        monkeypatch.setattr(svc_mod, "hash_password", _spy)
+
+        svc = AuthServiceImpl(db)
+        svc.bootstrap()
+        # 启用认证并创建用户（此过程也会调用 hash_password，先清空计数）
+        svc.create_user(ADMIN_USERNAME, ADMIN_PASSWORD)
+        calls.clear()
+
+        # 认证一个不存在的用户 → 应触发一次哑哈希陪跑
+        assert svc.authenticate("ghost_user", "any_password") is None
+        assert calls, "用户不存在路径未执行陪跑哈希（时序侧信道仍在）"
+        assert calls[0] == svc_mod._DUMMY_SALT
+
+        # 认证存在的用户但密码错误 → 走正常 verify_password（真实盐）
+        calls.clear()
+        assert svc.authenticate(ADMIN_USERNAME, "wrong") is None

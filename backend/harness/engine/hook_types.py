@@ -54,3 +54,4 @@ class MessageRecord:
     attachments: list[dict[str, Any]] | None = None
     reasoning: str = ""
     parent_id: str | None = None
+    stopped: bool = False

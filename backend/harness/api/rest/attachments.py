@@ -18,6 +18,8 @@ from harness.modules.attachment.limits import (
     MAX_DOCUMENTS_PER_MESSAGE,
     MAX_FILES_PER_MESSAGE,
     MAX_IMAGES_PER_MESSAGE,
+    ext_of,
+    size_limit_for_ext,
 )
 from harness.modules.attachment.service import (
     AttachmentError,
@@ -29,6 +31,32 @@ from harness.modules.attachment.service import (
 logger = logging.getLogger("harness.api.rest.attachments")
 
 router = APIRouter(prefix="/api/sessions", tags=["attachments"])
+
+# SEC-29：流式读取块大小。足够大以摊薄系统调用，又足够小以尽快判超限。
+_READ_CHUNK = 64 * 1024
+
+
+async def _read_capped(upload: UploadFile, limit: int) -> bytes:
+    """流式读取上传文件，最多读 ``limit + 1`` 字节后即停。
+
+    SEC-29：旧实现 ``data = await f.read()`` 会把整个上传（可能数百 MB）一次性
+    读进内存后才校验大小——内存 DoS。此处按块读，一旦累计超过 ``limit`` 就停止
+    并抛超限错误，绝不把超限文件的剩余字节读进内存。返回最多 ``limit`` 字节，
+    且末尾多读 1 字节用于判定「恰好等于上限」与「超过上限」的边界。
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while total <= limit:
+        chunk = await upload.read(_READ_CHUNK)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    if total > limit:
+        raise AttachmentError(
+            f"文件 {upload.filename or 'unknown'} 过大（超过 {limit} 字节上限，已中止读取）"
+        )
+    return b"".join(chunks)
 
 
 def setup_attachment_routes(registry: ServiceRegistry) -> None:
@@ -83,8 +111,15 @@ def setup_attachment_routes(registry: ServiceRegistry) -> None:
         doc_count = img_count = 0
         for f in files:
             filename = f.filename or "unknown"
-            data = await f.read()
+            # SEC-29：先按扩展名定类型与大小上限，**流式读取到上限即止**，
+            # 不再 ``await f.read()`` 整体读入——否则数百 MB 的恶意上传会先堆爆
+            # 服务端内存再被判超限。不支持的扩展名在此即被拦下（与 classify 一致）。
+            limit = size_limit_for_ext(ext_of(filename))
             try:
+                if limit is None:
+                    # 交给 classify 抛「不支持的文件类型」，保持错误消息单一来源
+                    classify(filename, 0)
+                data = await _read_capped(f, limit)
                 kind, mime = classify(filename, len(data))
             except AttachmentError as e:
                 raise APIError("ATTACHMENT_INVALID", str(e), 400)

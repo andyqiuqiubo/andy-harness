@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -17,10 +18,62 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from harness.infra.net_guard import assert_url_safe, download_to
+
 logger = logging.getLogger("harness.package_installer")
 
 #: git / HTTP 拉取的默认超时（秒）。源不可达时必须能自限，否则会永久挂起。
 DEFAULT_TIMEOUT = 120.0
+
+#: 解压体积上限（zip bomb 防护）：单文件 100MB / 总量 500MB / 成员 1 万
+MAX_MEMBER_BYTES = 100 * 1024 * 1024
+MAX_TOTAL_BYTES = 500 * 1024 * 1024
+MAX_MEMBERS = 10_000
+
+#: git 允许的传输协议白名单（SEC-04：ext:: 会直接执行 shell 命令 → RCE）
+_ALLOWED_GIT_SCHEMES = ("http", "https", "git", "ssh")
+
+#: Windows 盘符路径（urlparse 会把 C:\ 误判成 scheme="c"，需单独识别为本地路径）
+_WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def validate_git_source(repo_url: str) -> None:
+    """校验 git 源（SEC-04 修复）。
+
+    三道拦截：
+    1. 拒绝以 ``-`` 开头的值——``git clone --depth 1 <url>`` 会把 ``--upload-pack=...``
+       当成选项，进而执行任意命令（git 参数注入 RCE）；
+    2. 拒绝 ``ext::`` / ``file::`` 传输（``ext::sh -c ...`` 直接 shell 执行）；
+    3. scheme 白名单（http/https/git/ssh）+ http(s) 走 SSRF 校验。
+    """
+    url = (repo_url or "").strip()
+    if not url:
+        raise ValueError("git 源不能为空")
+    if url.startswith("-"):
+        raise ValueError("git 源不得以 '-' 开头（防参数注入）")
+    lowered = url.lower()
+    if "ext::" in lowered:
+        raise ValueError("禁止 ext:: 传输（可导致任意命令执行）")
+    # 本地路径：绝对路径 / 相对路径 / Windows 盘符 / file:// —— 走本地克隆，无网络风险
+    if (
+        lowered.startswith("file://")
+        or url.startswith(("/", "./", "../"))
+        or _WIN_DRIVE_RE.match(url)
+    ):
+        return
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    # scp 语法（git@host:repo）无 scheme，按 ssh 处理，无需额外校验
+    if scheme and scheme not in _ALLOWED_GIT_SCHEMES:
+        raise ValueError(f"不支持的 git 协议: {scheme}（允许 {', '.join(_ALLOWED_GIT_SCHEMES)}）")
+    if scheme in ("http", "https"):
+        assert_url_safe(url)
+
+
+def validate_git_ref(ref: str) -> None:
+    """校验 git 分支 / tag / sha：禁止以 '-' 开头（--branch 参数注入）。"""
+    if ref and ref.startswith("-"):
+        raise ValueError("git ref 不得以 '-' 开头（防参数注入）")
 
 
 def _resolve_timeout(timeout: float | None) -> float:
@@ -111,13 +164,10 @@ class PackageInstaller:
         return Path(tempfile.mkdtemp(prefix=prefix + "_", dir=str(self._workdir)))
 
     def _download(self, url: str, dest: Path) -> None:
-        """下载远程 zip 到本地（仅 http/https，带超时）。"""
-        import urllib.request
-
+        """下载远程 zip 到本地（仅 http/https，SSRF 校验 + 体积上限 + 超时）。"""
         logger.info("下载外部包: %s", url)
-        with urllib.request.urlopen(url, timeout=self._timeout) as resp:  # noqa: S310
-            with open(dest, "wb") as fh:
-                shutil.copyfileobj(resp, fh)
+        size = download_to(url, str(dest), timeout=self._timeout)
+        logger.info("下载完成: %s（%d 字节）", url, size)
 
     def _run_git(self, cmd: list[str]) -> None:
         """执行 git 命令（浅克隆等），带超时且禁止交互式凭据提示。"""
@@ -168,6 +218,9 @@ class PackageInstaller:
         """克隆 git 仓库（默认浅克隆）。"""
         stage = self._stage("git")
         try:
+            validate_git_source(repo_url)
+            if ref:
+                validate_git_ref(ref)
             clone_target = stage / "repo"
             cmd = ["git", "clone", "--depth", "1"]
             if ref:
@@ -196,10 +249,27 @@ class PackageInstaller:
 
     @staticmethod
     def _safe_extract(zf: zipfile.ZipFile, dest: Path) -> None:
-        """安全解压，防御 zip slip 路径穿越。"""
+        """安全解压：防 zip slip 路径穿越 + 防 zip bomb 体积放大。
+
+        遍历时用 ``infolist()`` 读取声明的未压缩大小，不做实际解压即可
+        判定总量/单文件/成员数是否越界（zip bomb 的特点是解压后才爆开，
+        必须提前拦截）。
+        """
         dest_resolved = dest.resolve()
-        for member in zf.namelist():
-            target = (dest / member).resolve()
+        members = zf.infolist()
+        if len(members) > MAX_MEMBERS:
+            raise ValueError(f"zip 成员过多（{len(members)} > {MAX_MEMBERS}）")
+        total = 0
+        for info in members:
+            # 路径穿越检查（含绝对路径与 ../ 逃逸）
+            target = (dest / info.filename).resolve()
             if target != dest_resolved and dest_resolved not in target.parents:
-                raise ValueError(f"非法 zip 路径（疑似路径穿越）: {member}")
-            zf.extract(member, dest)
+                raise ValueError(f"非法 zip 路径（疑似路径穿越）: {info.filename}")
+            size = info.file_size or 0
+            if size > MAX_MEMBER_BYTES:
+                raise ValueError(f"zip 内单个文件过大: {info.filename}（{size} 字节）")
+            total += size
+            if total > MAX_TOTAL_BYTES:
+                raise ValueError(f"zip 解压后总体积超上限（{MAX_TOTAL_BYTES} 字节）")
+        for info in members:
+            zf.extract(info, dest)

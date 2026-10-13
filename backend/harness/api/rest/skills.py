@@ -12,9 +12,10 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from harness.api.deps import require_admin
 from harness.kernel.services import ServiceRegistry
 from harness.modules.package_installer.service import PackageInstaller
 from harness.modules.skill_manager.service import (
@@ -102,7 +103,9 @@ async def list_skills() -> dict[str, Any]:
 
 
 @router.post("/reload", summary="重新扫描 Skill")
-async def reload_skills() -> dict[str, Any]:
+async def reload_skills(
+    _admin: dict[str, Any] | None = Depends(require_admin),
+) -> dict[str, Any]:
     """重新扫描磁盘上的 SKILL.md（新增/修改 Skill 后调用）。"""
     service = _get_service()
     if service is None:
@@ -149,7 +152,10 @@ async def skill_marketplace() -> list[dict[str, Any]]:
 
 
 @router.post("/marketplace/{package_id}/install", summary="从技能市场安装 Skill")
-async def install_skill_marketplace(package_id: str) -> dict[str, Any]:
+async def install_skill_marketplace(
+    package_id: str,
+    _admin: dict[str, Any] | None = Depends(require_admin),
+) -> dict[str, Any]:
     """把技能市场包复制到用户级 skills 目录并重新扫描。"""
     service = _get_service()
     if service is None:
@@ -174,7 +180,10 @@ async def install_skill_marketplace(package_id: str) -> dict[str, Any]:
 
 
 @router.post("/install-external", summary="从 zip / git 安装 Skill")
-async def install_external_skill(req: ExternalInstallRequest) -> dict[str, Any]:
+async def install_external_skill(
+    req: ExternalInstallRequest,
+    _admin: dict[str, Any] | None = Depends(require_admin),
+) -> dict[str, Any]:
     """从外部 zip / git 仓库安装第三方 Skill 包（生态分发，E6）。"""
     service = _get_service()
     if service is None:
@@ -209,7 +218,10 @@ async def install_external_skill(req: ExternalInstallRequest) -> dict[str, Any]:
 
 
 @router.delete("/marketplace/{package_id}", summary="卸载技能市场的 Skill")
-async def uninstall_skill_marketplace(package_id: str) -> dict[str, Any]:
+async def uninstall_skill_marketplace(
+    package_id: str,
+    _admin: dict[str, Any] | None = Depends(require_admin),
+) -> dict[str, Any]:
     """删除用户级 skills 目录下对应的 Skill 包并重新扫描。"""
     service = _get_service()
     if service is None:
@@ -257,7 +269,11 @@ async def get_skill(name: str) -> dict[str, Any]:
 
 
 @router.patch("/{name}", summary="启用/停用 Skill")
-async def toggle_skill(name: str, req: SkillToggleRequest) -> dict[str, Any]:
+async def toggle_skill(
+    name: str,
+    req: SkillToggleRequest,
+    _admin: dict[str, Any] | None = Depends(require_admin),
+) -> dict[str, Any]:
     """启用或停用 Skill（持久化）。"""
     from fastapi import HTTPException
 

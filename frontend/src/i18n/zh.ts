@@ -579,6 +579,8 @@ export default {
   'chat.versionPrev': '上一版',
   'chat.versionNext': '下一版',
   'chat.regenerating': '重新生成中…',
+  'chat.stoppedByUser': '用户已停止回答',
+  'chat.thinking': '思考过程',
   'chat.attachTitle': '添加附件（文档 / 图片）',
   'chat.attachmentRemove': '移除附件',
   'chat.attachmentUnsupported': '包含不支持的文件类型，已忽略。支持文档与图片。',

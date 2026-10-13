@@ -8,9 +8,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
+from harness.api.deps import require_admin
 from harness.api.errors import APIError
 from harness.kernel.services import ServiceRegistry
 from harness.modules.memory_manager.service import (
@@ -84,7 +85,10 @@ def setup_memory_routes(registry: ServiceRegistry) -> None:
         }
 
     @router.post("/summarize", summary="立即执行一次记忆总结")
-    async def summarize_now(max_sessions: int = 0) -> dict[str, Any]:
+    async def summarize_now(
+        max_sessions: int = 0,
+        admin: dict[str, Any] | None = Depends(require_admin),
+    ) -> dict[str, Any]:
         from harness.modules.memory_manager.summarizer import MemorySummarizer
 
         try:

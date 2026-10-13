@@ -181,12 +181,23 @@ class TestChannelManager:
         assert result.reply == "回复:hi"
 
     def test_webhook_secret_check(self) -> None:
-        """Webhook 密钥校验。"""
+        """Webhook 密钥校验（SEC-14：fail-closed + 常数时间比较）。"""
         ch = WebhookChannel(secret="abc")
         assert ch.check_secret("abc") is True
         assert ch.check_secret("wrong") is False
-        # 未配置密钥时一律放行
-        assert WebhookChannel().check_secret("") is True
+        # 未配置密钥时**拒绝**（原为放行，导致任何人可驱动 agent）
+        assert WebhookChannel().check_secret("") is False
+        assert WebhookChannel().check_secret("anything") is False
+
+    def test_webhook_secret_is_constant_time(self) -> None:
+        """密钥比较不得用 `==`（时序侧信道）。"""
+        import inspect
+
+        from harness.modules.channel_manager.service import WebhookChannel
+
+        src = inspect.getsource(WebhookChannel.check_secret)
+        assert "compare_digest" in src
+        assert "provided == self.secret" not in src
 
     @pytest.mark.asyncio
     async def test_unregister(self, manager: ChannelManager) -> None:
@@ -243,6 +254,16 @@ class TestChannelREST:
         )
         assert resp.status_code == 403
         assert resp.json()["code"] == "INVALID_SECRET"
+
+    def test_inbound_empty_user_id_rejected(self, client: TestClient) -> None:
+        """user_id 为空时拒绝（身份归属不可伪造）。"""
+        resp = client.post(
+            "/api/channels/inbound/webhook",
+            json={"user_id": "   ", "text": "你好"},
+            headers={"X-Channel-Secret": "s3cr3t"},
+        )
+        assert resp.status_code == 400
+        assert resp.json()["code"] == "INVALID_USER_ID"
 
     def test_inbound_unknown_channel(self, client: TestClient) -> None:
         """不存在的 Webhook 渠道返回 404。"""

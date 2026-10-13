@@ -143,6 +143,24 @@ class FeishuChannelConnector:
         self._ws_loop: asyncio.AbstractEventLoop | None = None
         self._client: Any = None
         self._bot_open_id: str | None = None
+        # 生命周期互斥锁（SEC-16 WS）：start/stop 必须串行。
+        # 并发 start 会各自 `_prepare_ws_loop()` 覆盖模块级 loop 单例、各起一条 ws
+        # 线程与 client，后者覆盖 self._client/_thread/_ws_loop 后前者成为**泄漏的
+        # 孤儿连接**（无法再 stop，持续重连）；并发 stop 则可能在 start 尚未写完
+        # _client 时就置空，导致新连接失控。惰性创建并绑定首次使用的事件循环，
+        # 避免跨循环复用触发 RuntimeError（实例可能被测试/重载复用）。
+        self._lifecycle_lock: asyncio.Lock | None = None
+        self._lifecycle_lock_loop: asyncio.AbstractEventLoop | None = None
+
+    def _get_lifecycle_lock(self) -> asyncio.Lock:
+        """获取与**当前事件循环**绑定的生命周期锁（跨循环时重建）。"""
+        loop = asyncio.get_running_loop()
+        lock = self._lifecycle_lock
+        if lock is None or self._lifecycle_lock_loop is not loop:
+            lock = asyncio.Lock()
+            self._lifecycle_lock = lock
+            self._lifecycle_lock_loop = loop
+        return lock
 
     def set_message_handler(self, handler: MessageHandler) -> None:
         self._handler = handler
@@ -290,6 +308,16 @@ class FeishuChannelConnector:
         if self._handler is None:
             return AuthResult(ok=False, error="未配置消息处理器（Agent 未就绪），无法启动飞书渠道")
 
+        # 串行化（SEC-16 WS）：持锁完成整套「换专用 loop → 构造 client → 起线程」，
+        # 杜绝并发 start 互相覆盖 self._client/_thread/_ws_loop 造成孤儿连接泄漏。
+        async with self._get_lifecycle_lock():
+            # 幂等：已在运行则直接返回，不重复起线程/连接（避免重连/重复点击叠加泄漏）。
+            if self._running and self._client is not None:
+                return AuthResult(ok=True, mode="channel", detail=self._detail or "WebSocket 长连已启动")
+            return await self._start_locked(app_id, app_secret)
+
+    async def _start_locked(self, app_id: str, app_secret: str) -> AuthResult:
+        """持生命周期锁后的实际启动体。"""
         try:
             sdk = self._import_sdk()
         except ImportError:
@@ -347,27 +375,30 @@ class FeishuChannelConnector:
             self._detail = f"连接中断: {e}"
 
     async def stop(self) -> AuthResult:
-        client = self._client
-        was_running = self._running
-        # 先置 False，避免残留线程继续投递消息
-        self._running = False
-        if client is not None:
-            # SDK 无公开 stop：关掉自动重连，再在专用 loop 上断开连接
-            try:
-                setattr(client, "_auto_reconnect", False)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("飞书渠道关闭自动重连失败: %s", e)
-            disconnect = getattr(client, "_disconnect", None)
-            if callable(disconnect) and self._ws_loop is not None:
+        # 串行化（SEC-16 WS）：与 start 共享同一把生命周期锁，避免 stop 在 start
+        # 尚未写完 self._client/_ws_loop 时就置空/断开，导致新连接失控或孤儿线程。
+        async with self._get_lifecycle_lock():
+            client = self._client
+            was_running = self._running
+            # 先置 False，避免残留线程继续投递消息
+            self._running = False
+            if client is not None:
+                # SDK 无公开 stop：关掉自动重连，再在专用 loop 上断开连接
                 try:
-                    fut = asyncio.run_coroutine_threadsafe(disconnect(), self._ws_loop)
-                    fut.result(timeout=5)
+                    setattr(client, "_auto_reconnect", False)
                 except Exception as e:  # noqa: BLE001
-                    logger.warning("飞书渠道断开长连失败: %s", e)
-        # 不 join：SDK 的 _select() 会永久 sleep，join 必然超时；
-        # 线程是 daemon，进程退出即回收，且 _running=False 后不会再投递消息。
-        self._client = None
-        self._thread = None
-        self._detail = "已停止"
-        detail = "飞书渠道已停止" if was_running else "飞书渠道未在运行"
-        return AuthResult(ok=True, mode="channel", detail=detail)
+                    logger.warning("飞书渠道关闭自动重连失败: %s", e)
+                disconnect = getattr(client, "_disconnect", None)
+                if callable(disconnect) and self._ws_loop is not None:
+                    try:
+                        fut = asyncio.run_coroutine_threadsafe(disconnect(), self._ws_loop)
+                        fut.result(timeout=5)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("飞书渠道断开长连失败: %s", e)
+            # 不 join：SDK 的 _select() 会永久 sleep，join 必然超时；
+            # 线程是 daemon，进程退出即回收，且 _running=False 后不会再投递消息。
+            self._client = None
+            self._thread = None
+            self._detail = "已停止"
+            detail = "飞书渠道已停止" if was_running else "飞书渠道未在运行"
+            return AuthResult(ok=True, mode="channel", detail=detail)

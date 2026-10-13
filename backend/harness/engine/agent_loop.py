@@ -111,6 +111,10 @@ class AgentLoop:
         self._tool_registry = tool_registry or ToolRegistry()
         self._config = config or AgentLoopConfig()
         self._stopped = False
+        # 停止是否发生在**模型调用中途**（_call_model 被 break）。仅此时
+        # _call_model 的返回值才是「已生成的部分终答」；若停止发生在工具
+        # 执行 / 迭代间隙，result.content 只是上一轮的过渡文字，不能当终答。
+        self._stopped_mid_call = False
         self._on_tool_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         # 人工确认回调：(tool_name, args, risk, reason) -> 是否放行（None 表示接入层不支持确认）
         self._confirm_callback: Callable[[str, dict[str, Any], str, str], Awaitable[bool]] | None = None
@@ -171,6 +175,7 @@ class AgentLoop:
         """
         start_time = time.time()
         self._stopped = False
+        self._stopped_mid_call = False
         self._on_tool_event = on_tool_event
         self._confirm_callback = confirm_callback
         self._run_user = user_id
@@ -246,12 +251,21 @@ class AgentLoop:
                 # 累积所有模型调用的 token 用量（工具迭代可能调用多次）
                 result.usage = self._merge_usage(result.usage, call_usage)
                 last_call_reasoning = call_reasoning
+                # 先记录本次调用的产出，再判断停止：
+                # 被停止时 _call_model 返回的是**已生成的部分内容**。旧实现把
+                # result.content 赋值放在停止判断之后，导致用户点「停止生成」后，
+                # 这段已流式展示给用户的内容既不落库也不返回，凭空消失。
+                result.content = response_content
 
                 if self._stopped:
                     result.short_circuited = True
+                    if not self._stopped_mid_call:
+                        # 停止发生在工具执行 / 迭代间隙：本轮没有新的部分正文，
+                        # 清掉上一轮的过渡文字，避免它被误当作终答持久化
+                        #（该文字已作为中间消息落库，会重复展示）。
+                        result.content = ""
                     break
 
-                result.content = response_content
                 iterations += 1
 
                 # 3. 若无 tool_calls，终答
@@ -332,8 +346,11 @@ class AgentLoop:
                         # 收尾失败不视为整体失败（前 N 轮工具结果已落库）
                         logger.warning("强制收尾调用失败: %s", e)
 
-            # 持久化最终 assistant 终答消息（不带 tool_calls，带产出它的那次调用的思维链）
-            if result.content and not result.short_circuited:
+            # 持久化最终 assistant 终答消息（不带 tool_calls，带产出它的那次调用的思维链）。
+            # 被用户停止（short_circuited）时同样持久化**已生成的部分内容**并打上
+            # stopped 标记：否则前端停止后 reload，用户已看到的回答会消失
+            # （旧实现 `not result.short_circuited` 直接丢弃了整段部分内容）。
+            if result.content:
                 await self._persist_message(
                     session_id,
                     role="assistant",
@@ -341,6 +358,7 @@ class AgentLoop:
                     tokens=(result.usage.get("total_tokens", 0) if result.usage else 0),
                     reasoning=last_call_reasoning,
                     parent_id=user_msg_id,
+                    stopped=bool(result.short_circuited),
                 )
                 # 记录检查点：运行完成
                 self._checkpoint("done", iterations, {"phase": "finished"})
@@ -565,20 +583,13 @@ class AgentLoop:
     def _check_permission(self, tool_name: str) -> Any | None:
         """查询权限服务决策。
 
-        服务未注册时返回 None（视为放行），保证不含权限插件时行为不变。
+        委托给独立权限网关（``harness.engine.permission_gate``）：
+        - 无权限插件 → 返回 None（放行），保持历史行为；
+        - 权限服务异常 → 高危工具 fail-closed 拒绝，低危工具放行（防自 DoS）。
         """
-        try:
-            from harness.modules.permission_manager.service import PermissionService
+        from harness.engine.permission_gate import check_tool_permission
 
-            if not self._services.has(PermissionService):
-                return None
-            service: PermissionService = self._services.get(PermissionService)
-            return service.decide(tool_name)
-        except Exception as e:
-            # 权限服务已装配却异常：这是「本应拦截的高危工具可能被放行」的真实故障，
-            # 必须 error 级可见（原 debug 在默认日志级别下完全不可见，事后无法审计）。
-            logger.error("权限检查失败（已放行）: %s", e)
-            return None
+        return check_tool_permission(self._services, tool_name)
 
     def _record_permission_audit(
         self,
@@ -788,6 +799,9 @@ class AgentLoop:
                     **model_request.params,
                 ):
                     if self._stopped:
+                        # 记录「停止发生在模型调用中途」：此时 content_parts
+                        # 里正是已流式产出的部分终答，run() 会保留并持久化。
+                        self._stopped_mid_call = True
                         break
                     if "delta" in chunk and chunk["delta"]:
                         content_parts.append(chunk["delta"])
@@ -1049,6 +1063,8 @@ class AgentLoop:
                             "args": tool_ctx.args,
                             "result": tool_ctx.result,
                             "error": tool_ctx.error,
+                            # 流式归属：前端据此丢弃非当前会话的迟到工具事件
+                            "session_id": session_id,
                         },
                     }
                 )
@@ -1160,8 +1176,12 @@ class AgentLoop:
         attachments: list[dict[str, Any]] | None = None,
         reasoning: str = "",
         parent_id: str | None = None,
+        stopped: bool = False,
     ) -> str | None:
         """持久化消息（含 pre_message_persist 钩子）。
+
+        Args:
+            stopped: 是否为「用户停止生成」留下的部分回答（保留已生成内容）。
 
         Returns:
             新建消息的 id；若被钩子短路未持久化则返回 None。
@@ -1178,6 +1198,7 @@ class AgentLoop:
             attachments=attachments,
             reasoning=reasoning,
             parent_id=parent_id,
+            stopped=stopped,
         )
 
         # pre_message_persist 钩子
@@ -1208,6 +1229,7 @@ class AgentLoop:
             attachments=record.attachments,
             reasoning=record.reasoning,
             parent_id=record.parent_id,
+            stopped=record.stopped,
         )
         # 返回新建消息 id，便于调用方把后续 assistant 答案的 parent_id 指向它
         return created.id if created is not None else None

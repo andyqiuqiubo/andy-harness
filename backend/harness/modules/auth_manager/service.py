@@ -46,6 +46,11 @@ _ENV_TOKEN_EXPIRE = "HARNESS_AUTH_TOKEN_EXPIRE_MINUTES"
 
 _TRUE = {"1", "true", "yes", "on"}
 
+# SEC-28：用户名不存在时用于"陪跑"哈希的固定哑盐。目的是让"用户不存在"
+# 与"用户存在但密码错"两条路径都执行一次等价的 PBKDF2（200k 迭代），
+# 消除以响应时间差枚举用户名的时序侧信道。其值固定且非真实凭据，无安全影响。
+_DUMMY_SALT = "0" * 32
+
 
 @dataclass
 class User:
@@ -208,6 +213,14 @@ class AuthServiceImpl(AuthService):
     def authenticate(self, username: str, password: str) -> User | None:
         row = self._db.query_one("SELECT * FROM users WHERE username = ?", (username.strip(),))
         if row is None:
+            # SEC-28：消除用户名枚举的时序侧信道。用户不存在时若直接返回，
+            # 攻击者通过"立即失败 vs 慢几毫秒（PBKDF2 200k 次迭代）"的响应
+            # 时间差即可判断用户名是否存在。这里对固定哑盐跑一次等价的
+            # hash_password，把耗时拉到与"存在但密码错"同一量级，再统一失败。
+            try:
+                hash_password(password, _DUMMY_SALT)
+            except Exception:  # pragma: no cover - 防御：哈希异常不影响拒绝
+                pass
             return None
         if not verify_password(password, row["salt"], row["password_hash"]):
             return None

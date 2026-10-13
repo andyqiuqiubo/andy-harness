@@ -269,19 +269,37 @@ class LocalSubprocessBackend(SandboxBackend):
         """检查是否有工作区外路径访问（委托模块级函数）。"""
         return detect_path_traversal(code, workspace)
 
-    def _build_env(self) -> dict[str, str]:
-        """构建沙箱环境变量（默认禁网）。
+    def _build_env(self, workspace: str = "") -> dict[str, str]:
+        """构建沙箱环境变量（白名单式最小 env，默认禁网）。
 
-        注意：真正的网络隔离需要操作系统级配置（如网络命名空间）。
-        此处通过清空代理变量和设置标记变量来提供软限制。
+        SEC-23：子进程环境**只含显式白名单项**，绝不透传宿主机环境——
+        否则沙箱代码可读 ``os.environ`` 里的 API 密钥/令牌。此前 HOME 直透
+        宿主机用户目录（含 .ssh/.config/.aws 等），沙箱内 shell 可
+        ``cat ~/.ssh/id_rsa`` 外泄；现把 HOME 收敛到沙箱 workspace，令 ``~``
+        指向隔离目录，读不到宿主机敏感文件。
+
+        SEC-23（网络库维度）：``PYTHONPATH`` 指向 workspace，执行前由
+        ``_ensure_network_guard`` 写入 ``sitecustomize.py``（socket 层拦截），
+        使 workspace 内任意 Python 解释器进程（shell 里跑的 python、
+        ``python -c``、子进程再拉起的解释器）在 site 初始化期即禁用网络。
+
+        注意：真正的网络隔离需要操作系统级配置（如网络命名空间）；
+        此处通过清空代理变量 + 设置标记变量 + Python 隔离标志 + socket 层
+        拦截提供软限制（同用户进程可自行 reload socket 绕过，尽力而为）。
         """
         env = {
             "PATH": os.environ.get("PATH", ""),
-            "PYTHONPATH": "",
-            "HOME": os.environ.get("HOME", ""),
+            # SEC-23（网络库维度）：让 workspace 内的 sitecustomize.py 自动加载
+            # （site 初始化期装 socket 拦截）；无 workspace 时保持空串。
+            "PYTHONPATH": workspace or "",
+            # SEC-23：HOME 收敛到沙箱工作区，隔离 ``~``（.ssh/.config 等）不外泄。
+            "HOME": workspace or os.environ.get("HOME", ""),
             "MPLBACKEND": "Agg",  # matplotlib 无头模式
+            # SEC-23：禁用用户级 site-packages，防被投毒的 ~/.local 库被 import 劫持。
+            "PYTHONNOUSERSITE": "1",
+            # 禁网：清空代理相关环境变量
+            "TMPDIR": workspace or os.environ.get("TMPDIR", ""),
         }
-        # 禁网：清空代理相关环境变量
         for key in [
             "HTTP_PROXY",
             "HTTPS_PROXY",
@@ -296,6 +314,61 @@ class LocalSubprocessBackend(SandboxBackend):
         # 设置标记变量，子进程代码可据此跳过网络操作
         env["HARNESS_NO_NETWORK"] = "1"
         return env
+
+    # SEC-23（网络库维度）：socket 层拦截片段。装在 site 初始化期
+    # （sitecustomize.py）或解释器启动即执行的 guard 脚本里，让基于
+    # socket 的网络栈（urllib/requests/httpx/websockets/grpc 等）全部失效。
+    _NETWORK_GUARD_BODY = '''\
+import socket as _socket
+
+def _harness_net_blocked(*_args, **_kwargs):
+    raise OSError("网络已被沙箱禁用 (HARNESS_NO_NETWORK=1)")
+
+class _HarnessBlockedSocket:
+    def __init__(self, *_args, **_kwargs):
+        _harness_net_blocked()
+    def __getattr__(self, _name):
+        _harness_net_blocked()
+
+_socket.socket = _HarnessBlockedSocket
+_socket.create_connection = _harness_net_blocked
+_socket.socketpair = _harness_net_blocked
+_socket.getaddrinfo = _harness_net_blocked
+_socket.gethostbyname = _harness_net_blocked
+_socket.gethostbyname_ex = _harness_net_blocked
+'''
+
+    # 作为主脚本执行的 guard：装拦截后 runpy 跑真正的用户脚本。
+    # （主执行走 ``python -I`` 隔离模式，``-I`` 忽略 PYTHONPATH，sitecustomize
+    # 不会加载，故用本 guard 在解释器启动后、用户代码前装拦截。）
+    _GUARD_ENTRY_SOURCE = _NETWORK_GUARD_BODY + '''\
+import runpy as _runpy
+import sys as _sys
+
+if len(_sys.argv) >= 2:
+    _target = _sys.argv[1]
+    _sys.argv = _sys.argv[1:]
+    _runpy.run_path(_target, run_name="__main__")
+'''
+
+    def _ensure_network_guard(self, workspace: str) -> tuple[str, str]:
+        """在 workspace 写入网络拦截文件，返回 (guard_path, sitecustomize_path)。
+
+        每次执行前**覆盖重写**——沙箱代码在两次执行之间对这两个文件的篡改
+        会被下一执行抹平；即便被删，下一次也会补回。
+        """
+        ws = Path(workspace)
+        try:
+            ws.mkdir(parents=True, exist_ok=True)
+            sitecustomize = ws / "sitecustomize.py"
+            sitecustomize.write_text(self._NETWORK_GUARD_BODY, encoding="utf-8")
+            guard = ws / "_sandbox_guard.py"
+            guard.write_text(self._GUARD_ENTRY_SOURCE, encoding="utf-8")
+            return str(guard), str(sitecustomize)
+        except OSError as e:  # pragma: no cover - 极少见（workspace 不可写）
+            logger.warning("写入沙箱网络拦截文件失败: %s", e)
+            return "", ""
+
 
     def _get_preexec_fn(self) -> Any:
         """返回适用于 ``subprocess.Popen(preexec_fn=...)`` 的可调用对象。
@@ -447,7 +520,11 @@ class LocalSubprocessBackend(SandboxBackend):
         script_path = str(Path(workspace) / "script.py")
         Path(script_path).write_text(code, encoding="utf-8")
 
-        env = self._build_env()
+        # SEC-23（网络库维度）：写入 socket 拦截文件。须在文件快照**之前**写，
+        # 这样注入产物不会被误报为用户代码创建的文件。
+        guard_path, _sitecustomize = self._ensure_network_guard(workspace)
+
+        env = self._build_env(workspace)
 
         # 快照执行前已有的文件，用于后续对比找出真正新增的文件
         existing_files = {f.name for f in Path(workspace).iterdir()}
@@ -470,8 +547,19 @@ class LocalSubprocessBackend(SandboxBackend):
 
         proc: subprocess.Popen[str] | None = None
         try:
+            # SEC-23：加 `-I` 隔离模式（隐含 -E -s），令解释器忽略 PYTHON* 环境
+            # 变量、用户级 site-packages、PYTHONSTARTUP 与脚本所在目录，进一步堵死
+            # 「借环境变量/启动脚本重设网络或劫持 import」的旁路（配合 _build_env 的
+            # 白名单 env，构成环境维度的纵深防御）。macOS/Windows 上 -I 同样受支持。
+            # SEC-23（网络库维度）：因 `-I` 忽略 PYTHONPATH（sitecustomize 不会加载），
+            # 改以 guard 为主脚本——先装 socket 层拦截，再 runpy 跑用户脚本
+            # （traceback 行号仍指向原 script.py）。guard 写入失败才直跑用户脚本。
+            if guard_path:
+                argv = [sys.executable, "-I", guard_path, script_path]
+            else:  # pragma: no cover - workspace 不可写时的兜底
+                argv = [sys.executable, "-I", script_path]
             proc = subprocess.Popen(
-                [sys.executable, script_path],
+                argv,
                 **popen_kwargs,
             )
             # Windows：施加 Job Object 内存上限，并能在超时/失败时整树终止
@@ -523,7 +611,11 @@ class LocalSubprocessBackend(SandboxBackend):
         start_time: float,
     ) -> SandboxResult:
         """执行 Shell 代码。"""
-        env = self._build_env()
+        # SEC-23（网络库维度）：写 sitecustomize.py——shell 内运行的 python/
+        # python -c/子进程解释器会经 PYTHONPATH=workspace 在 site 初始化期
+        # 加载它，获得与主执行同等的 socket 拦截。须在快照前写，避免误报。
+        self._ensure_network_guard(workspace)
+        env = self._build_env(workspace)
         shell = "cmd" if self._system == "Windows" else "bash"
 
         # 快照执行前已有的文件

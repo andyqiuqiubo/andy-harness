@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useProviderStore } from '../stores/providers'
 import { usePluginStore, type PluginInfo, type MarketplacePlugin } from '../stores/plugins'
@@ -528,6 +528,11 @@ onMounted(() => {
   loadTraces()
   loadSchedules()
   loadScheduleOptions()
+})
+
+// FE-03：组件卸载时移除 resize 监听，避免快速切换视图累积多份并行监听导致泄漏/重复回调。
+onUnmounted(() => {
+  window.removeEventListener('resize', updateTabScrollState)
 })
 
 // ── MCP 客户端 ──────────────────────────────

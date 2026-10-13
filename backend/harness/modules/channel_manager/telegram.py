@@ -226,7 +226,14 @@ class TelegramChannel(Channel):
         if not user_id:
             return
 
-        if self.allowed_users and user_id not in self.allowed_users:
+        if not self.allowed_users:
+            # 未配置允许名单 = 拒绝所有入站（fail-closed），避免任意 TG 用户驱动 agent。
+            logger.warning(
+                "Telegram 渠道未配置允许名单（allowed_users 为空），已拒绝入站消息: user=%s",
+                user_id,
+            )
+            return
+        if user_id not in self.allowed_users:
             logger.info("Telegram 用户不在允许名单，已忽略: user=%s", user_id)
             return
 

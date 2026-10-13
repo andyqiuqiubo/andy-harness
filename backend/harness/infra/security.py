@@ -18,8 +18,10 @@ import secrets
 import time
 from typing import Any
 
-# PBKDF2 迭代次数（2023+ OWASP 建议 ≥ 600k；取 200k 兼顾本机性能与安全性）。
-_PBKDF2_ITERATIONS = 200_000
+# PBKDF2 迭代次数（2023+ OWASP 建议 ≥ 600k）。
+_PBKDF2_ITERATIONS = 600_000
+# 历史哈希成本：已注册用户仍可能持有 200k 哈希，verify 需兼容（见 verify_password）。
+_PBKDF2_LEGACY_ITERATIONS = 200_000
 
 # 令牌默认有效期（分钟）。
 DEFAULT_TOKEN_EXPIRE_MINUTES = 60 * 12  # 12 小时
@@ -30,21 +32,33 @@ def generate_salt() -> str:
     return secrets.token_hex(16)
 
 
-def hash_password(password: str, salt: str) -> str:
-    """用 PBKDF2-HMAC-SHA256 对密码加盐哈希，返回 hex。"""
-    derived = hashlib.pbkdf2_hmac(
+def _pbkdf2(password: str, salt: str, iterations: int) -> bytes:
+    return hashlib.pbkdf2_hmac(
         "sha256",
         password.encode("utf-8"),
         bytes.fromhex(salt),
-        _PBKDF2_ITERATIONS,
+        iterations,
     )
-    return derived.hex()
+
+
+def hash_password(password: str, salt: str) -> str:
+    """用 PBKDF2-HMAC-SHA256 对密码加盐哈希，返回 hex（采用当前迭代成本）。"""
+    return _pbkdf2(password, salt, _PBKDF2_ITERATIONS).hex()
 
 
 def verify_password(password: str, salt: str, expected_hash: str) -> bool:
-    """校验密码与已存哈希是否一致（常数时间比较）。"""
-    candidate = hash_password(password, salt)
-    return hmac.compare_digest(candidate, expected_hash)
+    """校验密码与已存哈希是否一致（常数时间比较）。
+
+    先按当前成本（600k）校验；不匹配时再按历史成本（200k）校验，
+    以兼容升级前已注册用户的旧哈希，避免存量用户被锁。
+    """
+    if hmac.compare_digest(_pbkdf2(password, salt, _PBKDF2_ITERATIONS).hex(), expected_hash):
+        return True
+    if _PBKDF2_LEGACY_ITERATIONS != _PBKDF2_ITERATIONS:
+        return hmac.compare_digest(
+            _pbkdf2(password, salt, _PBKDF2_LEGACY_ITERATIONS).hex(), expected_hash
+        )
+    return False
 
 
 def _b64url_encode(raw: bytes) -> str:

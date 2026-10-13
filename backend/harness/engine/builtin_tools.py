@@ -9,6 +9,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
+from harness.engine.safe_math import NodeBudget, check_expression_length, check_pow
 from harness.kernel.context import PluginContext
 from harness.kernel.contracts.base import BasePlugin, PluginManifest
 from harness.kernel.contracts.tool import ToolPlugin
@@ -63,27 +64,42 @@ class CalculatorTool(ToolPlugin):
             return "错误: 未提供表达式"
 
         try:
+            # SEC-01：长度 + 节点数预算 + 幂规模三重上限，防 DoS
+            # （2**999999999 之类可在无代码执行面的前提下拖垮进程）
+            check_expression_length(expression)
             tree = ast.parse(expression, mode="eval")
-            result = self._eval_node(tree.body)
+            result = self._eval_node(tree.body, NodeBudget())
             return str(result)
         except ZeroDivisionError:
             return "错误: 除零"
-        except Exception as e:
+        except RecursionError:
+            return "错误: 表达式嵌套过深"
+        except Exception as e:  # noqa: BLE001
             return f"错误: 无法计算表达式 '{expression}': {e}"
 
-    def _eval_node(self, node: ast.AST) -> Any:
+    def _eval_node(self, node: ast.AST, budget: NodeBudget) -> Any:
+        budget.spend()
         if isinstance(node, ast.Constant):
+            # 只接受数值常量（拒绝字符串/字节等，避免意外类型进入运算）
+            if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+                raise ValueError("仅支持数值常量")
             return node.value
         if isinstance(node, ast.BinOp):
+            if isinstance(node.op, ast.Pow):
+                # 先算操作数、真正做幂之前拦截超大结果（位级估算）
+                left = self._eval_node(node.left, budget)
+                right = self._eval_node(node.right, budget)
+                check_pow(left, right)
+                return operator.pow(left, right)
             op_func = _SAFE_OPERATORS.get(type(node.op))
             if op_func is None:
                 raise ValueError(f"不支持的运算符: {type(node.op).__name__}")
-            return op_func(self._eval_node(node.left), self._eval_node(node.right))
+            return op_func(self._eval_node(node.left, budget), self._eval_node(node.right, budget))
         if isinstance(node, ast.UnaryOp):
             op_func = _SAFE_OPERATORS.get(type(node.op))
             if op_func is None:
                 raise ValueError(f"不支持的运算符: {type(node.op).__name__}")
-            return op_func(self._eval_node(node.operand))
+            return op_func(self._eval_node(node.operand, budget))
         raise ValueError(f"不支持的表达式类型: {type(node).__name__}")
 
 

@@ -454,6 +454,97 @@ def test_create_agent_resolver_empty_raises(tmp_path: Path) -> None:
         svc.create_agent("run-y", False)
 
 
+# ── SEC-07：命令通道同样受 deny_paths / 作用域约束 ────
+def test_safety_command_respects_deny_paths(tmp_path: Path) -> None:
+    """回归：`command_exec` 曾完全不受 deny_paths 约束，`cat C:/secret/x`
+    可把任意文件内容回灌模型。命令里的路径 token 必须一并拦截。"""
+    sp = SafetyPolicy(_base_config(tmp_path))
+    d = sp.evaluate("command_exec", {"command": "cat C:/secret/api.key"}, False)
+    assert not d.allowed
+    assert "受限" in d.reason
+    # 子路径同样命中（边界比较，非字符串包含）
+    d2 = sp.evaluate("command_exec", {"command": "type c:\\secret\\sub\\a.txt"}, False)
+    assert not d2.allowed
+
+
+def test_safety_command_scope_for_read_commands(tmp_path: Path) -> None:
+    """白名单模式下，读类命令（cat/type/dir...）引用的路径须落在作用域内。"""
+    cfg = dataclasses.replace(_base_config(tmp_path), allow_commands={"echo", "type", "cat", "dir"})
+    sp = SafetyPolicy(cfg)
+    # 工作目录内允许
+    assert sp.evaluate("command_exec", {"command": f"cat {tmp_path}/note.txt"}, False).allowed
+    # 作用域外拦截（即便不在 deny_paths 里）
+    d = sp.evaluate("command_exec", {"command": "cat D:/other/key.pem"}, False)
+    assert not d.allowed
+    assert "作用域外" in d.reason
+
+
+def test_safety_scope_uses_path_boundary(tmp_path: Path) -> None:
+    """回归：`_check_scope` 曾用 startswith，`/data/ws-evil/x` 可绕过 `/data/ws`。"""
+    cfg = dataclasses.replace(_base_config(tmp_path), working_dir="/data/ws")
+    sp = SafetyPolicy(cfg)
+    assert not sp.evaluate("file_read", {"path": "/data/ws-evil/x.txt"}, False).allowed
+    assert sp.evaluate("file_read", {"path": "/data/ws/x.txt"}, False).allowed
+
+
+def test_safety_interpreter_inline_code_blocked(tmp_path: Path) -> None:
+    """白名单放行解释器 ≠ 放行任意代码执行：`python -c`/`node -e` 默认拦截，
+    跑脚本文件（python script.py）仍然放行。"""
+    cfg = dataclasses.replace(_base_config(tmp_path), allow_commands={"python", "node"})
+    sp = SafetyPolicy(cfg)
+    assert not sp.evaluate("command_exec", {"command": "python -c 'import os'"}, False).allowed
+    assert not sp.evaluate("command_exec", {"command": "node -e 'process.exit()'"}, False).allowed
+    assert not sp.evaluate("command_exec", {"command": "python -c \"import os; os.system('calc')\""}, False).allowed
+    # 执行脚本文件不受影响
+    assert sp.evaluate("command_exec", {"command": "python script.py"}, False).allowed
+    # 显式开启 allow_interpreters 后才放行（用户自担风险）
+    sp_open = SafetyPolicy(dataclasses.replace(cfg, allow_interpreters=True))
+    assert sp_open.evaluate("command_exec", {"command": "python -c 'print(1)'"}, False).allowed
+
+
+def test_safety_wait_is_read_risk(tmp_path: Path) -> None:
+    """回归：`wait` 未登记风险等级 → 默认 write → 白名单模式必被误拦。"""
+    sp = SafetyPolicy(_base_config(tmp_path))
+    d = sp.evaluate("wait", {"seconds": 1}, False)
+    assert d.allowed and d.risk == "read"
+
+
+# ── SEC-08：审批必须校验 run 真实存在 ────────────────
+def test_approve_unknown_run_rejected(tmp_path: Path) -> None:
+    """回归：approve_run 曾对任意 run_id 恒返回 True（可自助授权）。"""
+    svc = ComputerUseService(_base_config(tmp_path))
+    assert svc.approve_run("does-not-exist") is False
+    assert "does-not-exist" not in svc.approved_runs
+    # 登记的 goal / 待审批任务可正常授权
+    svc.goals["real-run"] = "目标"
+    assert svc.approve_run("real-run") is True
+    svc.mark_pending("pending-run", "sig", "需要授权")
+    assert svc.approve_run("pending-run") is True
+    # 幂等：已授权任务重复授权仍成功
+    assert svc.approve_run("real-run") is True
+
+
+def test_pending_ttl_expires(tmp_path: Path) -> None:
+    """挂起任务应有 TTL，超时后不得再被授权（且从 pending 列表消失）。"""
+    cfg = dataclasses.replace(_base_config(tmp_path), pending_ttl=1.0)
+    svc = ComputerUseService(cfg)
+    svc.mark_pending("old-run", "sig", "需要授权")
+    svc.pending["old-run"]["created_at"] = 0.0  # 伪造为已过期
+    assert svc.approve_run("old-run") is False
+    assert svc.list_pending() == []
+
+
+# ── SEC-27：文件读写实现的纵深防御 ───────────────────
+async def test_file_ops_recheck_scope(tmp_path: Path) -> None:
+    """`_read_file` / `_write_file` 自身也做作用域校验，防止绕过工具层直调。"""
+    cfg = _base_config(tmp_path)
+    agent = ComputerUseAgent(cfg, SafetyPolicy(cfg), FakeDesktopController(), FakeModelClient([]), None, False)
+    out = agent._read_file("C:/secret/secret.txt")
+    assert "安全拦截" in out
+    out2 = agent._write_file(str(tmp_path.parent / "outside.txt"), "x")
+    assert "安全拦截" in out2
+
+
 def test_create_agent_explicit_key_priority(tmp_path: Path) -> None:
     """显式配置的 api_key 应优先于 resolver。"""
     svc = ComputerUseService(

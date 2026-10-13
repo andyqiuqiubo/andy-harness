@@ -578,6 +578,8 @@ export default {
   'chat.versionPrev': 'Previous version',
   'chat.versionNext': 'Next version',
   'chat.regenerating': 'Regenerating…',
+  'chat.stoppedByUser': 'Answer stopped by user',
+  'chat.thinking': 'Thinking',
   'chat.attachTitle': 'Add attachment (document / image)',
   'chat.attachmentRemove': 'Remove attachment',
   'chat.attachmentUnsupported': 'Some files have unsupported types and were ignored. Documents and images only.',

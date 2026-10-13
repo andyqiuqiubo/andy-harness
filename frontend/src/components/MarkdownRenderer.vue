@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import MarkdownIt from 'markdown-it'
+import type { RendererRule } from 'markdown-it'
 import hljs from 'highlight.js'
 
 const props = defineProps<{ content: string }>()
 
 const md = new MarkdownIt({
-  html: true,
+  // SEC-06 修复：禁止原始 HTML 透传。Agent 输出 / 工具结果可能包含
+  // 恶意 HTML（存储型 XSS：偷 localStorage token、冒用用户身份发请求），
+  // html:true + v-html 是直接的注入面。置 false 后 markdown-it 会把
+  // 所有 HTML 转义为纯文本展示（代码块场景本就应如此）。
+  html: false,
   linkify: true,
   highlight(str: string, lang: string): string {
     if (lang && hljs.getLanguage(lang)) {
@@ -19,6 +24,24 @@ const md = new MarkdownIt({
     return `<pre class="hljs"><code>${md.utils.escapeHtml(str)}</code></pre>`
   },
 })
+
+// 链接防护：外链统一新窗口打开 + noopener/noreferrer，
+// 防止 reverse tabnabbing（window.opener 劫持）。
+// markdown-it 默认的 validateLink 已阻止 javascript:/vbscript:/file: 等
+// 危险 scheme，这里再补一层目标属性。
+const defaultLinkRender: RendererRule =
+  md.renderer.rules.link_open ??
+  ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options))
+md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+  const token = tokens[idx]
+  const hrefIndex = token.attrIndex('href')
+  const href = hrefIndex >= 0 ? String(token.attrs?.[hrefIndex]?.[1] ?? '') : ''
+  if (/^https?:\/\//i.test(href)) {
+    token.attrSet('target', '_blank')
+    token.attrSet('rel', 'noopener noreferrer nofollow')
+  }
+  return defaultLinkRender(tokens, idx, options, env, self)
+}
 
 const html = computed(() => md.render(props.content || ''))
 </script>

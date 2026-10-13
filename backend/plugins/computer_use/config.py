@@ -40,6 +40,10 @@ _ENV: dict[str, str] = {
     "deny_commands": "COMPUTER_USE_DENY_COMMANDS",
     "deny_paths": "COMPUTER_USE_DENY_PATHS",
     "working_dir": "COMPUTER_USE_WORKING_DIR",
+    # SEC-07：白名单放行解释器不等于放行内联代码执行，默认关闭
+    "allow_interpreters": "COMPUTER_USE_ALLOW_INTERPRETERS",
+    # 待审批任务的存活时间（秒），超时自动作废，避免挂起任务永驻
+    "pending_ttl": "COMPUTER_USE_PENDING_TTL",
 }
 
 # 默认工作目录：backend/data/computer_use_workspace（与项目数据隔离，避免污染真实库）
@@ -71,6 +75,8 @@ class ComputerUseConfig:
     deny_commands: list[str] = field(default_factory=list)
     deny_paths: list[str] = field(default_factory=list)
     working_dir: str = ""
+    allow_interpreters: bool = False  # 解释器内联代码执行（python -c / node -e）总开关
+    pending_ttl: float = 3600.0  # 待审批任务存活时间（秒）
 
 
 def _coerce_bool(value: Any) -> bool:
@@ -155,4 +161,6 @@ def load_computer_use_config(cfg: Any) -> ComputerUseConfig:
         deny_commands=_split_list(_resolve("deny_commands", cfg, "")),
         deny_paths=[p.replace("\\", "/").lower() for p in _split_list(_resolve("deny_paths", cfg, ""))],
         working_dir=working_dir,
+        allow_interpreters=_coerce_bool(_resolve("allow_interpreters", cfg, False)),
+        pending_ttl=_coerce_float(_resolve("pending_ttl", cfg, 3600.0), 3600.0),
     )

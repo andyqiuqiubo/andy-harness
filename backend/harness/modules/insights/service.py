@@ -61,13 +61,17 @@ class InsightsServiceImpl:
     # ── 查询辅助 ────────────────────────────────────
     @staticmethod
     def _local_cutoff(days: int) -> str:
-        """messages（本地 ISO 带 T）与 sessions 的比较下界。"""
-        return (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+        """messages（本地 ISO 带 T）与 sessions 的比较下界。
+
+        统一使用 aware UTC 基准（ARC-03），避免与 ``_utc_cutoff`` / ``_audit_cutoff``
+        因 naive 本地/UTC 混用导致时间窗口口径不一致。
+        """
+        return (datetime.now(UTC) - timedelta(days=days)).isoformat(timespec="seconds")
 
     @staticmethod
     def _utc_cutoff(days: int) -> str:
         """spans（UTC 空格分隔）的比较下界。"""
-        return (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        return (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
 
     @staticmethod
     def _audit_cutoff(days: int) -> str:
@@ -76,8 +80,8 @@ class InsightsServiceImpl:
 
     @staticmethod
     def _day_keys(days: int) -> list[str]:
-        """最近 N 天（含今天）的日期键列表（本地时区，升序）。"""
-        today = datetime.now().date()
+        """最近 N 天（含今天）的日期键列表（UTC 日期，升序）。"""
+        today = datetime.now(UTC).date()
         return [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
 
     @staticmethod

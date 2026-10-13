@@ -136,8 +136,9 @@ class MemorySummarizer:
 
     def _save_state(self, state: dict[str, int]) -> None:
         try:
-            self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            self._state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+            from harness.infra.atomic_write import atomic_write_json
+
+            atomic_write_json(self._state_path, state)
         except OSError as e:
             logger.warning("写入记忆总结状态失败（忽略）: %s", e)
 

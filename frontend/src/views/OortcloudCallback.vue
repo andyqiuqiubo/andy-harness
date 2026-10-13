@@ -25,12 +25,33 @@ function parseCallbackParams(): URLSearchParams {
   return new URLSearchParams()
 }
 
+/** 仅允许同源相对路径跳转，杜绝 open redirect（http:// / file:// / // 等）。 */
+function safeReturnTo(raw: string): string {
+  if (raw.startsWith('/') && !raw.startsWith('//') && !raw.includes(':')) {
+    return raw
+  }
+  return '/settings?tab=providers'
+}
+
+const OAUTH_STATE_KEY = 'oortcloud_oauth_state'
+
 async function handleCallback() {
   const params = parseCallbackParams()
   const accessToken = params.get('access_token') || params.get('accessToken') || ''
   const tenantId = params.get('tenant_id') || params.get('tenantId') || ''
   const state = params.get('state') || ''
-  const returnTo = decodeURIComponent(params.get('returnTo') || '/settings?tab=providers')
+
+  // CSRF 防护（best-effort）：发起登录时已写入 state，回调带回时必须一致。
+  // 若后端未回传 state（旧流程），为兼容不做强制，但单次登录只消费一次本地 state。
+  const expectedState = sessionStorage.getItem(OAUTH_STATE_KEY) || ''
+  sessionStorage.removeItem(OAUTH_STATE_KEY)
+  if (expectedState && state && state !== expectedState) {
+    status.value = 'error'
+    message.value = '登录状态校验失败（state 不匹配），请重试'
+    return
+  }
+
+  const returnTo = safeReturnTo(decodeURIComponent(params.get('returnTo') || '/settings?tab=providers'))
 
   if (!accessToken) {
     status.value = 'error'

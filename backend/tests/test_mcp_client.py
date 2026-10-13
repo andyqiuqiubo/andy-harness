@@ -135,3 +135,140 @@ async def test_service_missing_config_no_error() -> None:
     svc = MCPClientService(config_paths=("/nonexistent/path/mcp.json",))
     configs = svc.load_config()
     assert configs == {}
+
+
+# ── SEC-15：MCP 客户端资源管理 ────────────────────────
+async def test_stderr_flood_does_not_deadlock(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """回归：stderr=PIPE 无消费者时，子进程写满 64KB 管道缓冲区即阻塞挂死，
+    表现为握手超时。修复后 stderr 由后台线程持续抽干，握手应正常完成。"""
+    from harness.modules.mcp_client import service as mcs
+
+    monkeypatch.setattr(mcs, "_REQUEST_TIMEOUT", 10.0)  # 失败时快速暴露，不拖 60s
+    script = tmp_path / "noisy_server.py"
+    # 一个「噪音」server：先往 stderr 灌 200KB（远超 64KB 管道缓冲区），
+    # 再正常应答 initialize / tools/list（通知类消息无 id，需跳过）。
+    script.write_text(
+        "import json, sys\n"
+        'sys.stderr.write("E" * 200000 + "\\n")\n'
+        "sys.stderr.flush()\n"
+        "def handle(req):\n"
+        '    m = req.get("method")\n'
+        '    if m == "initialize":\n'
+        '        return {"serverInfo": {"name": "noisy"}}\n'
+        '    if m == "tools/list":\n'
+        '        return {"tools": []}\n'
+        "    return {}\n"
+        "while True:\n"
+        "    line = sys.stdin.readline()\n"
+        "    if not line:\n"
+        "        break\n"
+        "    req = json.loads(line)\n"
+        '    if "id" not in req:\n'
+        "        continue\n"
+        '    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": req["id"],'
+        ' "result": handle(req)}) + "\\n")\n'
+        "    sys.stdout.flush()\n",
+        encoding="utf-8",
+    )
+    conn = mcs.MCPServerConnection(mcs.MCPServerConfig(name="noisy", command=PYTHON, args=[str(script)]))
+    try:
+        tools = await asyncio.wait_for(conn.connect(), timeout=20)
+        assert tools == []
+    finally:
+        await conn.disconnect()
+
+
+async def test_read_loop_skips_oversized_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    """回归：`readline()` 无上限，单行超长输出会把内存打满。
+    修复后超长行被丢弃，后续正常行仍能被解析分发。"""
+    import io
+    import json as _json
+
+    from harness.modules.mcp_client import service as mcs
+
+    # 32B 垃圾行需被丢弃，随后 46B 的合法响应行必须仍被解析
+    monkeypatch.setattr(mcs, "_MAX_LINE_BYTES", 64)
+    monkeypatch.setattr(mcs, "_MAX_SKIP_BYTES", 4096)
+
+    conn = mcs.MCPServerConnection(mcs.MCPServerConfig(name="fake", command="x"))
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future[dict] = loop.create_future()
+    conn._pending[1] = fut
+
+    payload = _json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"tools": []}}).encode()
+
+    class FakeProc:
+        stdout = io.BytesIO(b"A" * 500 + b"\n" + payload + b"\n")
+        stderr = io.BytesIO(b"")
+
+    conn._proc = FakeProc()  # type: ignore[assignment]
+    conn._owner_loop = loop
+    await asyncio.to_thread(conn._read_loop_sync)
+    assert fut.done() and not fut.cancelled()
+    assert fut.result() == {"tools": []}
+
+
+async def test_connect_failure_terminates_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    """回归：握手失败时只 pop 连接不 disconnect，子进程会残留（僵尸累积）。"""
+    from harness.modules.mcp_client import service as mcs
+
+    async def boom_handshake(self) -> None:  # type: ignore[no-untyped-def]
+        raise RuntimeError("handshake boom")
+
+    monkeypatch.setattr(mcs.MCPServerConnection, "_handshake", boom_handshake)
+
+    seen: list[mcs.MCPServerConnection] = []
+    procs: list[object] = []
+    orig_disconnect = mcs.MCPServerConnection.disconnect
+
+    async def spy_disconnect(self) -> None:  # type: ignore[no-untyped-def]
+        seen.append(self)
+        if self._proc is not None:
+            procs.append(self._proc)
+        await orig_disconnect(self)
+
+    monkeypatch.setattr(mcs.MCPServerConnection, "disconnect", spy_disconnect)
+
+    cfg = MCPServerConfig(
+        name="boom",
+        command=PYTHON,
+        args=["-c", "import time; time.sleep(60)"],
+    )
+    svc = MCPClientService(config_paths=())
+    with pytest.raises(RuntimeError, match="handshake boom"):
+        await svc.connect_server(cfg)
+    assert "boom" not in svc._servers
+    assert seen, "连接失败必须触发 disconnect"
+    assert procs, "应捕获到已启动的子进程"
+    for proc in procs:
+        assert proc.poll() is not None, "握手失败后子进程必须已被终止（不留僵尸）"
+
+
+async def test_disconnect_all_continues_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """单个 server 断开失败不得中断其余清理（否则泄漏级联放大）。"""
+    from harness.modules.mcp_client import service as mcs
+
+    calls: list[str] = []
+
+    class FakeConn(mcs.BaseMCPConnection):
+        def __init__(self, name: str, fail: bool) -> None:
+            super().__init__(mcs.MCPServerConfig(name=name))
+            self._fail = fail
+
+        async def _open(self) -> None:
+            return None
+
+        async def _send(self, payload: dict) -> None:
+            return None
+
+        async def disconnect(self) -> None:
+            calls.append(self.config.name)
+            if self._fail:
+                raise RuntimeError("disconnect boom")
+
+    svc = MCPClientService(config_paths=())
+    svc._servers["a"] = FakeConn("a", fail=True)  # type: ignore[assignment]
+    svc._servers["b"] = FakeConn("b", fail=False)  # type: ignore[assignment]
+    await svc.disconnect_all()
+    assert calls == ["a", "b"], "清理必须覆盖全部连接"
+    assert svc._servers == {}

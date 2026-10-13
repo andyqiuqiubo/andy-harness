@@ -388,12 +388,13 @@ class SkillServiceImpl(SkillService):
         return set()
 
     def _save_disabled(self, disabled: set[str]) -> None:
-        """写入被停用的 skill 名称集合。"""
+        """写入被停用的 skill 名称集合（SEC-24：原子写，避免损坏）。"""
+        from harness.infra.atomic_write import atomic_write_json
+
         try:
-            self._state_file.parent.mkdir(parents=True, exist_ok=True)
-            self._state_file.write_text(
-                json.dumps({"disabled": sorted(disabled)}, ensure_ascii=False, indent=2),
-                encoding="utf-8",
+            atomic_write_json(
+                self._state_file,
+                {"disabled": sorted(disabled)},
             )
         except Exception as e:
             logger.warning("写入 skill 状态文件失败: %s", e)

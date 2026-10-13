@@ -65,7 +65,10 @@ def setup_provider_routes(registry: ServiceRegistry) -> None:
         return cast("dict[str, Any]", pr.get_provider_info(provider_id))
 
     @router.post("", summary="创建自定义 provider")
-    async def create_provider(req: ProviderCreate) -> dict[str, Any]:
+    async def create_provider(
+        req: ProviderCreate,
+        _admin: dict[str, Any] | None = Depends(require_admin),
+    ) -> dict[str, Any]:
         from harness.infra.crypto import APIKeyEncryptor
         from harness.infra.database import Database
         from harness.modules.model_manager.openai_compatible import (
@@ -134,7 +137,11 @@ def setup_provider_routes(registry: ServiceRegistry) -> None:
             raise APIError("PROVIDER_KEY_DECRYPT_FAIL", f"API Key 解密失败: {e}", 500)
 
     @router.patch("/{provider_id}", summary="更新 provider")
-    async def update_provider(provider_id: str, req: ProviderUpdate) -> dict[str, Any]:
+    async def update_provider(
+        provider_id: str,
+        req: ProviderUpdate,
+        _admin: dict[str, Any] | None = Depends(require_admin),
+    ) -> dict[str, Any]:
         from harness.infra.crypto import APIKeyEncryptor
         from harness.infra.database import Database
 
@@ -174,7 +181,10 @@ def setup_provider_routes(registry: ServiceRegistry) -> None:
         return cast("dict[str, Any]", pr.get_provider_info(provider_id))
 
     @router.delete("/{provider_id}", summary="删除 provider")
-    async def delete_provider(provider_id: str) -> dict[str, str]:
+    async def delete_provider(
+        provider_id: str,
+        _admin: dict[str, Any] | None = Depends(require_admin),
+    ) -> dict[str, str]:
         from harness.infra.database import Database
 
         pr = _get_provider_registry(registry)

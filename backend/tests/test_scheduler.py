@@ -412,3 +412,126 @@ class TestScheduleAPI:
         assert client.delete("/api/schedules/nope").status_code == 404
         assert client.get("/api/schedules/nope/runs").status_code == 404
         assert client.post("/api/schedules/nope/run").status_code == 404
+
+
+# ── SEC-33：missed-run 策略（停机重启不补跑历史欠账） ──────────
+
+
+class TestMissedRunPolicy:
+    """停机/长离线后重启：错过超过宽限倍数周期的任务跳过补跑，防重启风暴。"""
+
+    def _mk_task(
+        self,
+        service: SchedulerService,
+        db: Database,
+        schedule: dict[str, Any],
+        late_minutes: float,
+    ) -> Any:
+        """建任务并把 next_run_at 拨回到过去 late_minutes 分钟。"""
+        task = service.create_task(
+            {"name": "t", "prompt": "p", "schedule": schedule},
+            user_id="",
+        )
+        from datetime import timedelta
+
+        from harness.modules.scheduler.service import _now_local, _to_iso
+
+        due = _now_local() - timedelta(minutes=late_minutes)
+        db.execute(
+            "UPDATE scheduled_tasks SET next_run_at = ? WHERE id = ?",
+            (_to_iso(due), task.id),
+        )
+        return service.get_task(task.id)
+
+    def test_interval_late_within_grace_not_skipped(self, service, db) -> None:
+        """迟到在 1 个周期内：正常补跑（is_missed_too_long=False）。"""
+        task = self._mk_task(service, db, {"type": INTERVAL, "interval_minutes": 10}, late_minutes=10)
+        assert service.is_missed_too_long(task) is False
+
+    def test_interval_late_beyond_grace_skipped(self, service, db) -> None:
+        """迟到超过 3 个周期（30 分钟）：判定错过太久。"""
+        task = self._mk_task(service, db, {"type": INTERVAL, "interval_minutes": 10}, late_minutes=45)
+        assert service.is_missed_too_long(task) is True
+        assert service.missed_late_minutes(task) >= 45
+
+    def test_daily_late_beyond_grace_skipped(self, service, db) -> None:
+        """daily 任务停机 4 天：错过太久。"""
+        task = self._mk_task(service, db, {"type": DAILY, "time": "09:00"}, late_minutes=60 * 24 * 4)
+        assert service.is_missed_too_long(task) is True
+
+    def test_once_task_never_skipped(self, service, db) -> None:
+        """once 任务无论迟到多久都补跑（用户明确指定的时刻，跳过=静默丢任务）。
+
+        注：``run_at`` 用未来时间以通过创建期「拒绝过去时间」守卫（回归测试守护点）；
+        迟到由 ``_mk_task`` 的 ``late_minutes`` 把 ``next_run_at`` 拨回过去一年来模拟，
+        覆盖创建校验、专测运行时 ``is_missed_too_long`` 对 once 的豁免。
+        """
+        task = self._mk_task(service, db, {"type": ONCE, "run_at": "2030-01-01 00:00"}, late_minutes=60 * 24 * 365)
+        assert service.is_missed_too_long(task) is False
+
+    async def test_tick_skips_missed_run_and_advances(self, service, db) -> None:
+        """_tick 层：错过太久的任务不执行 runner，记录 skipped 且 next_run_at 推进到未来。"""
+        from datetime import timedelta
+
+        from harness.modules.scheduler.service import _now_local, _to_iso
+
+        task = self._mk_task(service, db, {"type": INTERVAL, "interval_minutes": 10}, late_minutes=100)
+        old_due = task.next_run_at
+
+        ran: list[str] = []
+
+        class _SpyRunner:
+            async def run_task(self, t, trigger="") -> Any:
+                ran.append(t.id)
+
+                class _O:
+                    status = "ok"
+                    duration_ms = 1
+                    error = ""
+
+                return _O()
+
+        plug = type("P", (), {})()  # 最小替身：只用到 _tick 用到的字段
+        from plugins.scheduler.main import SchedulerPlugin
+
+        plugin = SchedulerPlugin.__new__(SchedulerPlugin)
+        plugin._service = service
+        plugin._runner = _SpyRunner()
+        plugin._running = set()
+        await plugin._tick()
+
+        assert ran == [], "错过太久的任务不应补跑（重启风暴）"
+        refreshed = service.get_task(task.id)
+        assert refreshed.last_status == "skipped"
+        assert refreshed.next_run_at > _to_iso(_now_local()), "next_run_at 未推进到未来"
+        assert refreshed.next_run_at != old_due
+        # skipped 不计入失败率
+        assert refreshed.fail_count == 0
+
+    async def test_tick_runs_task_within_grace(self, service, db) -> None:
+        """_tick 层：迟到在宽限内的任务照常执行。"""
+        from plugins.scheduler.main import SchedulerPlugin
+
+        task = self._mk_task(service, db, {"type": INTERVAL, "interval_minutes": 60}, late_minutes=30)
+
+        ran: list[str] = []
+
+        class _SpyRunner:
+            async def run_task(self, t, trigger="") -> Any:
+                ran.append(t.id)
+
+                class _O:
+                    status = "ok"
+                    duration_ms = 1
+                    error = ""
+
+                return _O()
+
+        plugin = SchedulerPlugin.__new__(SchedulerPlugin)
+        plugin._service = service
+        plugin._runner = _SpyRunner()
+        plugin._running = set()
+        await plugin._tick()
+
+        assert ran == [task.id], "宽限内的到期任务应正常执行"
+

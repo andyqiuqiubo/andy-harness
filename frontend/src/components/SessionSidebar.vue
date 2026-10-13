@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { usePluginLoaderStore } from '../stores/plugin-loader'
 import { useLanguage } from '../composables/useLanguage'
@@ -88,6 +88,35 @@ function showToast(text: string) {
 const menu = ref<{ visible: boolean; x: number; y: number; sessionId: string }>({
   visible: false, x: 0, y: 0, sessionId: '',
 })
+const menuEl = ref<HTMLElement | null>(null)
+
+/**
+ * 打开会话操作菜单，并做视口防截断定位。
+ *
+ * 旧实现用写死的 280×300 像素夹取：菜单实际高度随标题长度 / 文案折行
+ * 动态变化，列表底部（或小窗口）会话的菜单下缘必然被视口裁掉——
+ * 「删除」等选项不可见甚至点不到。现在先按点击位置渲染，nextTick
+ * 量出真实尺寸后再夹取到视口内（四边留 8px 安全距），保证无论会话
+ * 位于列表哪个位置，菜单都完整展示、全部选项可交互。
+ */
+function openMenu(e: MouseEvent, sessionId: string) {
+  e.stopPropagation()
+  menu.value = { visible: true, x: e.clientX, y: e.clientY, sessionId }
+  void nextTick(() => {
+    const el = menuEl.value
+    if (!el || !menu.value.visible) return
+    const margin = 8
+    const w = el.offsetWidth
+    const h = el.offsetHeight
+    const maxX = Math.max(margin, window.innerWidth - w - margin)
+    const maxY = Math.max(margin, window.innerHeight - h - margin)
+    menu.value = {
+      ...menu.value,
+      x: Math.min(Math.max(margin, e.clientX), maxX),
+      y: Math.min(Math.max(margin, e.clientY), maxY),
+    }
+  })
+}
 
 const visibleSessions = computed(() =>
   chatStore.sessions.filter((s) => showArchived.value || !s.archived),
@@ -169,13 +198,6 @@ async function handleNewSession() {
     return
   }
   await chatStore.createSession('New Session')
-}
-
-function openMenu(e: MouseEvent, sessionId: string) {
-  e.stopPropagation()
-  const x = Math.min(e.clientX, window.innerWidth - 280)
-  const y = Math.min(e.clientY, window.innerHeight - 300)
-  menu.value = { visible: true, x, y, sessionId }
 }
 
 function closeMenu() {
@@ -278,11 +300,14 @@ onMounted(() => {
   chatStore.loadSessions()
   document.addEventListener('click', closeMenu)
   document.addEventListener('scroll', closeMenu, true)
+  // 视口变化时菜单定位可能失效，直接关闭（下次点击重新定位）
+  window.addEventListener('resize', closeMenu)
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', closeMenu)
   document.removeEventListener('scroll', closeMenu, true)
+  window.removeEventListener('resize', closeMenu)
   if (toastTimer) clearTimeout(toastTimer)
 })
 </script>
@@ -450,6 +475,7 @@ onUnmounted(() => {
     <teleport to="body">
       <div
         v-if="menu.visible"
+        ref="menuEl"
         class="session-menu"
         :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
         @click.stop

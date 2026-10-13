@@ -639,6 +639,10 @@ class ComputerUseAgent:
 
     # ── 文件读写（作用域已在 SafetyPolicy 校验） ─────
     def _read_file(self, path: str) -> str:
+        # 纵深防御：即使绕过工具层直接调用，作用域/受限目录约束仍然生效
+        violation = self.safety.check_file_scope(path)
+        if violation:
+            return f"[安全拦截] {violation}"
         try:
             with open(path, encoding="utf-8", errors="ignore") as fh:
                 return self._truncate(f"[文件 {path}]\n{fh.read()}")
@@ -646,6 +650,9 @@ class ComputerUseAgent:
             return f"[读文件失败] {e}"
 
     def _write_file(self, path: str, content: str) -> str:
+        violation = self.safety.check_file_scope(path)
+        if violation:
+            return f"[安全拦截] {violation}"
         try:
             parent = os.path.dirname(os.path.abspath(path))
             os.makedirs(parent, exist_ok=True)

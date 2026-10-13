@@ -108,15 +108,40 @@ class ComputerUseService:
             "created_at": time.time(),
         }
 
+    def _purge_expired_pending(self, now: float | None = None) -> None:
+        """清理超过 TTL 的待审批任务（挂起任务不再永驻内存）。"""
+        ttl = getattr(self.config, "pending_ttl", 3600.0) or 0.0
+        if ttl <= 0:
+            return
+        now = time.time() if now is None else now
+        expired = [rid for rid, item in self.pending.items() if now - float(item.get("created_at", now)) > ttl]
+        for rid in expired:
+            self.pending.pop(rid, None)
+            logger.info("Computer Use 待审批任务已超时作废: run_id=%s", rid)
+
     def approve_run(self, run_id: str) -> bool:
-        """人工授权某次任务；返回是否成功（run 是否存在无关，仅记录授权）。"""
+        """人工授权某次任务。
+
+        必须是**真实存在**的任务（已登记目标或正处于待审批状态）才可授权——
+        不得对任意 run_id 恒返回 True（否则等于开放自助授权，SEC-08）。
+        """
+        if not run_id:
+            return False
+        if run_id in self.approved_runs:
+            return True  # 幂等：重复授权同一任务不报错
+        self._purge_expired_pending()
+        is_known = run_id in self.goals or run_id in self.pending
+        if not is_known:
+            logger.warning("拒绝授权未知任务: run_id=%s", run_id)
+            return False
         self.approved_runs.add(run_id)
         self.pending.pop(run_id, None)
         logger.info("Computer Use 任务已获人工授权: run_id=%s", run_id)
         return True
 
     def list_pending(self) -> list[dict[str, Any]]:
-        """列出所有待审批任务。"""
+        """列出所有待审批任务（自动过滤已超时项）。"""
+        self._purge_expired_pending()
         return [{"run_id": k, **v} for k, v in self.pending.items()]
 
 
@@ -246,15 +271,27 @@ def _register_routes(app: Any, service: ComputerUseService) -> None:
     if "/api/computer-use/approve" in existing:
         return  # 已注册（如 uvicorn --reload 重复 activate）
 
-    from fastapi import Query
+    from fastapi import Depends, Query
 
-    async def approve(run_id: str = Query(..., description="待授权任务 ID")) -> dict[str, Any]:
+    from harness.api.deps import require_admin
+
+    async def approve(
+        run_id: str = Query(..., description="待授权任务 ID"),
+        _admin: dict[str, Any] | None = Depends(require_admin),
+    ) -> dict[str, Any]:
         ok = service.approve_run(run_id)
-        return {"ok": ok, "run_id": run_id, "status": "approved"}
+        return {
+            "ok": ok,
+            "run_id": run_id,
+            "status": "approved" if ok else "unknown_run",
+        }
 
-    async def pending() -> dict[str, Any]:
+    async def pending(
+        _admin: dict[str, Any] | None = Depends(require_admin),
+    ) -> dict[str, Any]:
         return {"pending": service.list_pending()}
 
+    # 管理员门禁：授权本机 shell 属于管理面操作，认证启用时必须是管理员
     app.add_api_route(
         "/api/computer-use/approve",
         approve,

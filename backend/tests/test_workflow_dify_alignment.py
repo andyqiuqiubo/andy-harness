@@ -307,6 +307,53 @@ class TestTemplateJinja2:
         assert result["status"] == "success"
         assert engine._node_outputs["tpl"]["output"] == "关于t1"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "{{ ''.__class__.__mro__[1].__subclasses__() }}",
+            "{{ config.__class__.__init__.__globals__['os'].popen('id').read() }}",
+            "{{ self.__init__.__globals__ }}",
+            "{{ ''.__class__ }}",
+        ],
+    )
+    async def test_ssti_payloads_blocked(self, payload: str) -> None:
+        """SEC-02：模板节点用户可控，SSTI 载荷必须被沙箱拦截（不得求值/执行）。"""
+        engine = GraphEngine(None)
+        graph = _chain(
+            _node("start", "start", {"variables": []}),
+            _node("tpl", "template", {"template": payload}),
+            _node("end", "end", {"outputs": [{"name": "out", "value": "{{tpl.output}}"}]}),
+        )
+        result = await engine.execute(graph, {})
+        assert result["status"] == "success"
+        out = engine._node_outputs["tpl"]["output"]
+        # 不得泄露任何对象表示 / 执行结果（subclasses 列表、uid= 等）
+        assert "subclasses" not in out
+        assert "class " not in out
+        assert "uid=" not in out
+        assert out == ""  # 沙箱拦截 → 回退渲染 → 不可解析引用替换为空
+
+    def test_render_jinja_blocks_dunder_access(self) -> None:
+        """直接验证沙箱层（而非仅回退层）拦截 dunder 属性访问。
+
+        jinja2 3.1 语义：对不安全属性返回 Undefined 占位（渲染为空、不泄露
+        对象）；模板若继续使用该值（再取属性 / 调用 / 迭代）则直接抛错。
+        """
+        engine = GraphEngine(None)
+        # 裸访问：不得泄露 str 类对象本身
+        assert engine._render_jinja("{{ ''.__class__ }}") == ""
+        # 继续攀爬：必须抛错（SecurityError 或 UndefinedError）
+        with pytest.raises(Exception):  # noqa: B017 - 两种异常类型均属拦截
+            engine._render_jinja("{{ ''.__class__.__mro__[1].__subclasses__() }}")
+
+    def test_template_too_long_rejected(self) -> None:
+        from harness.modules.workflows.engine import _MAX_TEMPLATE_LEN
+
+        engine = GraphEngine(None)
+        with pytest.raises(ValueError, match="过长"):
+            engine._render_jinja("x" * (_MAX_TEMPLATE_LEN + 1))
+
 
 class TestCodeTimeoutConfig:
     @pytest.mark.asyncio

@@ -121,7 +121,13 @@ class TestTelegramPolling:
         async def handler(msg: InboundMessage) -> None:
             received.append(msg)
 
-        channel = TelegramChannel("token", transport=tr, poll_interval=0.01, inbound_handler=handler)
+        channel = TelegramChannel(
+            "token",
+            allowed_users=["123"],
+            transport=tr,
+            poll_interval=0.01,
+            inbound_handler=handler,
+        )
         await channel.start()
         await asyncio.sleep(0.1)
         await channel.stop()
@@ -243,6 +249,7 @@ class TestTelegramEndToEnd:
         tr = FakeTransport(batches=[[_update(1, 123, "你好")]])
         channel = TelegramChannel(
             "token",
+            allowed_users=["123"],
             transport=tr,
             poll_interval=0.01,
             inbound_handler=mgr.process,

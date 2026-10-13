@@ -406,3 +406,91 @@ class TestReasoningContentEcho:
         messages = context_service.build(session.id, budget=4096, model="deepseek-v4-flash")
         contents = [str(m.get("content") or "") for m in messages]
         assert "晴" in contents
+
+
+class TestBuildCache:
+    """MOD-01：上下文构建缓存（命中复用 / 内容变更自失效 / 写入后显式失效）。"""
+
+    @staticmethod
+    def _session_with_messages(services: ServiceRegistry, n: int = 2):
+        session_service = services.get(SessionService)
+        session = session_service.create_session("缓存测试")
+        for i in range(n):
+            role = "user" if i % 2 == 0 else "assistant"
+            session_service.append_message(session.id, role, f"消息{i}")
+        return session_service, session
+
+    def test_repeated_build_hits_cache(self, context_service: ContextServiceImpl, services: ServiceRegistry) -> None:
+        """同一输入重复 build：结果一致，且快照不会重复落库。"""
+        session_service, session = self._session_with_messages(services)
+
+        first = context_service.build(session.id, budget=4096, model="test")
+        assert session.id in context_service._build_cache
+
+        snapshots_after_first = context_service.list_snapshots(session.id)
+        second = context_service.build(session.id, budget=4096, model="test")
+        snapshots_after_second = context_service.list_snapshots(session.id)
+
+        assert [m["content"] for m in first] == [m["content"] for m in second]
+        # 命中缓存不再写新快照（去重，避免每次工具迭代都落一条）
+        assert len(snapshots_after_second) == len(snapshots_after_first)
+
+    def test_new_message_invalidates(self, context_service: ContextServiceImpl, services: ServiceRegistry) -> None:
+        """追加新消息后必须重新构建（签名自失效）。"""
+        session_service, session = self._session_with_messages(services)
+        first = context_service.build(session.id, budget=4096, model="test")
+        session_service.append_message(session.id, "user", "新消息")
+        second = context_service.build(session.id, budget=4096, model="test")
+        assert len(second) == len(first) + 1
+
+    def test_content_change_invalidates(self, context_service: ContextServiceImpl, services: ServiceRegistry) -> None:
+        """消息内容被改写后立即失效（长度相同也不得命中旧结果）。"""
+        session_service, session = self._session_with_messages(services, n=1)
+        context_service.build(session.id, budget=4096, model="test")
+
+        msgs = session_service.list_messages(session.id)
+        session_service.update_message_content(msgs[0].id, "改后") if hasattr(
+            session_service, "update_message_content"
+        ) else session_service.append_message(session.id, "user", "改后")
+
+        result = context_service.build(session.id, budget=4096, model="test")
+        contents = [str(m.get("content") or "") for m in result]
+        assert "改后" in contents
+
+    def test_invalidate_cache_forces_rebuild(
+        self, context_service: ContextServiceImpl, services: ServiceRegistry
+    ) -> None:
+        session_service, session = self._session_with_messages(services)
+        context_service.build(session.id, budget=4096, model="test")
+        assert session.id in context_service._build_cache
+
+        context_service.invalidate_cache(session.id)
+        assert session.id not in context_service._build_cache
+
+        context_service.invalidate_cache()  # 全清不报错
+        assert context_service._build_cache == {}
+
+    def test_pin_invalidates_cache(self, context_service: ContextServiceImpl, services: ServiceRegistry) -> None:
+        session_service, session = self._session_with_messages(services)
+        context_service.build(session.id, budget=4096, model="test")
+        context_service.pin_message(session.id, 0)
+        assert session.id not in context_service._build_cache
+
+    def test_returned_messages_are_copies(self, context_service: ContextServiceImpl, services: ServiceRegistry) -> None:
+        """缓存返回的必须是副本：调用方就地修改不得污染缓存。"""
+        session_service, session = self._session_with_messages(services)
+        first = context_service.build(session.id, budget=4096, model="test")
+        first[0]["content"] = "被外部篡改"
+        second = context_service.build(session.id, budget=4096, model="test")
+        assert second[0]["content"] != "被外部篡改"
+
+    def test_cache_bounded_by_lru(self, context_service: ContextServiceImpl, services: ServiceRegistry) -> None:
+        """会话数超过上限时淘汰最旧，防无界增长。"""
+        from harness.modules.context_manager.service import _BUILD_CACHE_MAX
+
+        session_service = services.get(SessionService)
+        for i in range(_BUILD_CACHE_MAX + 3):
+            s = session_service.create_session(f"会话{i}")
+            session_service.append_message(s.id, "user", "hi")
+            context_service.build(s.id, budget=4096, model="test")
+        assert len(context_service._build_cache) <= _BUILD_CACHE_MAX

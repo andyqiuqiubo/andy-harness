@@ -194,7 +194,7 @@ const turns = computed<{ turns: Turn[]; standalone: Message[] }>(() => {
       .slice()
       .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
     const isFinalAnswer = (m: Message) =>
-      (m.content || '').trim() !== '' && !(m.tool_calls && m.tool_calls.length)
+      ((m.content || '').trim() !== '' || m.stopped) && !(m.tool_calls && m.tool_calls.length)
     let segment: Message[] = []
     for (const m of raw) {
       segment.push(m)
@@ -1044,6 +1044,14 @@ onUnmounted(() => {
           <template v-for="sys in turns.standalone" :key="`sys-${sys.id}`">
             <MessageItem :message="sys" />
           </template>
+
+          <!-- 停止生成占位提示：真实模式下「仅思考、尚无正文」被中断时，
+               后端不落库 stopped 消息，用独立占位承载「用户已停止回答」，
+               与 reload 整表替换解耦（避免 400ms 后提示消失）。 -->
+          <MessageItem
+            v-if="chatStore.stoppedPlaceholder && chatStore.stoppedPlaceholder.session_id === chatStore.currentSessionId"
+            :message="chatStore.stoppedPlaceholder"
+          />
 
           <!-- 流式渲染中：思维链 + 工具调用统一进「执行过程」框实时展示；
                最终答案开始输出时过程框自动收缩（可点击展开回看） -->

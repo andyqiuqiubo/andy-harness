@@ -108,6 +108,23 @@ class SchedulerPlugin(BasePlugin):
         for task in due:
             if task.id in self._running:
                 continue
+            # SEC-33：错过太久的周期任务不补跑——停机/长离线后重启时，历史欠账
+            # 若全部补跑会形成重启风暴（连续几百次执行，白烧 provider token）。
+            # 记录一次 skipped（不计入失败）并把 next_run_at 推进到未来周期。
+            if self._service.is_missed_too_long(task):
+                late = self._service.missed_late_minutes(task)
+                self._service.record_task_result(
+                    task,
+                    status="skipped",
+                    error=f"停机期间错过约 {late} 分钟（超过宽限），已跳过补跑",
+                )
+                logger.warning(
+                    "定时任务错过太久，跳过补跑: %s（应跑 %s，迟到约 %d 分钟）",
+                    task.name,
+                    task.next_run_at,
+                    late,
+                )
+                continue
             # 抢占：先把下次运行时间推后，避免执行期间重复触发
             self._service.claim_task(task.id)
             self._running.add(task.id)

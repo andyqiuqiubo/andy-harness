@@ -9,8 +9,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from harness.api.deps import require_admin
 from harness.engine.tool_registry import ToolRegistry
 from harness.kernel.hooks import HookManager
 from harness.kernel.services import ServiceRegistry
@@ -38,7 +39,10 @@ def setup_runs_routes(
 
 
 @router.post("/{run_id}/resume", summary="从检查点续跑一次运行")
-async def resume_run(run_id: str) -> dict[str, Any]:
+async def resume_run(
+    run_id: str,
+    admin: dict[str, Any] | None = Depends(require_admin),
+) -> dict[str, Any]:
     """依据检查点续跑（断点续跑）。
 
     会话历史已在之前运行中即时持久化，续跑会基于该上下文让模型继续完成剩余工作。

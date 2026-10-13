@@ -22,14 +22,114 @@ export const useChatStore = defineStore('chat', () => {
   const regeneratingParentId = ref<string | null>(null)
 
   /**
+   * 停止生成占位提示（仅「思考过程、尚无正文」被中断时使用）。
+   * 真实模式下后端只在 result.content 非空时落库 stopped 消息（见 agent_loop
+   * 的 `if result.content`），因此思考阶段被中断不会留下持久化消息；若直接 push
+   * 进 messages，会被 400ms 后的 reloadMessages 整表替换抹掉，提示闪现即消失。
+   * 故用独立 ref 承载「用户已停止回答」提示，与 reload 解耦，确保稳定可见。
+   */
+  const stoppedPlaceholder = ref<Message | null>(null)
+  const stoppedPlaceholderUserMsgId = ref<string | null>(null)
+
+  /**
    * 当前流式回答**归属的会话 id**。
    *
    * WS 是全局共享的单连接：后端为会话 A 生成的 token_delta / tool_event / done
    * 帧，在用户中途切到会话 B 之后仍会继续推来。旧实现不加区分地处理，导致：
    * - `done` 把 A 的答案 push 进 B 的消息列表（跨会话串数据）；
    * - `isStreaming` 迟迟不落回 false，B 的输入框与发送按钮被禁用。
+   *
+   * 注意：切换会话时**不清空**该值（旧实现置 null 反而使归属过滤失效，
+   * A 的迟到帧全部写进 B）。它持续指向正在生成的会话，配合帧自带的
+   * session_id（后端已带上）与下方暂存机制，保证：
+   * - 切走时 A 的迟到帧被丢弃，不污染 B；
+   * - 切回 A 时已生成内容原样恢复，继续实时追加。
    */
   const streamingSessionId = ref<string | null>(null)
+
+  /**
+   * 流式生成状态的按会话暂存。
+   *
+   * 生成途中切走/新建会话时，把已生成的正文、思维链、过程步骤暂存到
+   * 「流式归属会话」名下；返回该会话时恢复，用户能完整看到已生成的回答
+   * 文字并继续实时追加（修复「新建后返回原会话只剩提问」）。
+   *
+   * finalized=true 表示该会话的生成已收尾（完成 / 被停止 / 被切换中断），
+   * 内容应作为一条消息落入该会话的消息列表（模拟模式专用：真实模式下
+   * 服务端已落库，done 帧到达即丢弃暂存）。
+   */
+  interface StreamSnapshot {
+    content: string
+    reasoning: string
+    reasoningDone: boolean
+    toolEvents: Record<string, unknown>[]
+    processEvents: ProcessStep[]
+    regeneratingParentId: string | null
+    finalized?: boolean
+    stopped?: boolean
+  }
+  const streamStash = ref<Record<string, StreamSnapshot>>({})
+
+  function _snapshotStream(): StreamSnapshot {
+    return {
+      content: streamingContent.value,
+      reasoning: streamingReasoning.value,
+      reasoningDone: reasoningDone.value,
+      toolEvents: [...toolEvents.value],
+      processEvents: [...processEvents.value],
+      regeneratingParentId: regeneratingParentId.value,
+    }
+  }
+
+  function _restoreStream(snap: StreamSnapshot) {
+    streamingContent.value = snap.content
+    streamingReasoning.value = snap.reasoning
+    reasoningDone.value = snap.reasoningDone
+    toolEvents.value = [...snap.toolEvents]
+    processEvents.value = [...snap.processEvents]
+    regeneratingParentId.value = snap.regeneratingParentId
+  }
+
+  /** 清空实时流式态（内容保留由调用方决定，走暂存或落库）。 */
+  function _clearStreamLive() {
+    streamingContent.value = ''
+    streamingReasoning.value = ''
+    reasoningDone.value = false
+    toolEvents.value = []
+    processEvents.value = []
+    regeneratingParentId.value = null
+  }
+
+  function _stashFor(sessionId: string, snap: StreamSnapshot) {
+    streamStash.value = { ...streamStash.value, [sessionId]: snap }
+  }
+
+  function _dropStash(sessionId: string | null | undefined) {
+    if (!sessionId || !streamStash.value[sessionId]) return
+    const next = { ...streamStash.value }
+    delete next[sessionId]
+    streamStash.value = next
+  }
+
+  /**
+   * 离开「正在流式生成的会话」时的统一处理：
+   * - 真实模式（WS）：内容暂存，返回时恢复并继续实时追加；
+   * - 模拟模式：本地定时器无法在后台继续，停止生成并把已生成内容作为
+   *   「已停止」回答暂存，返回时作为消息落入列表（内容不丢失）。
+   */
+  function _leaveStreamingSession(prevId: string | null) {
+    if (!prevId || !streamingSessionId.value || streamingSessionId.value !== prevId) return
+    if (mockTimer) {
+      clearTimeout(mockTimer)
+      mockTimer = null
+      _stashFor(prevId, { ..._snapshotStream(), finalized: true, stopped: true })
+      _clearStreamLive()
+      isStreaming.value = false
+      streamingSessionId.value = null
+      return
+    }
+    _stashFor(prevId, _snapshotStream())
+  }
 
   /**
    * 模板中心实例化后暂存的首条提问：跳转会话页、WS 就绪后自动经正常
@@ -96,11 +196,11 @@ export const useChatStore = defineStore('chat', () => {
       if (!isStreaming.value) return
       isStreaming.value = false
       error.value = '未收到服务端响应，可能连接已中断。请检查连接后重试。'
-      streamingContent.value = ''
-      streamingReasoning.value = ''
-      reasoningDone.value = false
-      toolEvents.value = []
-      processEvents.value = []
+      _clearStreamLive()
+      // 连接已断：清理暂存与流式归属，避免返回该会话时恢复出幽灵流式态。
+      // 服务端若仍在生成，done 帧（重连后）会以持久化消息正确呈现。
+      _dropStash(streamingSessionId.value)
+      streamingSessionId.value = null
     }, STREAM_WATCHDOG_MS)
   }
 
@@ -125,10 +225,19 @@ export const useChatStore = defineStore('chat', () => {
 
   async function createSession(title = 'New Session') {
     const session = await apiClient.post<Session>('/sessions', { title })
+    // 生成途中点「新建」：原会话的流式状态必须暂存（返回时恢复），
+    // 实时态必须清空——否则原会话已生成的回答会显示在新会话里，
+    // 且新会话的输入框被 isStreaming 禁用。
+    _leaveStreamingSession(currentSessionId.value)
     sessions.value.unshift(session)
     currentSessionId.value = session.id
     messages.value = []
+    _clearStreamLive()
     contextSnapshot.value = null
+    isStreaming.value = false
+    // 新会话：清空停止占位提示（属于上一会话的瞬时 UI）
+    stoppedPlaceholder.value = null
+    stoppedPlaceholderUserMsgId.value = null
     return session
   }
 
@@ -138,27 +247,38 @@ export const useChatStore = defineStore('chat', () => {
 
   async function selectSession(sessionId: string) {
     const seq = ++selectSeq
+    const prevId = currentSessionId.value
+    // 离开正在流式生成的会话：暂存已生成内容（真实模式返回时恢复并继续
+    // 实时追加；模拟模式作为「已停止」回答暂存）。streamingSessionId 继续
+    // 指向原会话，使迟到帧继续被归属过滤丢弃，不写进新会话。
+    _leaveStreamingSession(prevId)
     currentSessionId.value = sessionId
     // 立即清空上一会话的残留（补齐原先漏掉的思维链 / 过程框，避免跨会话串显）
     messages.value = []
-    streamingContent.value = ''
-    streamingReasoning.value = ''
-    reasoningDone.value = false
-    toolEvents.value = []
-    processEvents.value = []
+    _clearStreamLive()
     contextSnapshot.value = null
+    // 切换会话：清空停止占位提示（属于上一会话的瞬时 UI）
+    stoppedPlaceholder.value = null
+    stoppedPlaceholderUserMsgId.value = null
     // P1-1：待发送附件从属于**某个会话**；切会话必须清空，
     // 否则会把 A 的附件 id 发到 B（服务端安全地丢弃，用户却以为已经附上了）。
     pendingAttachments.value = []
     attachmentWarning.value = ''
     _clearWatchdog()
-    // 切会话必须解除流式态：否则在 A 生成途中切到 B 时 isStreaming 仍为 true，
-    // B 的输入框与发送按钮被禁用（要等 A 的 done 帧才恢复，甚至永远等不到）。
-    // 同时清空流式归属，避免 A 的残留帧写进 B。
-    isStreaming.value = false
+    // 目标会话有未收尾的暂存流式产物 → 该会话的生成仍在进行：
+    // 恢复已生成内容并保持流式态，用户返回时完整看到已生成的回答文字，
+    // 并继续实时追加（修复「新建/切换后返回只剩提问」）。
+    // 暂存被丢弃的时机即生成收尾（done / stop / error / 看门狗），
+    // 因此「暂存存在且未 finalized」等价于「生成仍在进行」。
+    const stash = streamStash.value[sessionId]
+    if (stash && !stash.finalized) {
+      _restoreStream(stash)
+      isStreaming.value = true
+      streamingSessionId.value = sessionId
+    } else {
+      isStreaming.value = false
+    }
     error.value = null
-    regeneratingParentId.value = null
-    streamingSessionId.value = null
     // 模拟模式的定时器同理，必须一并停掉
     if (mockTimer) {
       clearTimeout(mockTimer)
@@ -177,6 +297,24 @@ export const useChatStore = defineStore('chat', () => {
       if (seq !== selectSeq) return
       messages.value = msgs
       contextSnapshot.value = snapshot || null
+      // 暂存的是已收尾的部分回答（模拟模式切走中断）→ 作为消息补进列表，
+      // 保证返回原会话时已生成的文字完整可见。
+      const fin = streamStash.value[sessionId]
+      if (fin?.finalized && (fin.content || fin.reasoning)) {
+        messages.value = [
+          ...messages.value,
+          {
+            id: Date.now().toString(),
+            session_id: sessionId,
+            role: 'assistant',
+            content: fin.content,
+            tokens: 0,
+            stopped: fin.stopped !== false,
+            created_at: new Date().toISOString(),
+          },
+        ]
+      }
+      _dropStash(sessionId)
     } catch (e) {
       if (seq === selectSeq) error.value = String(e)
     }
@@ -228,13 +366,23 @@ export const useChatStore = defineStore('chat', () => {
     // 丢弃「非当前会话」的流式帧：用户在 A 生成途中切到 B 后，A 的
     // token_delta / tool_event / done 仍会经同一条 WS 推来。不加归属校验会把
     // A 的答案写进 B，并让 B 的 isStreaming 迟迟不落回 false（输入框被禁用）。
+    // 归属优先取帧自带 session_id（后端已带上，支持多会话并发生成），
+    // 旧帧回退到 streamingSessionId（本次流式归属）。
     // 控制类帧（error / confirm_* / attachment_warning / context_snapshot）不参与。
+    const frameSession =
+      (frame.data && typeof frame.data === 'object' && 'session_id' in frame.data
+        ? (frame.data as { session_id?: unknown }).session_id
+        : undefined) ?? streamingSessionId.value
     const _streamKinds = ['token_delta', 'tool_event', 'done']
     if (
-      streamingSessionId.value &&
-      streamingSessionId.value !== currentSessionId.value &&
+      frameSession &&
+      String(frameSession) !== currentSessionId.value &&
       _streamKinds.includes(frame.type)
     ) {
+      // 非当前会话的迟到帧：丢弃内容。done 说明该会话的生成已在服务端
+      // 收尾且完整落库，清理其暂存——返回该会话时会加载到完整答案，
+      // 不会丢半段也不会重复。
+      if (frame.type === 'done') _dropStash(String(frameSession))
       return
     }
     // 收到任何帧都说明服务端是活的 → 解除「首个响应超时」
@@ -268,19 +416,32 @@ export const useChatStore = defineStore('chat', () => {
         // 检测 theme_switcher 工具的主题切换指令
         _handleThemeSwitch(frame.data)
         break
-      case 'context_snapshot':
-        contextSnapshot.value = frame.data
+      case 'context_snapshot': {
+        // 快照帧也可能来自非当前会话（切换后迟到的 final snapshot），
+        // 带上了 session_id：不一致则忽略，并剥离开销键后再存。
+        const sid = (frame.data as { session_id?: unknown } | undefined)?.session_id
+        if (sid && String(sid) !== currentSessionId.value) break
+        const data = { ...(frame.data as Record<string, unknown>) }
+        delete data.session_id
+        contextSnapshot.value = data
         break
+      }
       case 'error':
         _clearWatchdog()
         error.value = (frame.data.message as string) || '未知错误'
         isStreaming.value = false
         regeneratingParentId.value = null
+        // 生成出错收尾：清理暂存，避免返回该会话时恢复出幽灵流式态
+        _dropStash(streamingSessionId.value)
         streamingSessionId.value = null
         break
       case 'done':
         _clearWatchdog()
         regeneratingParentId.value = null
+        // done 属于当前会话（上面已过滤掉跨会话帧）：流式结束，
+        // 清理暂存——内容已由后端持久化，reload 后会以真实消息展示。
+        const doneStopped = (frame.data as { stopped?: unknown } | undefined)?.stopped === true
+        _dropStash(String(frameSession || currentSessionId.value || ''))
         streamingSessionId.value = null
         // 标记思维链完成
         if (streamingReasoning.value) {
@@ -296,6 +457,9 @@ export const useChatStore = defineStore('chat', () => {
             content: streamingContent.value,
             tokens: usage?.total_tokens ?? 0,
             usage,
+            // 用户停止生成：后端已把部分内容落库并带 stopped 标记，
+            // 乐观消息同步该标记，reload 后由持久化消息接管。
+            stopped: doneStopped,
             created_at: new Date().toISOString(),
           })
         }
@@ -405,6 +569,9 @@ export const useChatStore = defineStore('chat', () => {
       const title = content.slice(0, 20) || (atts[0] ? atts[0].filename : 'New Session')
       await createSession(title)
     }
+    // 发送新消息：清空上一轮的停止占位提示（新一轮回答会另行呈现）
+    stoppedPlaceholder.value = null
+    stoppedPlaceholderUserMsgId.value = null
     const sessionId = currentSessionId.value
     if (!sessionId) return // 会话创建失败时终止
     // 既无文本也无附件时不发送
@@ -495,6 +662,9 @@ export const useChatStore = defineStore('chat', () => {
     processEvents.value = []
     attachmentWarning.value = ''
     regeneratingParentId.value = userMsgId
+    // 重新回答：清空上一轮的停止占位提示
+    stoppedPlaceholder.value = null
+    stoppedPlaceholderUserMsgId.value = null
 
     const settingsStore = useSettingsStore()
     const settings = settingsStore.sessionSettings
@@ -599,31 +769,59 @@ export const useChatStore = defineStore('chat', () => {
     if (!mockMode.value) {
       apiClient.ws.send({ type: 'stop', session_id: currentSessionId.value })
     }
+    // 流式归属会话：被停止的是它的生成。可能正是当前会话，也可能是用户
+    // 切到别的会话后点停止（后端按连接维度停止当前 loop，归属以帧为准）。
+    const stoppedSession = streamingSessionId.value || currentSessionId.value
+    const isCurrentStream =
+      !streamingSessionId.value || streamingSessionId.value === currentSessionId.value
     isStreaming.value = false
     streamingSessionId.value = null
-    if (streamingContent.value || streamingReasoning.value) {
-      messages.value.push({
-        id: Date.now().toString(),
-        session_id: currentSessionId.value || '',
-        role: 'assistant',
-        content: streamingContent.value + '\n[已中断]',
-        tokens: 0,
-        created_at: new Date().toISOString(),
-      })
-    }
-    streamingContent.value = ''
-    streamingReasoning.value = ''
-    reasoningDone.value = false
-    toolEvents.value = []
-    // 与 'done' 同理：停止后过程框隐藏，由 reload 后的历史消息归并展示
-    processEvents.value = []
-    // 停止后用户消息已持久化，需用后端真实 UUID 对账，
-    // 否则对该轮「删除本轮 / 分叉」会拿到临时 id 而失败。
-    // 延迟片刻，等后端处理完 stop 指令与失败轮次清理后再拉取真实状态。
-    if (!mockMode.value) {
-      setTimeout(() => {
-        void reloadMessages().catch(() => {})
-      }, 400)
+    regeneratingParentId.value = null
+    if (isCurrentStream) {
+      if (streamingContent.value) {
+        // 已生成正文：作为 stopped 消息进入列表，由 MessageItem 在回答下方标注
+        // 「用户已停止回答」。后端会落库（stopped=1），reload 后由真实消息接管。
+        messages.value.push({
+          id: Date.now().toString(),
+          session_id: currentSessionId.value || '',
+          role: 'assistant',
+          content: streamingContent.value,
+          reasoning: streamingReasoning.value || undefined,
+          tokens: 0,
+          stopped: true,
+          created_at: new Date().toISOString(),
+        })
+      } else if (streamingReasoning.value) {
+        // 仅处于「思考过程」、尚未输出答案正文时被中断：后端不会落库 stopped 消息
+        // （agent_loop 仅在 result.content 非空时持久化），但用户应当看到明确的
+        // 「用户已停止回答」提示。用独立占位消息承载，与 reloadMessages 的整表替换
+        // 解耦，避免 400ms 后提示被抹掉。
+        const lastUser = [...messages.value].reverse().find((m) => m.role === 'user')
+        stoppedPlaceholderUserMsgId.value = lastUser?.id ?? null
+        stoppedPlaceholder.value = {
+          id: 'stopped-placeholder-' + Date.now().toString(),
+          session_id: currentSessionId.value || '',
+          role: 'assistant',
+          content: '',
+          reasoning: streamingReasoning.value,
+          tokens: 0,
+          stopped: true,
+          created_at: new Date().toISOString(),
+        }
+      }
+      _clearStreamLive()
+      // 后端已把部分内容落库（stopped=1）。延迟片刻，等其处理完 stop
+      // 指令后拉取真实状态对账（临时 id → 真实 UUID），stopped 标记随之保留。
+      if (!mockMode.value) {
+        setTimeout(() => {
+          void reloadMessages().catch(() => {})
+        }, 400)
+      }
+    } else {
+      // 停止的是其它会话的生成：其部分内容已由后端持久化，清暂存即可；
+      // 返回该会话时从服务端加载（含 stopped 标记），内容不丢失。
+      _clearStreamLive()
+      _dropStash(stoppedSession)
     }
   }
 
@@ -643,11 +841,32 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /** 重新拉取当前会话消息（不做快照刷新）。 */
+  // 代数计数器：慢网络下若期间切换会话或再次触发 reload，过期的响应
+  // 不应覆盖已流式完成的新消息（FE-01）。
+  const reloadNonce = ref(0)
   async function reloadMessages() {
     if (!currentSessionId.value) return
-    messages.value = await apiClient.get<Message[]>(
-      `/sessions/${currentSessionId.value}/messages`,
-    )
+    const sid = currentSessionId.value
+    const myNonce = ++reloadNonce.value
+    const data = await apiClient.get<Message[]>(`/sessions/${sid}/messages`)
+    // 竞态判定：期间已切换会话或发起更新的 reload → 丢弃过期结果
+    if (myNonce !== reloadNonce.value || currentSessionId.value !== sid) return
+    messages.value = data
+    // 若服务端已为该轮返回「已停止 / 已回答」的 assistant 消息（权威来源），
+    // 则丢弃前端独立占位提示，避免重复展示；思考阶段中断、后端无落库时保留占位。
+    const uid = stoppedPlaceholderUserMsgId.value
+    if (
+      uid &&
+      data.some(
+        (m) =>
+          m.role === 'assistant' &&
+          (m.stopped || (m.content || '').trim() !== '') &&
+          m.parent_id === uid,
+      )
+    ) {
+      stoppedPlaceholder.value = null
+      stoppedPlaceholderUserMsgId.value = null
+    }
   }
 
   /** 物理删除某条 user 消息开始的整轮问答，返回删除条数。 */
@@ -702,6 +921,8 @@ export const useChatStore = defineStore('chat', () => {
     mockMode,
     regeneratingParentId,
     streamingSessionId,
+    stoppedPlaceholder,
+    stoppedPlaceholderUserMsgId,
     pendingAutoSend,
     pendingAutoSendSession,
     pendingAttachments,

@@ -20,6 +20,10 @@ const emit = defineEmits<{
 const copied = ref(false)
 let copyTimer: ReturnType<typeof setTimeout> | null = null
 
+// 被中断回答的思考过程默认展开状态：无正文（仅思考被中断）时默认展开，
+// 已有正文时默认收起，避免与最终答案争夺视线。
+const showReasoning = ref(!(props.message.content || '').trim())
+
 // P2-4：图片附件加载失败追踪（用于显示降级占位，而非浏览器默认破图）
 const failedAttachments = ref<string[]>([])
 function markFailed(id: string) {
@@ -88,11 +92,18 @@ async function copyContent() {
 // 是否在消息流中可见：
 // - tool 角色消息仅用于模型 API 上下文，其结果已在「执行过程」过程框中
 //   展示（ChatView.turns 按版本归并），不单独渲染（避免孤立的工具头像行）
-// - assistant 消息既无正文也无工具调用时不渲染（避免空白气泡/空行）
+// - assistant 消息既无正文、又非「被用户停止」且无工具调用时不渲染（避免空白气泡/空行）。
+//   注意：被停止但正文为空的消息（仅思考阶段被中断）必须可见，否则「用户已停止回答」
+//   提示永不出现（这正是此前「仅显示提问、无停止提示」缺陷的根因）。
 const isVisible = computed(() => {
   const m = props.message
   if (m.role === 'tool') return false
-  if (m.role === 'assistant' && !m.content && !(m.tool_calls && m.tool_calls.length)) {
+  if (
+    m.role === 'assistant' &&
+    !m.content &&
+    !m.stopped &&
+    !(m.tool_calls && m.tool_calls.length)
+  ) {
     return false
   }
   return true
@@ -194,12 +205,45 @@ function usageCacheMiss(u: TokenUsage | undefined): number {
         </svg>
       </div>
       <div class="message-body assistant-body">
+        <!-- 被中断回答的思考过程：仅 stopped 消息渲染（正常历史回答的思维链
+             已统一归并进「执行过程」过程框，这里不重复展示）。无正文时默认展开，
+             有正文时默认收起，避免与最终答案争夺视线。 -->
+        <template v-if="message.role === 'assistant' && message.stopped && message.reasoning && message.reasoning.trim()">
+          <button class="reasoning-toggle" type="button" @click="showReasoning = !showReasoning">
+            <svg
+              class="reasoning-toggle-icon"
+              :class="{ 'is-open': showReasoning }"
+              viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round"
+            >
+              <path d="M9 18l6-6-6-6" />
+            </svg>
+            <span class="reasoning-toggle-label">{{ t('chat.thinking') }}</span>
+            <span class="reasoning-toggle-action">{{ showReasoning ? t('integrations.collapse') : t('integrations.expand') }}</span>
+          </button>
+          <div v-show="showReasoning" class="assistant-reasoning">
+            <MarkdownRenderer :content="message.reasoning" />
+          </div>
+        </template>
+
         <!-- 仅当正文非空时渲染气泡（空正文的纯工具调用轮次只显示工具卡片） -->
         <div
           class="message-bubble assistant-bubble"
           v-if="(message.role === 'assistant' || message.role === 'system') && message.content"
         >
           <MarkdownRenderer :content="message.content" />
+        </div>
+
+        <!-- 用户停止生成标注：紧贴回答内容下方，明确告知「回答未完整生成」 -->
+        <div
+          v-if="message.role === 'assistant' && message.stopped"
+          class="stopped-badge"
+          :title="t('chat.stoppedByUser')"
+        >
+          <svg class="stopped-badge-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="6" y="6" width="12" height="12" rx="2" />
+          </svg>
+          <span>{{ t('chat.stoppedByUser') }}</span>
         </div>
 
         <!-- 回答的操作条：复制 / 重新回答 / 追问 / 分叉（仅 assistant 回答） -->
@@ -414,6 +458,78 @@ function usageCacheMiss(u: TokenUsage | undefined): number {
   font-size: var(--font-size-base);
   line-height: 1.7;
   box-shadow: var(--shadow-sm);
+  word-break: break-word;
+}
+
+/* ── 用户停止生成标注（回答内容下方） ── */
+.stopped-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  line-height: 1;
+  color: var(--color-warning, #d97706);
+  background: var(--color-warning-light, rgba(217, 119, 6, 0.12));
+  border: 1px solid var(--color-warning-light, rgba(217, 119, 6, 0.35));
+  border-radius: var(--radius-full);
+  padding: 4px 10px;
+}
+
+.stopped-badge-icon {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+}
+
+/* ── 被中断回答的思考过程（仅 stopped 消息，可折叠） ── */
+.reasoning-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  background: var(--bg-code);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-full);
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.reasoning-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--color-primary);
+}
+
+.reasoning-toggle-icon {
+  width: 11px;
+  height: 11px;
+  transform: rotate(90deg);
+  transition: transform var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.reasoning-toggle-icon.is-open {
+  transform: rotate(-90deg);
+}
+
+.reasoning-toggle-action {
+  color: var(--color-text-tertiary);
+  font-weight: 500;
+}
+
+.assistant-reasoning {
+  background: var(--bg-code);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+  color: var(--color-text-secondary);
   word-break: break-word;
 }
 

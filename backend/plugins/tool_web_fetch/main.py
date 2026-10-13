@@ -12,6 +12,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from harness.infra.crypto import redact_secrets
+from harness.infra.net_guard import safe_fetch_text
 from harness.kernel.context import PluginContext
 from harness.kernel.contracts.base import BasePlugin, PluginManifest
 from harness.kernel.contracts.tool import ToolPlugin
@@ -82,10 +84,9 @@ class WebFetchTool(ToolPlugin):
         }
 
         try:
-            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-                resp = await client.get(url, headers=headers)
-                html = resp.text
-                final_url = str(resp.url)
+            # SEC-11：统一 SSRF 护栏（逐跳重定向校验 + 响应体积上限），
+            # 否则 web_fetch 可被用来探测云元数据 / 内网服务。
+            final_url, html = await safe_fetch_text(url, headers=headers, timeout=15.0)
 
             # 提取标题
             title = ""
@@ -139,12 +140,16 @@ class WebFetchTool(ToolPlugin):
             return "\n".join(lines)
 
         except httpx.TimeoutException:
-            return f"错误: 抓取 {url} 超时"
+            return f"错误: 抓取 {redact_secrets(url)} 超时"
         except httpx.ConnectError as e:
-            return f"错误: 无法连接到 {url}: {e}"
+            return f"错误: 无法连接到 {redact_secrets(url)}: {redact_secrets(str(e))}"
+        except ValueError as e:
+            # SSRF 拦截 / 响应超限：明确告诉模型「被安全策略拒绝」，避免其反复重试
+            logger.warning("web_fetch 请求被安全策略拒绝: %s (%s)", redact_secrets(url), e)
+            return f"错误: 该 URL 被安全策略拒绝（{e}）。请换用公开可访问的 http(s) 地址。"
         except Exception as e:
-            logger.error("网页抓取失败: %s", e)
-            return f"错误: 抓取 {url} 失败: {e}"
+            logger.error("网页抓取失败: %s", redact_secrets(str(e)))
+            return f"错误: 抓取 {redact_secrets(url)} 失败: {redact_secrets(str(e))}"
 
 
 class WebFetchPlugin(BasePlugin):

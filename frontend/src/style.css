@@ -470,10 +470,34 @@ input, textarea, select {
   outline: none;
 }
 
-/* 全局选中文字颜色 */
-::selection {
-  background: rgba(0, 255, 136, 0.3);
-  color: #fff;
+/* ── 文本选中样式（划词复制高亮） ───────────────────────
+   设计原则：背景用主题主色的低透明度柔和高亮（不刺眼），文字保持主题
+   正文色（始终与页面背景形成足够对比，清晰可读）。旧实现写死 color:#fff，
+   在亮色主题下白字配浅绿高亮几乎不可见、且高亮过亮刺眼。 */
+::selection,
+::-moz-selection {
+  color: var(--color-text);
+}
+:root,
+html[data-theme='matrix'] ::selection,
+html[data-theme='matrix'] ::-moz-selection {
+  background: rgba(0, 255, 136, 0.25);
+}
+html[data-theme='ocean'] ::selection,
+html[data-theme='ocean'] ::-moz-selection {
+  background: rgba(0, 191, 255, 0.25);
+}
+html[data-theme='sunset'] ::selection,
+html[data-theme='sunset'] ::-moz-selection {
+  background: rgba(255, 68, 170, 0.22);
+}
+html[data-theme='dark'] ::selection,
+html[data-theme='dark'] ::-moz-selection {
+  background: rgba(136, 136, 255, 0.25);
+}
+html[data-theme='light'] ::selection,
+html[data-theme='light'] ::-moz-selection {
+  background: rgba(0, 170, 95, 0.18);
 }
 
 /* ── 通用按钮（全局；此前只在 SettingsView 的 scoped 样式里定义，

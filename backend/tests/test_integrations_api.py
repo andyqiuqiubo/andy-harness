@@ -120,9 +120,56 @@ async def test_feishu_persists_secret_and_token(monkeypatch, tmp_path):
     state_file = tmp_path / "feishu_state.json"
     assert state_file.exists()
     saved = json.loads(state_file.read_text(encoding="utf-8"))
-    assert saved["app_secret"] == "SEC"
+    # 非敏感字段明文存储
     assert saved["app_id"] == "APP"
-    assert saved["token"] == "t-xyz"
+    # 敏感字段必须以密文落盘（SEC-10 修复：不允许明文 app_secret/token）
+    assert saved["app_secret"] != "SEC"
+    assert saved["app_secret"].startswith("enc:v1:")
+    assert saved["token"] != "t-xyz"
+    assert saved["token"].startswith("enc:v1:")
+    # 权限收敛（POSIX 0o600；Windows 上 os.chmod 仅映射只读位，跳过断言）
+    if os.name != "nt":
+        assert (state_file.stat().st_mode & 0o777) == 0o600
+
+
+async def test_feishu_state_roundtrip_after_encryption(monkeypatch, tmp_path):
+    """加密落盘后必须能完整解密恢复（重启场景）。"""
+    async def fake_api(*_a, **_k):
+        return {"code": 0, "tenant_access_token": "t-xyz", "expire": 7200}
+
+    monkeypatch.setattr(FeishuIntegration, "_api_call", fake_api)
+    f = FeishuIntegration(state_dir=str(tmp_path))
+    await f.authenticate("api", {"app_id": "APP", "app_secret": "SEC"})
+
+    g = FeishuIntegration(state_dir=str(tmp_path))
+    assert g._app_secret == "SEC"
+    assert g._token == "t-xyz"
+    assert g._app_id == "APP"
+
+
+async def test_feishu_legacy_plaintext_state_upgraded(monkeypatch, tmp_path):
+    """旧版明文状态文件：可正常读取，并在保存时自动升级为密文。"""
+    state_file = tmp_path / "feishu_state.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "token": "t-legacy",
+                "expire_at": 9999999999.0,
+                "auth_mode": "api",
+                "app_id": "APP",
+                "app_secret": "SEC-LEGACY",
+            }
+        ),
+        encoding="utf-8",
+    )
+    f = FeishuIntegration(state_dir=str(tmp_path))
+    # 读取兼容：明文透传
+    assert f._app_secret == "SEC-LEGACY"
+    assert f._token == "t-legacy"
+    # 加载时自动升级为密文落盘
+    raw = json.loads(state_file.read_text(encoding="utf-8"))
+    assert raw["app_secret"].startswith("enc:v1:")
+    assert raw["app_secret"] != "SEC-LEGACY"
 
 
 async def test_feishu_disconnect_clears_state(monkeypatch, tmp_path):

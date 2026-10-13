@@ -7,6 +7,7 @@ import logging
 import math
 from typing import Any
 
+from harness.engine.safe_math import NodeBudget, check_expression_length, check_factorial_arg, check_pow
 from harness.kernel.context import PluginContext
 from harness.kernel.contracts.base import BasePlugin, PluginManifest
 from harness.kernel.contracts.tool import ToolPlugin
@@ -35,11 +36,24 @@ _ALLOWED_NAMES: dict[str, Any] = {
 }
 
 
+def _guarded_factorial(n: Any) -> Any:
+    """带规模上限的阶乘（SEC-01：math.factorial(999999) 会拖垮进程）。"""
+    check_factorial_arg(n)
+    return math.factorial(n)
+
+
 def _safe_eval(expr: str) -> Any:
-    """用 ast 白名单求值数学表达式，禁止任意代码执行。"""
+    """用 ast 白名单求值数学表达式，禁止任意代码执行。
+
+    SEC-01 DoS 防护：表达式长度 / AST 节点数 / 幂结果位级估算 / 阶乘参数
+    四重上限，全部在真正计算前拦截（详见 harness.engine.safe_math）。
+    """
+    check_expression_length(expr)
     tree = ast.parse(expr, mode="eval")
+    budget = NodeBudget()
 
     def _eval(node: ast.AST) -> Any:
+        budget.spend()
         if isinstance(node, ast.Expression):
             return _eval(node.body)
         if isinstance(node, ast.Constant):
@@ -63,6 +77,7 @@ def _safe_eval(expr: str) -> Any:
             if isinstance(op, ast.Mod):
                 return left % right
             if isinstance(op, ast.Pow):
+                check_pow(left, right)
                 return left**right
             raise ValueError("不支持的运算符")
         if isinstance(node, ast.UnaryOp):
@@ -75,8 +90,10 @@ def _safe_eval(expr: str) -> Any:
         if isinstance(node, ast.Call):
             if not isinstance(node.func, ast.Name) or node.func.id not in _ALLOWED_NAMES:
                 raise ValueError("不允许的函数调用")
+            # factorial 走带上限的包装；其余函数参数已由各自实现快速失败
+            func = _guarded_factorial if node.func.id == "factorial" else _ALLOWED_NAMES[node.func.id]
             args = [_eval(a) for a in node.args]
-            return _ALLOWED_NAMES[node.func.id](*args)
+            return func(*args)
         if isinstance(node, ast.Name):
             if node.id in _ALLOWED_NAMES:
                 return _ALLOWED_NAMES[node.id]
@@ -130,6 +147,8 @@ class CalculatorTool(ToolPlugin):
             return f"{expr} = {result}"
         except ZeroDivisionError:
             return "错误：除以零"
+        except RecursionError:
+            return "错误：表达式嵌套过深"
         except Exception as e:  # noqa: BLE001
             return f"计算失败: {e}"
 

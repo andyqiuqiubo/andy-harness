@@ -11,6 +11,7 @@ import uuid
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from harness.kernel.exceptions import (
@@ -115,10 +116,23 @@ def register_error_handlers(app: FastAPI) -> None:
     async def general_error_handler(request: Request, exc: Exception) -> JSONResponse:
         trace_id = str(uuid.uuid4())
         logger.error("未处理异常 (trace_id=%s): %s", trace_id, exc, exc_info=True)
+        # 仅回显异常类型名，绝不外泄原始 message / 堆栈 / 内部状态（SEC 脱敏要求）。
         return _error_response(
             "INTERNAL_ERROR",
             "内部服务器错误",
             500,
             {"type": type(exc).__name__},
             trace_id,
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        # 统一错误格式；detail 仅含字段级校验信息（客户端需据此修正入参，非敏感）。
+        return _error_response(
+            "VALIDATION_ERROR",
+            "请求参数校验失败",
+            422,
+            {"errors": exc.errors()},
         )

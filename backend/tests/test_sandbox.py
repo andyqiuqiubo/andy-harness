@@ -20,6 +20,91 @@ def sandbox() -> SandboxServiceImpl:
     return SandboxServiceImpl(backend=backend)
 
 
+class TestSandboxEnvIsolation:
+    """SEC-23：沙箱子进程环境为白名单式最小 env，且 HOME 收敛到工作区。
+
+    旧实现把宿主机 HOME 直透给子进程，沙箱内 shell 可 ``cat ~/.ssh/id_rsa``
+    外泄用户敏感文件；现 HOME 收敛到沙箱 workspace，令 ``~`` 指向隔离目录。
+    """
+
+    def test_env_is_whitelist_no_secret_leak(self, sandbox: SandboxServiceImpl) -> None:
+        """env 只含白名单项，绝不含宿主机密钥类变量。"""
+        from harness.modules.sandbox_manager.service import LocalSubprocessBackend
+
+        backend = sandbox._backend
+        assert isinstance(backend, LocalSubprocessBackend)
+        import os
+
+        os.environ["SEC_TEST_SECRET"] = "s3cr3t-value"  # 模拟宿主机密钥
+        try:
+            env = backend._build_env("/tmp/ws")
+            assert "SEC_TEST_SECRET" not in env, "沙箱 env 透传了宿主机密变量"
+        finally:
+            os.environ.pop("SEC_TEST_SECRET", None)
+
+    def test_home_converged_to_workspace(self, sandbox: SandboxServiceImpl) -> None:
+        """传入 workspace 时，HOME/TMPDIR 收敛到该工作区而非宿主机 HOME。"""
+        from harness.modules.sandbox_manager.service import LocalSubprocessBackend
+
+        backend = sandbox._backend
+        assert isinstance(backend, LocalSubprocessBackend)
+        ws = "/tmp/sandbox-sec23-ws"
+        env = backend._build_env(ws)
+        assert env["HOME"] == ws, "HOME 未收敛到沙箱工作区（~ 仍指向宿主机用户目录）"
+        assert env["TMPDIR"] == ws
+
+    def test_usersite_and_no_network_flags(self, sandbox: SandboxServiceImpl) -> None:
+        """禁用用户 site-packages 并设置禁网标记。"""
+        from harness.modules.sandbox_manager.service import LocalSubprocessBackend
+
+        backend = sandbox._backend
+        assert isinstance(backend, LocalSubprocessBackend)
+        env = backend._build_env("/tmp/ws")
+        assert env["PYTHONNOUSERSITE"] == "1"
+        assert env["HARNESS_NO_NETWORK"] == "1"
+        # SEC-23（网络库维度）：PYTHONPATH 指向 workspace，sitecustomize.py
+        # 在 site 初始化期装 socket 拦截；无 workspace 时保持空串。
+        assert env["PYTHONPATH"] == "/tmp/ws"
+
+    def test_network_guard_files_written(self, sandbox: SandboxServiceImpl, tmp_path) -> None:
+        """_ensure_network_guard 在 workspace 写入 socket 拦截文件。"""
+        from harness.modules.sandbox_manager.service import LocalSubprocessBackend
+
+        backend = sandbox._backend
+        assert isinstance(backend, LocalSubprocessBackend)
+        guard, sitecustomize = backend._ensure_network_guard(str(tmp_path))
+        assert guard and sitecustomize
+        body = Path(sitecustomize).read_text(encoding="utf-8")
+        # 必须 patch 关键网络入口（socket.socket / getaddrinfo / create_connection）
+        assert "_socket.socket = _HarnessBlockedSocket" in body
+        assert "_socket.getaddrinfo = _harness_net_blocked" in body
+        assert "_socket.create_connection = _harness_net_blocked" in body
+
+        # 主 guard 入口需 runpy 执行用户脚本（-I 忽略 PYTHONPATH 时仍能拦截）
+        entry = Path(guard).read_text(encoding="utf-8")
+        assert "runpy" in entry and "_runpy.run_path" in entry
+
+    @pytest.mark.asyncio
+    async def test_network_blocked_at_runtime(self, sandbox: SandboxServiceImpl) -> None:
+        """沙箱内 Python 代码尝试建立 TCP 连接应被 socket 拦截阻止。"""
+        result = await sandbox.execute(
+            code=(
+                "import socket\n"
+                "try:\n"
+                "    s = socket.socket()\n"
+                "    print('NO_BLOCK')\n"
+                "except OSError as e:\n"
+                "    print('BLOCKED:', e)\n"
+            ),
+            language="python",
+            session_id="test-net-block",
+            timeout=15,
+        )
+        assert "BLOCKED" in result.stdout
+        assert "NO_BLOCK" not in result.stdout
+
+
+
 class TestPythonExecution:
     """Python 代码执行测试。"""
 
