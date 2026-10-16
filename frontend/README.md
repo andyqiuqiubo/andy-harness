@@ -1,6 +1,6 @@
 # andy-harness 前端（Vue 3 + TypeScript + Vite）
 
-对话界面、设置中心与前端插件内核的实现。**后端不在本目录**，所有数据都通过 `/api/**`（REST）与 `/ws/chat`（WebSocket）与 Python 后端通信。
+对话界面、设置中心、工作流画布等全部 Web 端面的实现。**后端不在本目录**，所有数据都通过 `/api/**`（REST）与 `/ws/chat`（WebSocket）与 Python 后端通信。
 
 ---
 
@@ -10,16 +10,17 @@
 pnpm install          # 必须用 pnpm（仓库有 pnpm-lock.yaml，用 npm 会导致锁文件不一致）
 pnpm dev              # 开发服务器 http://localhost:5173，/api 与 /ws 自动代理到 127.0.0.1:8000
 pnpm build            # vue-tsc -b && vite build，产物在 dist/（桌面壳与生产部署都读这里）
-pnpm preview          # 本地预览 dist（无后端代理，仅用于看静态效果）
+pnpm preview          # 本地预览 dist（同样带 /api 与 /ws 代理，需后端在 8000 端口运行）
 ```
 
 > 后端没起来时前端不会白屏：启动后会轮询 `/api/health`（最长 120 秒）等待就绪，各 store 的错误态会在界面上给出提示。
+> 访问地址必须用 `http://localhost:5173`：Vite 默认绑定 `localhost`，Windows 上会解析到 IPv6 `[::1]`，直连 `127.0.0.1` 可能不通。
 
 ## 质量门禁
 
 ```bash
 pnpm lint             # eslint .（与 CI 一致）
-pnpm test             # vitest run（9 个测试文件 / 43 个用例，与 CI 一致）
+pnpm test             # vitest run（16 个测试文件 / 108 个用例，与 CI 一致）
 pnpm test:watch       # 监听模式
 pnpm test:coverage    # 覆盖率报告（text + html）
 ```
@@ -41,8 +42,12 @@ src/
 │   ├── token.ts       # token 本地持久化
 │   └── types.ts       # 与后端 DTO 对齐的类型
 ├── stores/            # Pinia：chat / providers / plugins / plugin-loader / skills / todos / permissions / settings / auth
-├── views/             # ChatView（主对话）/ SettingsView（设置中心）/ HomeView / LoginView
-├── components/        # SessionSidebar / MessageItem / MarkdownRenderer / ProcessTrace / MatrixRain / AttachmentImage / ModelSelector / PluginOverlayHost
+├── views/             # HomeView（首页）/ ChatView（主对话）/ SettingsView（设置中心）
+│                      # InsightsView（洞察看板）/ EvalLabView（评测实验室）/ TemplateHubView（模板中心）
+│                      # WorkflowListView + WorkflowView（工作流列表与画布）/ DevkitView（开发者工作台）
+│                      # LoginView（登录门）/ AuditLogView（审计日志，内嵌于设置页）/ OortcloudCallback（领取回调）
+├── components/        # SessionSidebar / MessageItem / MarkdownRenderer / ProcessTrace / MatrixRain
+│                      # AttachmentImage / ModelSelector / PluginOverlayHost / IntegrationsPanel（智连器）/ WisdomTree / VarRefField
 ├── core/              # 前端插件内核：plugin-loader / plugin-context / plugin-types / event-bus-bridge
 ├── plugins/           # 内置 UI 插件：hello（示例）、pet（元气宠物）
 ├── composables/       # useLanguage / useRipple
@@ -66,7 +71,6 @@ src/
 
 ## 已知限制（预览版）
 
-- 主包体约 1.3 MB（gzip 约 440 KB），尚未做路由级代码分割，构建时 Vite 会提示 chunk 超过 500 kB。
+- 主包体约 1.5 MB（gzip 约 440 KB），尚未做路由级代码分割，构建时 Vite 会提示 chunk 超过 500 kB。
 - 渠道管理、Computer Use 开关、Jev 看板、断点续跑、用户管理**尚无界面入口**，只能通过 REST 使用（后端与文档均已说明）。
 - 桌面壳（`desktop/`）加载的是 `pnpm build` 的产物，dev 模式走 Tauri 的 `devUrl` 指向本仓库的 5173 端口。
-

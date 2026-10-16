@@ -262,7 +262,7 @@ class AgentLoop:
                     if not self._stopped_mid_call:
                         # 停止发生在工具执行 / 迭代间隙：本轮没有新的部分正文，
                         # 清掉上一轮的过渡文字，避免它被误当作终答持久化
-                        #（该文字已作为中间消息落库，会重复展示）。
+                        # （该文字已作为中间消息落库，会重复展示）。
                         result.content = ""
                     break
 
@@ -558,6 +558,11 @@ class AgentLoop:
         if mcp_catalog:
             prefix_messages.append({"role": "system", "content": mcp_catalog})
 
+        # 注入知识库检索引导（方案 5.5.4：模型自主调用决策示例；无知识库时不注入）
+        kb_hint = self._render_kb_hint()
+        if kb_hint:
+            prefix_messages.append({"role": "system", "content": kb_hint})
+
         # 注入长期记忆（跨会话的偏好 / 事实，最近若干条）
         memory_hint = self._render_memory_hint(self._run_user)
         if memory_hint:
@@ -692,6 +697,36 @@ class AgentLoop:
             return "\n".join(lines)
         except Exception as e:  # noqa: BLE001
             logger.debug("渲染 MCP 能力清单失败（已降级跳过）: %s", e)
+            return ""
+
+    def _render_kb_hint(self) -> str:
+        """渲染知识库检索引导（方案 5.5.4：模型自主调用的决策示例）。
+
+        仅在「知识库服务已注册且至少存在一个知识库」时注入，避免无库时的
+        纯噪音提示；知识库服务不可用时优雅降级为空串（不影响对话）。
+        """
+        try:
+            from harness.modules.knowledge_base.service import KnowledgeBaseService
+
+            if not self._services.has(KnowledgeBaseService):
+                return ""
+            service: KnowledgeBaseService = self._services.get(KnowledgeBaseService)
+            kbs = service.list_kbs()
+            if not kbs:
+                return ""
+            names = "、".join(str(k.get("name", "")) for k in kbs[:8])
+            return (
+                "知识库检索：已接入私有知识库，可用 knowledge_base_search 工具检索。"
+                f"当前知识库：{names}。\n"
+                "① 需要依据私有资料 / 内部文档 / 规格手册等事实性信息作答时"
+                "（如「我们的退款政策是什么」「手册里第 3 章怎么说」），"
+                "**先调用 knowledge_base_search 检索**，回答中标注来源文档名；\n"
+                "② 检索结果为空时明确告知「知识库中未找到相关信息」，禁止编造；\n"
+                "③ 闲聊、通用常识、纯推理、代码生成等不需要私有资料的问题**不要**调用该工具；\n"
+                "④ 引用格式、降级说明与建库/上传等维护流程，需要时用 use_skill 加载 `knowledge-base` 技能。"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("渲染知识库引导失败（已降级跳过）: %s", e)
             return ""
 
     def _render_memory_hint(self, user_id: str = "") -> str:

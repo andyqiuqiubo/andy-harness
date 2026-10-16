@@ -1,0 +1,204 @@
+﻿@vom 1
+@view 1450x644
+@layers 1 focus=L1
+L1 page
+  RootWebArea "Andy-Harness"
+    StaticText "馃挰"
+    heading "浼氳瘽"
+      StaticText "浼氳瘽"
+    @e1 button "+ + 鏂板缓"
+    group
+      @e2 button "瀵煎叆"
+      @e3 button "娓呯┖鍏ㄩ儴浼氳瘽"
+    paragraph "鎻愮ず锛氭妸榧犳爣绉诲埌浼氳瘽涓婄偣銆屸嫯銆嶏紙鎴栧彸閿級鍗冲彲瀵煎嚭銆佸垎鍙夌瓑鎿嶄綔銆?
+      StaticText "鎻愮ず锛氭妸榧犳爣绉诲埌浼氳瘽涓婄偣銆屸嫯銆嶏紙鎴栧彸閿級鍗冲彲瀵煎嚭銆佸垎鍙夌瓑鎿嶄綔銆?
+    group
+      @e4 textbox "鎼滅储浼氳瘽鎴栨秷鎭€? [empty] placeholder="鎼滅储浼氳瘽鎴栨秷鎭€?
+      @e5 button "鏄剧ず褰掓。"
+    @e6 button "浠婂ぉ 6"
+    group
+      @e7 button "E2E-S4-鍘嗗彶鍔犺浇"
+      @e8 button "浼氳瘽鎿嶄綔"
+    @e9 button "E2E-S2-姝ｅ父瀹屾垚"
+    @e10 button "浼氳瘽鎿嶄綔" [ctx: 馃挰 浼氳瘽 鎻愮ず锛氭妸榧犳爣绉诲埌浼氳瘽涓婄偣銆屸嫯銆嶏紙鎴栧彸閿級鍗冲彲瀵煎嚭銆佸垎鍙夌瓑鎿嶄綔銆俔
+    @e11 button "E2E-S1-鍋滄鐢熸垚"
+    @e12 button "浼氳瘽鎿嶄綔" [ctx: E2E-S2-姝ｅ父瀹屾垚]
+    @e13 button "浣犲ソ闂€?
+    @e14 button "浼氳瘽鎿嶄綔" [ctx: E2E-S1-鍋滄鐢熸垚]
+    @e15 button "AI韬唤涓庡姛鑳戒粙缁?
+    @e16 button "浼氳瘽鎿嶄綔" [ctx: 浣犲ソ闂€橾
+    @e17 button "浣犲ソ"
+    @e18 button "浼氳瘽鎿嶄綔" [ctx: AI韬唤涓庡姛鑳戒粙缁峕
+    StaticText "HELLO"
+    @e19 link "馃攲 Hello"
+    banner "andy-harness | E2E-S4-鍘嗗彶鍔犺浇 宸茶繛鎺?
+      StaticText "andy-harness"
+      StaticText "|"
+      heading "E2E-S4-鍘嗗彶鍔犺浇"
+        StaticText "E2E-S4-鍘嗗彶鍔犺浇"
+      @e20 button "妯℃嫙"
+      @e21 combobox "OortCloud [has-submenu]" ="custom_oortcloud"
+      @e22 combobox "DEEPSEEK-V4.1-FLASH GLM-4.6V GLM-4.7 GLM-4.7-FLASH GLM-5 GLM-5.1 GLM-5.2 GLM-5.3 GLM-5.3-FLASH QWEN3.8 QWEN3.8-FLASH QWEN3.8-MAX [has-submenu]" ="qwen3.8-flash"
+      StaticText "宸茶繛鎺?
+      @e23 button "宸ュ叿绠憋紙娲炲療 / 璇勬祴 / 宸ヤ綔娴?/ 妯℃澘 / 寮€鍙戣€咃級"
+      @e24 link "璁剧疆"
+    @e25 button "澶嶅埗鎻愰棶" [ctx: andy-harness | E2E-S4-鍘嗗彶鍔犺浇 宸茶繛鎺
+    @e26 button "鍒犻櫎鏈疆闂瓟锛堢墿鐞嗗垹闄わ級" [ctx: andy-harness | E2E-S4-鍘嗗彶鍔犺浇 宸茶繛鎺
+    paragraph "绗竴杞細浣犲ソ"
+      StaticText "绗竴杞細浣犲ソ"
+    StaticText "U"
+    paragraph "浣犲ソ锛侌煈?鎴戝湪鍛€?
+      StaticText "浣犲ソ锛侌煈?鎴戝湪鍛€?
+    paragraph "鏈変粈涔堥渶瑕佹垜甯繖鐨勫悧锛熸瘮濡傦細"
+      StaticText "鏈変粈涔堥渶瑕佹垜甯繖鐨勫悧锛熸瘮濡傦細"
+    list "馃搫 鍐欎唬鐮?/ 璇勫浠ｇ爜 / 鐢熸垚鍗曟祴 / 鍐?commit message 馃攳 鎼滅储璧勬枡銆佹姄鍙栫綉椤点€佹瘡鏃?AI 鏂伴椈姹囨€?馃捇 鏈満鎿嶄綔锛堟闈㈣嚜鍔ㄥ寲銆佹枃浠跺鐞嗐€佽窇鑴氭湰锛?馃搳 鏁板璁＄畻銆両P 鏌ヨ銆侀涔﹀崗浣滅瓑"
+      listitem "馃搫 鍐欎唬鐮?/ 璇勫浠ｇ爜 / 鐢熸垚鍗曟祴 / 鍐?commit message"
+        ListMarker "鈥?
+        StaticText "馃搫 鍐欎唬鐮?/ 璇勫浠ｇ爜 / 鐢熸垚鍗曟祴 / 鍐?commit message"
+      listitem "馃攳 鎼滅储璧勬枡銆佹姄鍙栫綉椤点€佹瘡鏃?AI 鏂伴椈姹囨€?
+        ListMarker "鈥?
+        StaticText "馃攳 鎼滅储璧勬枡銆佹姄鍙栫綉椤点€佹瘡鏃?AI 鏂伴椈姹囨€?
+      listitem "馃捇 鏈満鎿嶄綔锛堟闈㈣嚜鍔ㄥ寲銆佹枃浠跺鐞嗐€佽窇鑴氭湰锛?
+        ListMarker "鈥?
+        StaticText "馃捇 鏈満鎿嶄綔锛堟闈㈣嚜鍔ㄥ寲銆佹枃浠跺鐞嗐€佽窇鑴氭湰锛?
+      listitem "馃搳 鏁板璁＄畻銆両P 鏌ヨ銆侀涔﹀崗浣滅瓑"
+        ListMarker "鈥?
+        StaticText "馃搳 鏁板璁＄畻銆両P 鏌ヨ銆侀涔﹀崗浣滅瓑"
+    paragraph "鐩存帴璇撮渶姹傚氨琛岋紝鎴戦┈涓婂紑宸ャ€?
+      StaticText "鐩存帴璇撮渶姹傚氨琛岋紝鎴戦┈涓婂紑宸ャ€?
+    @e27 button "澶嶅埗鍥炵瓟" [ctx: User messages: avatar on right, content aligned right v-if 绗竴杞細浣犲ソ U]
+    @e28 button "閲嶆柊鍥炵瓟锛堜繚鐣欏巻鍙茬増鏈級" [ctx: User messages: avatar on right, content aligned right v-if 绗竴杞細浣犲ソ U]
+    @e29 button "閽堝璇ュ洖绛旂户缁拷闂? [ctx: User messages: avatar on right, content aligned right v-if 绗竴杞細浣犲ソ U]
+    @e30 button "浠庤鍥炵瓟澶勫垎鍙夊嚭鏂颁細璇? [ctx: User messages: avatar on right, content aligned right v-if 绗竴杞細浣犲ソ U]
+    @e31 button "澶嶅埗鎻愰棶" [ctx: User messages: avatar on right, content aligned right Assistant / system / tool messages: avatar on left, content aligned left 浠呭綋姝ｆ枃闈炵┖鏃舵覆鏌撴皵娉★紙绌烘鏂囩殑绾伐鍏疯皟鐢ㄨ疆娆″彧鏄剧ず宸ュ叿鍗＄墖锛?鐢ㄦ埛鍋滄鐢熸垚鏍囨敞锛氱揣璐村洖绛斿唴瀹逛笅鏂癸紝鏄庣‘鍛婄煡銆屽洖绛旀湭瀹屾暣鐢熸垚銆?v-if 鍥炵瓟鐨勬搷浣滄潯锛氬鍒?/ 閲嶆柊鍥炵瓟 / 杩介棶 / 鍒嗗弶锛堜粎 assistant 鍥炵瓟锛?鏈琞
+    @e32 button "鍒犻櫎鏈疆闂瓟锛堢墿鐞嗗垹闄わ級" [ctx: User messages: avatar on right, content aligned right Assistant / system / tool messages: avatar on left, content aligned left 浠呭綋姝ｆ枃闈炵┖鏃舵覆鏌撴皵娉★紙绌烘鏂囩殑绾伐鍏疯皟鐢ㄨ疆娆″彧鏄剧ず宸ュ叿鍗＄墖锛?鐢ㄦ埛鍋滄鐢熸垚鏍囨敞锛氱揣璐村洖绛斿唴瀹逛笅鏂癸紝鏄庣‘鍛婄煡銆屽洖绛旀湭瀹屾暣鐢熸垚銆?v-if 鍥炵瓟鐨勬搷浣滄潯锛氬鍒?/ 閲嶆柊鍥炵瓟 / 杩介棶 / 鍒嗗弶锛堜粎 assistant 鍥炵瓟锛?鏈琞
+    paragraph "绗簩杞細鏉窞鏈変粈涔?
+      StaticText "绗簩杞細鏉窞鏈変粈涔?
+    StaticText "U"
+    paragraph "鏉窞鑳界帺鐨勩€佽兘鍚冪殑銆佸€煎緱鐪嬬殑閮芥尯澶氾紝鎴戝厛鎸夌被鍒粰浣犳⒊鐞嗕竴浠姐€屾澀宸炴竻鍗曘€嶐煈?
+      StaticText "鏉窞鑳界帺鐨勩€佽兘鍚冪殑銆佸€煎緱鐪嬬殑閮芥尯澶氾紝鎴戝厛鎸夌被鍒粰浣犳⒊鐞嗕竴浠姐€屾澀宸炴竻鍗曘€嶐煈?
+    heading "馃彏锔?缁忓吀鏅偣"
+      StaticText "馃彏锔?缁忓吀鏅偣"
+    list "瑗挎箹 锛氭柇妗ユ畫闆€佽嫃鍫ゆ槬鏅撱€佷笁娼嵃鏈堛€侀浄宄板銆佸钩婀栫鏈堚€斺€斿厤璐瑰紑鏀撅紝缁曟箹楠戣鎴栧潗娓歌埞閮藉緢濂?鐏甸殣瀵?& 椋炴潵宄?锛氬崈骞村彜鍒癸紝椋炴潵宄扮煶绐熼€犲儚鍊煎緱缁嗙湅 瑗挎邯婀垮湴 锛氬煄甯傞噷鐨勬箍鍦板叕鍥紝鍧愭憞姗硅埞寰堝嚭鐗?浜澀澶ц繍娌筹紙鎷卞妗ャ€佸皬娌崇洿琛楋級 锛氬娓歌繍娌炽€侀€涘巻鍙茶鍖?鑹笟鍙ゅ煄閬楀潃鍏洯 锛氫簲鍗冨勾鏂囨槑瀹炶瘉锛屼笘鐣岄仐浜?瀹嬪煄 锛氥€婂畫鍩庡崈鍙ゆ儏銆嬫紨鍑烘槸鎷涚墝 鍗冨矝婀?锛堟烦瀹夊幙锛屽睘鏉窞锛夛細婀栧矝椋庡厜锛岄€傚悎涓ゆ棩娓?
+      listitem "瑗挎箹 锛氭柇妗ユ畫闆€佽嫃鍫ゆ槬鏅撱€佷笁娼嵃鏈堛€侀浄宄板銆佸钩婀栫鏈堚€斺€斿厤璐瑰紑鏀撅紝缁曟箹楠戣鎴栧潗娓歌埞閮藉緢濂?
+        ListMarker "鈥?
+        strong "瑗挎箹"
+          StaticText "瑗挎箹"
+        StaticText "锛氭柇妗ユ畫闆€佽嫃鍫ゆ槬鏅撱€佷笁娼嵃鏈堛€侀浄宄板銆佸钩婀栫鏈堚€斺€斿厤璐瑰紑鏀撅紝缁曟箹楠戣鎴栧潗娓歌埞閮藉緢濂?
+      listitem "鐏甸殣瀵?& 椋炴潵宄?锛氬崈骞村彜鍒癸紝椋炴潵宄扮煶绐熼€犲儚鍊煎緱缁嗙湅"
+        ListMarker "鈥?
+        strong "鐏甸殣瀵?& 椋炴潵宄?
+          StaticText "鐏甸殣瀵?& 椋炴潵宄?
+        StaticText "锛氬崈骞村彜鍒癸紝椋炴潵宄扮煶绐熼€犲儚鍊煎緱缁嗙湅"
+      listitem "瑗挎邯婀垮湴 锛氬煄甯傞噷鐨勬箍鍦板叕鍥紝鍧愭憞姗硅埞寰堝嚭鐗?
+        ListMarker "鈥?
+        strong "瑗挎邯婀垮湴"
+          StaticText "瑗挎邯婀垮湴"
+        StaticText "锛氬煄甯傞噷鐨勬箍鍦板叕鍥紝鍧愭憞姗硅埞寰堝嚭鐗?
+      listitem "浜澀澶ц繍娌筹紙鎷卞妗ャ€佸皬娌崇洿琛楋級 锛氬娓歌繍娌炽€侀€涘巻鍙茶鍖?
+        ListMarker "鈥?
+        strong "浜澀澶ц繍娌筹紙鎷卞妗ャ€佸皬娌崇洿琛楋級"
+          StaticText "浜澀澶ц繍娌筹紙鎷卞妗ャ€佸皬娌崇洿琛楋級"
+        StaticText "锛氬娓歌繍娌炽€侀€涘巻鍙茶鍖?
+      listitem "鑹笟鍙ゅ煄閬楀潃鍏洯 锛氫簲鍗冨勾鏂囨槑瀹炶瘉锛屼笘鐣岄仐浜?
+        ListMarker "鈥?
+        strong "鑹笟鍙ゅ煄閬楀潃鍏洯"
+          StaticText "鑹笟鍙ゅ煄閬楀潃鍏洯"
+        StaticText "锛氫簲鍗冨勾鏂囨槑瀹炶瘉锛屼笘鐣岄仐浜?
+      listitem "瀹嬪煄 锛氥€婂畫鍩庡崈鍙ゆ儏銆嬫紨鍑烘槸鎷涚墝"
+        ListMarker "鈥?
+        strong "瀹嬪煄"
+          StaticText "瀹嬪煄"
+        StaticText "锛氥€婂畫鍩庡崈鍙ゆ儏銆嬫紨鍑烘槸鎷涚墝"
+      listitem "鍗冨矝婀?锛堟烦瀹夊幙锛屽睘鏉窞锛夛細婀栧矝椋庡厜锛岄€傚悎涓ゆ棩娓?
+        ListMarker "鈥?
+        strong "鍗冨矝婀?
+          StaticText "鍗冨矝婀?
+        StaticText "锛堟烦瀹夊幙锛屽睘鏉窞锛夛細婀栧矝椋庡厜锛岄€傚悎涓ゆ棩娓?
+    heading "馃崪 鏈湴缇庨"
+      StaticText "馃崪 鏈湴缇庨"
+    list "鍚嶈彍 锛氳タ婀栭唻楸笺€侀緳浜曡櫨浠併€佷笢鍧¤倝銆佸彨鑺遍浮銆佸畫瀚傞奔缇?灏忓悆 锛氱墖鍎垮窛銆佽櫨鐖嗛碀闈€佽懕鍖呮¨銆佸畾鑳滅硶銆佺尗鑰虫湹銆佸惔灞辩儰绂?鍚冨枬鍘诲 锛氭渤鍧婅銆佸崡瀹嬪尽琛椼€佽儨鍒╂渤缇庨琛椼€佸濠嗗/缁胯尪绛夋澀甯彍棣?
+      listitem "鍚嶈彍 锛氳タ婀栭唻楸笺€侀緳浜曡櫨浠併€佷笢鍧¤倝銆佸彨鑺遍浮銆佸畫瀚傞奔缇?
+        ListMarker "鈥?
+        strong "鍚嶈彍"
+          StaticText "鍚嶈彍"
+        StaticText "锛氳タ婀栭唻楸笺€侀緳浜曡櫨浠併€佷笢鍧¤倝銆佸彨鑺遍浮銆佸畫瀚傞奔缇?
+      listitem "灏忓悆 锛氱墖鍎垮窛銆佽櫨鐖嗛碀闈€佽懕鍖呮¨銆佸畾鑳滅硶銆佺尗鑰虫湹銆佸惔灞辩儰绂?
+        ListMarker "鈥?
+        strong "灏忓悆"
+          StaticText "灏忓悆"
+        StaticText "锛氱墖鍎垮窛銆佽櫨鐖嗛碀闈€佽懕鍖呮¨銆佸畾鑳滅硶銆佺尗鑰虫湹銆佸惔灞辩儰绂?
+      listitem "鍚冨枬鍘诲 锛氭渤鍧婅銆佸崡瀹嬪尽琛椼€佽儨鍒╂渤缇庨琛椼€佸濠嗗/缁胯尪绛夋澀甯彍棣?
+        ListMarker "鈥?
+        strong "鍚冨枬鍘诲"
+          StaticText "鍚冨枬鍘诲"
+        StaticText "锛氭渤鍧婅銆佸崡瀹嬪尽琛椼€佽儨鍒╂渤缇庨琛椼€佸濠嗗/缁胯尪绛夋澀甯彍棣?
+    heading "馃嵉 鐗逛骇濂界墿"
+      StaticText "馃嵉 鐗逛骇濂界墿"
+    list "瑗挎箹榫欎簳鑼躲€佷笣缁搞€佺帇鏄熻鎵囧瓙銆佸紶灏忔硥鍓垁銆佽棔绮夈€佸北鏍告"
+      listitem "瑗挎箹榫欎簳鑼躲€佷笣缁搞€佺帇鏄熻鎵囧瓙銆佸紶灏忔硥鍓垁銆佽棔绮夈€佸北鏍告"
+        ListMarker "鈥?
+        StaticText "瑗挎箹榫欎簳鑼躲€佷笣缁搞€佺帇鏄熻鎵囧瓙銆佸紶灏忔硥鍓垁銆佽棔绮夈€佸北鏍告"
+    heading "馃殗 鍑鸿灏忚创澹?
+      StaticText "馃殗 鍑鸿灏忚创澹?
+    list "鍦伴搧瑕嗙洊涓昏鏅偣锛岃タ婀栧懆杈瑰缓璁獞鍏变韩鍗曡溅 鏄ュ锛?鈥? 鏈堬級璧忚姳銆佺瀛ｏ紙10鈥?1 鏈堬級妗傝姳涓庣孩鍙舵渶浣?
+      listitem "鍦伴搧瑕嗙洊涓昏鏅偣锛岃タ婀栧懆杈瑰缓璁獞鍏变韩鍗曡溅"
+        ListMarker "鈥?
+        StaticText "鍦伴搧瑕嗙洊涓昏鏅偣锛岃タ婀栧懆杈瑰缓璁獞鍏变韩鍗曡溅"
+      listitem "鏄ュ锛?鈥? 鏈堬級璧忚姳銆佺瀛ｏ紙10鈥?1 鏈堬級妗傝姳涓庣孩鍙舵渶浣?
+        ListMarker "鈥?
+        StaticText "鏄ュ锛?鈥? 鏈堬級璧忚姳銆佺瀛ｏ紙10鈥?1 鏈堬級妗傝姳涓庣孩鍙舵渶浣?
+    paragraph "涓嶈繃鎴戜笉纭畾浣犲叿浣撴兂鐭ラ亾鍝柟闈紝鏂逛究鐨勮瘽璇翠竴鍙ワ紝鎴戝彲浠ョ粰浣犳洿绮惧噯鐨勫唴瀹癸紝姣斿锛?
+      StaticText "涓嶈繃鎴戜笉纭畾浣犲叿浣撴兂鐭ラ亾鍝柟闈紝鏂逛究鐨勮瘽璇翠竴鍙ワ紝鎴戝彲浠ョ粰浣犳洿绮惧噯鐨勫唴瀹癸紝姣斿锛?
+    list "鏉窞涓ゆ棩娓歌绋嬫€庝箞鎺?鏉窞鏈変粈涔堝ソ鍚冪殑/鏈湴浜烘帹鑽?鏉窞鍊煎緱涔扮殑鐗逛骇浼存墜绀?鏉窞鏈夊摢浜涗簰鑱旂綉鍏徃/宸ヤ綔鏈轰細 鏉窞鏈€杩戞湁浠€涔堟椿鍔?灞曡 锛堣繖涓垜鍙互甯綘鑱旂綉鏌ユ渶鏂颁俊鎭級"
+      listitem "鏉窞涓ゆ棩娓歌绋嬫€庝箞鎺?
+        ListMarker "1."
+        strong "鏉窞涓ゆ棩娓歌绋嬫€庝箞鎺?
+          StaticText "鏉窞涓ゆ棩娓歌绋嬫€庝箞鎺?
+      listitem "鏉窞鏈変粈涔堝ソ鍚冪殑/鏈湴浜烘帹鑽?
+        ListMarker "2."
+        strong "鏉窞鏈変粈涔堝ソ鍚冪殑/鏈湴浜烘帹鑽?
+          StaticText "鏉窞鏈変粈涔堝ソ鍚冪殑/鏈湴浜烘帹鑽?
+      listitem "鏉窞鍊煎緱涔扮殑鐗逛骇浼存墜绀?
+        ListMarker "3."
+        strong "鏉窞鍊煎緱涔扮殑鐗逛骇浼存墜绀?
+          StaticText "鏉窞鍊煎緱涔扮殑鐗逛骇浼存墜绀?
+      listitem "鏉窞鏈夊摢浜涗簰鑱旂綉鍏徃/宸ヤ綔鏈轰細"
+        ListMarker "4."
+        strong "鏉窞鏈夊摢浜涗簰鑱旂綉鍏徃/宸ヤ綔鏈轰細"
+          StaticText "鏉窞鏈夊摢浜涗簰鑱旂綉鍏徃/宸ヤ綔鏈轰細"
+      listitem "鏉窞鏈€杩戞湁浠€涔堟椿鍔?灞曡 锛堣繖涓垜鍙互甯綘鑱旂綉鏌ユ渶鏂颁俊鎭級"
+        ListMarker "5."
+        strong "鏉窞鏈€杩戞湁浠€涔堟椿鍔?灞曡"
+          StaticText "鏉窞鏈€杩戞湁浠€涔堟椿鍔?灞曡"
+        StaticText "锛堣繖涓垜鍙互甯綘鑱旂綉鏌ユ渶鏂颁俊鎭級"
+    paragraph "浣犳兂浜嗚В鍝竴鍧楋紵"
+      StaticText "浣犳兂浜嗚В鍝竴鍧楋紵"
+    @e33 button "澶嶅埗鍥炵瓟" [ctx: User messages: avatar on right, content aligned right v-if 绗簩杞細鏉窞鏈変粈涔?U]
+    @e34 button "閲嶆柊鍥炵瓟锛堜繚鐣欏巻鍙茬増鏈級" [ctx: User messages: avatar on right, content aligned right v-if 绗簩杞細鏉窞鏈変粈涔?U]
+    @e35 button "閽堝璇ュ洖绛旂户缁拷闂? [ctx: User messages: avatar on right, content aligned right v-if 绗簩杞細鏉窞鏈変粈涔?U]
+    @e36 button "浠庤鍥炵瓟澶勫垎鍙夊嚭鏂颁細璇? [ctx: User messages: avatar on right, content aligned right v-if 绗簩杞細鏉窞鏈変粈涔?U]
+    @e37 button "澶嶅埗鎻愰棶" [ctx: User messages: avatar on right, content aligned right Assistant / system / tool messages: avatar on left, content aligned left 浠呭綋姝ｆ枃闈炵┖鏃舵覆鏌撴皵娉★紙绌烘鏂囩殑绾伐鍏疯皟鐢ㄨ疆娆″彧鏄剧ず宸ュ叿鍗＄墖锛?鐢ㄦ埛鍋滄鐢熸垚鏍囨敞锛氱揣璐村洖绛斿唴瀹逛笅鏂癸紝鏄庣‘鍛婄煡銆屽洖绛旀湭瀹屾暣鐢熸垚銆?v-if 鍥炵瓟鐨勬搷浣滄潯锛氬鍒?/ 閲嶆柊鍥炵瓟 / 杩介棶 / 鍒嗗弶锛堜粎 assistant 鍥炵瓟锛?鏈琞
+    @e38 button "鍒犻櫎鏈疆闂瓟锛堢墿鐞嗗垹闄わ級" [ctx: User messages: avatar on right, content aligned right Assistant / system / tool messages: avatar on left, content aligned left 浠呭綋姝ｆ枃闈炵┖鏃舵覆鏌撴皵娉★紙绌烘鏂囩殑绾伐鍏疯皟鐢ㄨ疆娆″彧鏄剧ず宸ュ叿鍗＄墖锛?鐢ㄦ埛鍋滄鐢熸垚鏍囨敞锛氱揣璐村洖绛斿唴瀹逛笅鏂癸紝鏄庣‘鍛婄煡銆屽洖绛旀湭瀹屾暣鐢熸垚銆?v-if 鍥炵瓟鐨勬搷浣滄潯锛氬鍒?/ 閲嶆柊鍥炵瓟 / 杩介棶 / 鍒嗗弶锛堜粎 assistant 鍥炵瓟锛?鏈琞
+    paragraph "绗笁杞細璋㈣阿"
+      StaticText "绗笁杞細璋㈣阿"
+    StaticText "U"
+    paragraph "涓嶅姘旓紒馃槉"
+      StaticText "涓嶅姘旓紒馃槉"
+    paragraph "鏈夐渶瑕侀殢鏃舵壘鎴戔€斺€斾笉绠℃槸鏉窞琛岀▼銆佺編椋熸帹鑽愶紝杩樻槸鍐欎唬鐮併€佹煡璧勬枡銆佸鐞嗘枃浠讹紝閮藉彲浠ョ洿鎺ヨ銆傜浣犵帺寰楀紑蹇?/ 涓€鍒囬『鍒╋紒馃帀"
+      StaticText "鏈夐渶瑕侀殢鏃舵壘鎴戔€斺€斾笉绠℃槸鏉窞琛岀▼銆佺編椋熸帹鑽愶紝杩樻槸鍐欎唬鐮併€佹煡璧勬枡銆佸鐞嗘枃浠讹紝閮藉彲浠ョ洿鎺ヨ銆傜浣犵帺寰楀紑蹇?/ 涓€鍒囬『鍒╋紒馃帀"
+    @e39 button "澶嶅埗鍥炵瓟" [ctx: User messages: avatar on right, content aligned right v-if 绗笁杞細璋㈣阿 U]
+    @e40 button "閲嶆柊鍥炵瓟锛堜繚鐣欏巻鍙茬増鏈級" [ctx: User messages: avatar on right, content aligned right v-if 绗笁杞細璋㈣阿 U]
+    @e41 button "閽堝璇ュ洖绛旂户缁拷闂? [ctx: User messages: avatar on right, content aligned right v-if 绗笁杞細璋㈣阿 U]
+    @e42 button "浠庤鍥炵瓟澶勫垎鍙夊嚭鏂颁細璇? [ctx: User messages: avatar on right, content aligned right v-if 绗笁杞細璋㈣阿 U]
+    @e43 textbox "杈撳叆娑堟伅... (Enter 鍙戦€? Shift+Enter 鎹㈣)" [empty] placeholder="杈撳叆娑堟伅... (Enter 鍙戦€? Shift+Enter 鎹㈣)"
+    @e44 button "娣诲姞闄勪欢锛堟枃妗?/ 鍥剧墖锛?
+    StaticText "鍐呭鐢?AI 鐢熸垚锛岃浠旂粏鐢勫埆"
+    group
+      @e45 button "v-if v-if v-if"
+      @e46 button "v-if v-if v-if"
+    group
+      StaticText "鍏冩皵浼欎即"
+      StaticText "鎴愮啛鏈?
+      @e47 button "馃攰"
+      @e48 button "馃斀"

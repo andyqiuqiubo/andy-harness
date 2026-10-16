@@ -1,0 +1,100 @@
+{
+  "schema": "andy-harness.evidence/v2",
+  "bundle_id": "d42adcb05ba0",
+  "created_at": "2026-10-15T20:49:38+0800",
+  "subject": {
+    "type": "pe32+",
+    "name": "Hello.class",
+    "path": "H:\\jsd-andyharness\\src\\rev_eng\\samples\\java\\Hello.class",
+    "size": 1207,
+    "sha256": "2fb106f349f7394827320162046df88cd494e8fa579eb764f011fb8f79f01fc8"
+  },
+  "provenance": {
+    "run_id": "d42adcb05ba0",
+    "pipeline": "andy-harness:reverse-engineering/1.0",
+    "stages": [
+      {
+        "stage": "rea_static",
+        "engine": "none",
+        "target_engine": "rea+ghidra",
+        "status": "skipped"
+      },
+      {
+        "stage": "java_decompile",
+        "engine": "javap",
+        "target_engine": "javap",
+        "status": "ok"
+      },
+      {
+        "stage": "frida_dynamic",
+        "engine": "none",
+        "target_engine": "frida",
+        "status": "skipped"
+      },
+      {
+        "stage": "firecracker_sandbox",
+        "engine": "none",
+        "target_engine": "firecracker",
+        "status": "skipped"
+      },
+      {
+        "stage": "pentagi_analysis",
+        "engine": "none",
+        "target_engine": "pentagi",
+        "status": "skipped"
+      },
+      {
+        "stage": "rebuild_exe",
+        "engine": "none",
+        "target_engine": "tcc-rebuild",
+        "status": "skipped"
+      }
+    ],
+    "notes": "",
+    "environment": {
+      "os": "Windows-10-10.0.18363-SP0",
+      "machine": "AMD64",
+      "python": "3.13.14",
+      "hostname": "WIN-K2IQI01IJ7A"
+    }
+  },
+  "items": [
+    {
+      "seq": 1,
+      "stage": "java_decompile",
+      "kind": "java_decompile",
+      "summary": "javap 反编译文本（1677 字符，2 个方法）",
+      "payload_sha256": "07c98f22bf421ff572428961296121b51a1a05f38f01b23a24393b59458619ed",
+      "payload_bytes": 1677,
+      "payload_ref": "payloads/Hello_decompiled.java.txt",
+      "created_at": "2026-10-15T20:49:38+0800",
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "66a44d3751a5c3124effe08887912d4be1dea773db2bc5fd4fbeb88efccf80e9"
+    },
+    {
+      "seq": 2,
+      "stage": "evidence_v2",
+      "kind": "facts_ledger",
+      "summary": "跨阶段流转的结构化事实台账",
+      "payload_sha256": "26ce22a0ec3bb5909b16703bcfc673f2906c76797f52575007892d54a8b3eea0",
+      "payload_bytes": 135,
+      "payload_ref": "payloads/facts-ledger.json",
+      "created_at": "2026-10-15T20:49:38+0800",
+      "prev_hash": "66a44d3751a5c3124effe08887912d4be1dea773db2bc5fd4fbeb88efccf80e9",
+      "hash": "afb591c9836f0e092c599713b0d1dbc089230ce534ba6b5e8b7e50e0773194d3"
+    },
+    {
+      "seq": 3,
+      "stage": "evidence_v2",
+      "kind": "run_manifest",
+      "summary": "流水线运行清单（各阶段状态/引擎/耗时）",
+      "payload_sha256": "4514e66b194e68f9f09d22f28260aed930441f1afecf0c90589ce39fe4d19fcc",
+      "payload_bytes": 2185,
+      "payload_ref": "payloads/run-manifest.json",
+      "created_at": "2026-10-15T20:49:38+0800",
+      "prev_hash": "afb591c9836f0e092c599713b0d1dbc089230ce534ba6b5e8b7e50e0773194d3",
+      "hash": "d9ed105cff5ee61baf32850e1e470aa4934e7dd8b3336ea9ba04a55e116605a7"
+    }
+  ],
+  "chain_head": "d9ed105cff5ee61baf32850e1e470aa4934e7dd8b3336ea9ba04a55e116605a7"
+}

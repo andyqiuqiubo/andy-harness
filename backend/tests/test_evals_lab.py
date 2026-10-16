@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -181,3 +183,23 @@ class TestRuns:
         res = client.post("/api/evals/runs", json={"dataset_id": ds["id"], "combos": []})
         # Pydantic min_length 校验 → 422
         assert res.status_code == 422
+
+
+class TestBackgroundTaskRetention:
+    async def test_create_run_holds_task_reference(self, tmp_path: Path, patched_provider: Any) -> None:
+        """回归点：后台评测任务必须持有强引用，否则可能被 GC 中途回收、运行卡在 running。"""
+        from harness.infra.database import Database
+        from harness.modules.evals_lab.service import EvalLabService
+
+        svc = EvalLabService(Database(str(tmp_path / "evallab.db")))
+        cases = [{"id": "c1", "prompt": "你好", "expect_keywords": ["你好"]}]
+        ds = svc.create_dataset("引用守护数据集", "", cases)
+        svc.create_run(ds["id"], [{"provider_id": "deepseek", "model": "m"}])
+        # 创建后必须能拿到任务引用（asyncio 自身只保留弱引用）
+        assert len(svc._bg_tasks) == 1
+        # 任务结束后回调自动释放引用，集合本身不累积
+        for _ in range(200):
+            if not svc._bg_tasks:
+                break
+            await asyncio.sleep(0.05)
+        assert svc._bg_tasks == set()

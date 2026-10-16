@@ -1,0 +1,1 @@
+﻿{"dangerText":"鍒犻櫎","dangerVisible":true,"items":[{"label":"閲嶅懡鍚?,"visible":true},{"label":"瀵煎嚭","visible":true},{"label":"澶嶅埗涓烘柊浼氳瘽","visible":true},{"label":"褰掓。","visible":true},{"label":"鍒犻櫎","visible":true}],"menu":{"bottom":643,"h":392,"left":222,"right":490,"top":251,"w":268},"menuFullyInViewport":true,"ok":true,"viewport":{"h":651,"w":1536}}

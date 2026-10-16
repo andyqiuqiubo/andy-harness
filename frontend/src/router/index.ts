@@ -8,6 +8,8 @@ import TemplateHubView from '../views/TemplateHubView.vue'
 import WorkflowView from '../views/WorkflowView.vue'
 import WorkflowListView from '../views/WorkflowListView.vue'
 import DevkitView from '../views/DevkitView.vue'
+import KnowledgeBaseView from '../views/KnowledgeBaseView.vue'
+import ReverseEngineeringView from '../views/ReverseEngineeringView.vue'
 import OortcloudCallback from '../views/OortcloudCallback.vue'
 
 const router = createRouter({
@@ -62,6 +64,16 @@ const router = createRouter({
       path: '/devkit',
       name: 'devkit',
       component: DevkitView,
+    },
+    {
+      path: '/knowledge',
+      name: 'knowledge',
+      component: KnowledgeBaseView,
+    },
+    {
+      path: '/reverse',
+      name: 'reverse',
+      component: ReverseEngineeringView,
     },
     {
       path: '/oauth/oortcloud/callback',

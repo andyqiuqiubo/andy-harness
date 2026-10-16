@@ -1,0 +1,1 @@
+﻿{"assistantRows":0,"isStreaming":false,"lastAssistantText":null,"stopBtnVisible":false,"stoppedBadges":[],"streamingTextHead":null,"streamingTextLen":0}

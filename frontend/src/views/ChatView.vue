@@ -880,11 +880,17 @@ onUnmounted(() => {
               <router-link to="/workflows" class="toolbox-item" @click="showToolbox = false">
                 <span>🔀</span><span>{{ t('nav.workflows') }}</span>
               </router-link>
+              <router-link to="/reverse" class="toolbox-item" @click="showToolbox = false">
+                <span>🔬</span><span>{{ t('nav.reverse') }}</span>
+              </router-link>
               <router-link to="/templates" class="toolbox-item" @click="showToolbox = false">
                 <span>📦</span><span>{{ t('nav.templates') }}</span>
               </router-link>
               <router-link to="/devkit" class="toolbox-item" @click="showToolbox = false">
                 <span>🧩</span><span>{{ t('nav.devkit') }}</span>
+              </router-link>
+              <router-link to="/knowledge" class="toolbox-item" @click="showToolbox = false">
+                <span>📚</span><span>{{ t('nav.knowledge') }}</span>
               </router-link>
             </div>
           </div>

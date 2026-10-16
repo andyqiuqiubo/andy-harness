@@ -368,12 +368,28 @@ class GraphEngine:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(script)
             fd = None
+            # 子进程环境只给最小白名单，绝不透传宿主环境：code 节点执行的是
+            # **用户编写的代码**，透传会让它用 os.environ 直接读到 harness 的
+            # API 密钥/令牌（与 sandbox_manager._build_env 的 SEC-23 约定一致）。
+            env = {
+                "PATH": os.environ.get("PATH", ""),
+                "TEMP": tempfile.gettempdir(),
+                "TMP": tempfile.gettempdir(),
+                "HOME": tempfile.gettempdir(),
+                # 禁用用户级 site-packages，防被投毒的 ~/.local 库被 import 劫持
+                "PYTHONNOUSERSITE": "1",
+            }
+            # Windows 下缺 SYSTEMROOT 会导致子进程启动失败
+            system_root = os.environ.get("SYSTEMROOT", "")
+            if system_root:
+                env["SYSTEMROOT"] = system_root
             return subprocess.run(
                 [sys.executable, path],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
                 cwd=tempfile.gettempdir(),
+                env=env,
             )
         finally:
             if fd is not None:
@@ -437,6 +453,16 @@ class GraphEngine:
             )
             sep = "&" if "?" in url else "?"
             url = f"{url}{sep}{q}"
+        # SSRF 防护：URL 可能来自用户输入或上游节点渲染结果（{{node.field}}），
+        # 出网前必须过统一护栏——与 mcp_client / package_installer 保持一致，
+        # 否则工作流可被引去访问云元数据（169.254.169.254）或内网服务。
+        # check_url 内部要 getaddrinfo（阻塞），丢线程池避免卡住事件循环。
+        from harness.infra.net_guard import MAX_FETCH_BYTES, assert_url_safe
+
+        try:
+            await asyncio.to_thread(assert_url_safe, url)
+        except ValueError as e:
+            raise WorkflowValidationError(f"HTTP 节点 URL 不安全: {e}") from e
         # 身份认证（对齐 Dify：no-auth / api-key basic|bearer|custom）
         auth = data.get("auth") or {"type": "no-auth"}
         if auth.get("type") == "api-key":
@@ -483,7 +509,8 @@ class GraphEngine:
                     ctx = ssl._create_unverified_context()
                 with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
                     status = resp.status
-                    text = resp.read().decode("utf-8", "replace")
+                    # 响应体必须限量读取：无上限的 read() 会被恶意/异常大的响应拖爆内存
+                    text = resp.read(MAX_FETCH_BYTES).decode("utf-8", "replace")
                     hdrs = {k: v for k, v in resp.getheaders()}
                 return status, text, hdrs
 
@@ -494,7 +521,7 @@ class GraphEngine:
             status, text, hdrs = await self._retryable(_call, max_retries, retry_interval)
         except urllib.error.HTTPError as e:
             status = e.code
-            text = e.read().decode("utf-8", "replace")
+            text = e.read(MAX_FETCH_BYTES).decode("utf-8", "replace")
             hdrs = {k: v for k, v in e.headers.items()}
         except Exception as e:  # noqa: BLE001
             raise WorkflowExecutionError(f"HTTP 请求失败: {e}") from e

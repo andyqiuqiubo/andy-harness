@@ -1,0 +1,72 @@
+import { EvidenceIntegrityError } from "../domain/evidenceErrors.js";
+import { type AnalysisError } from "../domain/analysisErrorBase.js";
+import type { EvidenceBundle } from "../domain/evidenceBundle.js";
+import type { JsonValue } from "../domain/jsonValue.js";
+import { jsonValueSchema } from "../domain/jsonValue.js";
+import { err, ok, type Result } from "../domain/result.js";
+import { compareBundles } from "../domain/bundleComparison.js";
+import {
+  readEvidenceBundle,
+  writeEvidenceBundle,
+} from "./EvidenceBundleFiles.js";
+
+/** Validate a standalone bundle and report its complete record/revision counts. */
+export const importEvidenceBundleCommand = async (
+  path: string,
+): Promise<Result<JsonValue, AnalysisError>> => {
+  const loaded = await readEvidenceBundle(path);
+  if (!loaded.ok) return loaded;
+  return ok({
+    imported: loaded.value.records.length,
+    unknowns_added: loaded.value.unknowns.length,
+    total: loaded.value.records.length,
+  });
+};
+
+/** Validate a source bundle and atomically export canonical bytes. */
+export const exportEvidenceBundleCommand = async (
+  sourcePath: string,
+  outputPath: string,
+  overwrite: boolean,
+): Promise<Result<JsonValue, AnalysisError>> => {
+  const loaded = await readEvidenceBundle(sourcePath);
+  if (!loaded.ok) return loaded;
+  return projectWrite(
+    loaded.value,
+    await writeEvidenceBundle(loaded.value, outputPath, overwrite),
+  );
+};
+
+/** Compare two validated canonical Evidence bundles without session state. */
+export const compareEvidenceBundlesCommand = async (input: {
+  readonly leftPath: string;
+  readonly rightPath: string;
+}): Promise<Result<JsonValue, AnalysisError>> => {
+  const [left, right] = await Promise.all([
+    readEvidenceBundle(input.leftPath),
+    readEvidenceBundle(input.rightPath),
+  ]);
+  if (!left.ok) return left;
+  if (!right.ok) return right;
+  try {
+    return ok(jsonValueSchema.parse(compareBundles(left.value, right.value)));
+  } catch (cause: unknown) {
+    return err(
+      new EvidenceIntegrityError("Evidence bundle comparison failed", {
+        cause,
+      }),
+    );
+  }
+};
+
+const projectWrite = (
+  bundle: EvidenceBundle,
+  written: Awaited<ReturnType<typeof writeEvidenceBundle>>,
+): Result<JsonValue, AnalysisError> =>
+  written.ok
+    ? ok({
+        path: written.value.path,
+        bytes: written.value.bytes,
+        records: bundle.records.length,
+      })
+    : err(written.error);

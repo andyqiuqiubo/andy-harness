@@ -19,6 +19,47 @@
       "type": "stdio",
       "description": "本地 stdio 测试用 echo server（示例，默认关闭）",
       "disabled": true
+    },
+    "rea": {
+      "command": "node",
+      "args": ["../mcp_servers/rea/scripts/rea.mjs", "mcp"],
+      "type": "stdio",
+      "env": {
+        "REA_LOG_LEVEL": "error",
+        "REA_ANALYSIS_PROVIDER": "ghidra",
+        "GHIDRA_INSTALL_DIR": "H:\\jsd-andyharness\\.tools\\ghidra_12.1.4_PUBLIC",
+        "JAVA_HOME": "H:\\jsd-andyharness\\.tools\\jdk-21",
+        "GHIDRA_HEADLESS_MAXMEM": "3G"
+      },
+      "max_line_bytes": 16777216,
+      "request_timeout": 600,
+      "tool_allowlist": [
+        "analyze_javascript_application",
+        "inspect_pe_resources",
+        "inspect_artifact",
+        "inspect_managed_artifact",
+        "inspect_evm_interface",
+        "inspect_analysis_view",
+        "compare_managed_members",
+        "open_binary",
+        "inspect_native_load_image",
+        "list_procedures",
+        "search_procedures",
+        "list_strings",
+        "search_strings",
+        "procedure_pseudo_code",
+        "procedure_assembly",
+        "read_function_instructions",
+        "analyze_function",
+        "procedure_callees",
+        "procedure_callers",
+        "xrefs",
+        "resolve_native_call_targets",
+        "inspect_native_instruction",
+        "inspect_native_data_type"
+      ],
+      "description": "REA 逆向工程 MCP 服务（vendored 于 mcp_servers/rea）。前置条件：① Node.js >= 22.19；② mcp_servers/rea 下执行过 npm ci && npm run compile && npm run artifacts:skills 生成 dist/；③ 原生反编译需项目内隔离安装的 Ghidra 12.1.4 与 JDK 21（.tools/ 目录，安装步骤见 mcp_servers/README.md），并把本条目 env 中的 GHIDRA_INSTALL_DIR / JAVA_HOME 指向实际路径。REA tools/list 约 2MB（170 工具）超出 stdio 默认 1MB 行上限，故 max_line_bytes 须调大；tool_allowlist 收敛为 23 个工具；request_timeout 600s 覆盖 Ghidra 冷启动。args 路径相对 backend/ 工作目录，也可写绝对路径。",
+      "disabled": true
     }
   }
 }

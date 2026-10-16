@@ -32,6 +32,9 @@ class EvalLabService:
         self._tool_registry = tool_registry
         # 测试可注入：provider_id -> provider
         self._provider_factory: Any = None
+        # 后台运行任务引用：asyncio 对已创建任务只保留弱引用，不持有则可能被 GC
+        # 中途回收，运行记录永远停在 running（与逆向模块 _bg_tasks 同一守护）。
+        self._bg_tasks: set[asyncio.Task[None]] = set()
 
     def set_provider_factory(self, factory: Any) -> None:
         """覆盖 provider 解析（测试注入脚本化 provider 用）。签名 `(provider_id) -> provider`。"""
@@ -105,7 +108,9 @@ class EvalLabService:
             "VALUES (?, ?, ?, 'running', '[]', ?)",
             (run_id, dataset_id, json.dumps(combos, ensure_ascii=False), now),
         )
-        asyncio.create_task(self._execute_run(run_id, dataset, combos))
+        task = asyncio.create_task(self._execute_run(run_id, dataset, combos))
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
         return self.get_run(run_id)  # type: ignore[return-value]
 
     async def _execute_run(self, run_id: str, dataset: dict[str, Any], combos: list[dict[str, Any]]) -> None:

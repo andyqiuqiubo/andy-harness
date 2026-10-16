@@ -28,6 +28,16 @@ from harness.api.rest.devkit import router as devkit_router
 from harness.api.rest.evals_lab import router as evals_lab_router
 from harness.api.rest.insights import router as insights_router
 from harness.api.rest.integrations import router as integrations_router
+from harness.api.rest.knowledge_base import (
+    retrieval_router,
+    setup_knowledge_base_routes,
+)
+from harness.api.rest.knowledge_base import (
+    router as knowledge_base_router,
+)
+from harness.api.rest.knowledge_base import (
+    skill_router as kb_skill_router,
+)
 from harness.api.rest.mcp import router as mcp_router
 from harness.api.rest.mcp import setup_mcp_routes
 from harness.api.rest.memories import router as memories_router
@@ -41,6 +51,7 @@ from harness.api.rest.plugins import router as plugins_router
 from harness.api.rest.plugins import setup_plugin_routes
 from harness.api.rest.providers import router as providers_router
 from harness.api.rest.providers import setup_provider_routes
+from harness.api.rest.reverse_engineering import router as reverse_engineering_router
 from harness.api.rest.runs import router as runs_router
 from harness.api.rest.runs import setup_runs_routes
 from harness.api.rest.schedules import router as schedules_router
@@ -204,10 +215,26 @@ async def _init_components() -> None:
     context_service = ContextServiceImpl(services=_services)
     _services.register(ContextService, context_service, owner="context_manager")
 
+    # 知识库系统（KB / 文档 / 分段 / 嵌入模型，方案见 知识库系统-完整解决方案.md）
+    from harness.modules.knowledge_base.service import KnowledgeBaseService
+
+    kb_service = KnowledgeBaseService(db)
+    _services.register(KnowledgeBaseService, kb_service, owner="knowledge_base")
+
+    # 注册内置 P2 格式适配器（音频 ASR 转写；未配置 ASR 端点时上传音频报明确错误）
+    from harness.modules.knowledge_base.adapters import register_builtin_adapters
+
+    register_builtin_adapters()
+
     from harness.engine.builtin_tools import CalculatorTool, CurrentTimeTool
 
     _tool_registry.register(CalculatorTool(), owner="builtin")
     _tool_registry.register(CurrentTimeTool(), owner="builtin")
+
+    # 知识库检索技能：经 function calling 暴露给大模型自主调用（方案 5.5）
+    from harness.modules.knowledge_base.tool import KnowledgeBaseSearchTool
+
+    _tool_registry.register(KnowledgeBaseSearchTool(kb_service), owner="builtin")
 
     # 注册 ProviderRegistry（即使无 provider 插件，API 也不报 503）
     from harness.modules.model_manager.provider_registry import ProviderRegistry
@@ -318,6 +345,7 @@ setup_attachment_routes(_services)
 setup_runs_routes(_services, _hooks, _tool_registry)
 setup_channel_routes(_services)
 setup_auth_routes(_services)
+setup_knowledge_base_routes(_services)
 
 app.include_router(sessions_router)
 app.include_router(providers_router)
@@ -342,6 +370,10 @@ app.include_router(runs_router)
 app.include_router(channels_router)
 app.include_router(auth_router)
 app.include_router(integrations_router)
+app.include_router(knowledge_base_router)
+app.include_router(reverse_engineering_router)
+app.include_router(retrieval_router)
+app.include_router(kb_skill_router)
 
 # 注册 WebSocket 路由
 setup_ws_routes(_services, _hooks, _tool_registry)

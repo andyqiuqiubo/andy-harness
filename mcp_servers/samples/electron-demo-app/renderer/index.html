@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'"
+    />
+    <title>Notes Demo</title>
+  </head>
+  <body>
+    <main id="app">
+      <header>
+        <h1>Notes Demo</h1>
+        <input id="search-input" type="search" placeholder="搜索笔记…" />
+        <span id="total"></span>
+      </header>
+      <ul id="results"></ul>
+    </main>
+    <script type="module" src="./renderer.js"></script>
+  </body>
+</html>

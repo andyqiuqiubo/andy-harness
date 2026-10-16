@@ -1,0 +1,10 @@
+{
+  "d42adcb05ba0": {
+    "run_id": "d42adcb05ba0",
+    "subject_name": "Hello.class",
+    "subject_sha256": "2fb106f349f7394827320162046df88cd494e8fa579eb764f011fb8f79f01fc8",
+    "created_at": "2026-10-15T20:49:37+0800",
+    "status": "degraded",
+    "run_dir": "H:\\jsd-andyharness\\src\\rev_eng\\runs_test\\d42adcb05ba0"
+  }
+}

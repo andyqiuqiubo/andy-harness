@@ -380,8 +380,10 @@ class TestHttpAlignment:
         class _Resp:
             status = 200
 
-            def read(self) -> bytes:
-                return json.dumps({"ok": True}).encode()
+            def read(self, size: int = -1) -> bytes:
+                data = json.dumps({"ok": True}).encode()
+                # 对齐真实响应对象：限量读取（size<0 表示读全部）
+                return data if size < 0 else data[:size]
 
             def getheaders(self) -> list[tuple[str, str]]:
                 return [("Content-Type", "application/json")]
@@ -437,3 +439,23 @@ class TestHttpAlignment:
         assert outs["status_code"] == 200
         assert outs["headers"]["Content-Type"] == "application/json"
         assert outs["size"] > 0
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://169.254.169.254/latest/meta-data/",  # 云元数据（凭据泄露）
+            "http://127.0.0.1:8000/api/x",  # 本机回环服务
+            "file:///etc/passwd",  # 非 http/https 协议
+        ],
+    )
+    async def test_http_node_rejects_unsafe_url(self, url: str) -> None:
+        """回归点：HTTP 节点出网前必须过 SSRF 护栏，不得直连内网/回环/非 HTTP 协议。"""
+        engine = GraphEngine(None)
+        graph = _chain(
+            _node("start", "start", {"variables": []}),
+            _node("http1", "http", {"url": url}),
+            _node("end", "end", {"outputs": [{"name": "s", "value": "{{http1.status_code}}"}]}),
+        )
+        result = await engine.execute(graph, {})
+        assert result["status"] == "error"
+        assert "URL 不安全" in result["results"]["http1"]["error"]

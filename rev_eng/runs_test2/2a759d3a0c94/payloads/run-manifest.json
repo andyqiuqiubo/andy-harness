@@ -1,0 +1,91 @@
+[
+  {
+    "stage": "rea_static",
+    "status": "skipped",
+    "engine": "none",
+    "target_engine": "rea+ghidra",
+    "summary": "未在本次运行选中的阶段",
+    "facts": {},
+    "artifacts": [],
+    "logs": [],
+    "error": "",
+    "duration_ms": 0
+  },
+  {
+    "stage": "java_decompile",
+    "status": "ok",
+    "engine": "javap",
+    "target_engine": "javap",
+    "summary": "javap 反编译完成：Hello，2 个方法",
+    "facts": {
+      "decompiler": "javap",
+      "class_name": "Hello",
+      "super_class": "",
+      "interfaces": [],
+      "method_count": 2,
+      "major_version": null
+    },
+    "artifacts": [
+      {
+        "stage": "java_decompile",
+        "kind": "java_decompile",
+        "name": "Hello_decompiled.java.txt",
+        "path": "H:\\jsd-andyharness\\src\\rev_eng\\runs_test2\\2a759d3a0c94\\artifacts\\Hello_decompiled.java.txt",
+        "summary": "javap 反编译文本（1677 字符，2 个方法）",
+        "sha256": "07c98f22bf421ff572428961296121b51a1a05f38f01b23a24393b59458619ed",
+        "bytes": 1677
+      }
+    ],
+    "logs": [],
+    "error": "",
+    "duration_ms": 532
+  },
+  {
+    "stage": "frida_dynamic",
+    "status": "skipped",
+    "engine": "none",
+    "target_engine": "frida",
+    "summary": "未在本次运行选中的阶段",
+    "facts": {},
+    "artifacts": [],
+    "logs": [],
+    "error": "",
+    "duration_ms": 0
+  },
+  {
+    "stage": "firecracker_sandbox",
+    "status": "skipped",
+    "engine": "none",
+    "target_engine": "firecracker",
+    "summary": "未在本次运行选中的阶段",
+    "facts": {},
+    "artifacts": [],
+    "logs": [],
+    "error": "",
+    "duration_ms": 0
+  },
+  {
+    "stage": "pentagi_analysis",
+    "status": "skipped",
+    "engine": "none",
+    "target_engine": "pentagi",
+    "summary": "未在本次运行选中的阶段",
+    "facts": {},
+    "artifacts": [],
+    "logs": [],
+    "error": "",
+    "duration_ms": 0
+  },
+  {
+    "stage": "rebuild_exe",
+    "status": "skipped",
+    "engine": "none",
+    "target_engine": "tcc-rebuild",
+    "summary": "未在本次运行选中的阶段",
+    "facts": {},
+    "artifacts": [],
+    "logs": [],
+    "error": "",
+    "duration_ms": 0
+  }
+]

@@ -100,6 +100,73 @@ async def test_missing_command_raises() -> None:
         await _connect(cfg)
 
 
+# ── per-server 选项：max_line_bytes / tool_allowlist ──
+
+
+def test_parse_max_line_bytes_and_allowlist() -> None:
+    """max_line_bytes 与 tool_allowlist 正常解析。"""
+    cfg = parse_server_config(
+        {
+            "name": "big",
+            "command": "node",
+            "args": ["server.mjs"],
+            "max_line_bytes": 8 * 1024 * 1024,
+            "tool_allowlist": ["analyze_javascript_application", "inspect_pe_resources"],
+        }
+    )
+    assert cfg.max_line_bytes == 8 * 1024 * 1024
+    assert cfg.tool_allowlist == ["analyze_javascript_application", "inspect_pe_resources"]
+
+
+def test_parse_max_line_bytes_rejects_out_of_range() -> None:
+    """max_line_bytes 越界或非整数直接拒绝（护栏不被误配打穿）。"""
+    for bad in (10, 10**9, "abc", "1024x"):
+        with pytest.raises(ValueError):
+            parse_server_config({"name": "x", "command": "c", "max_line_bytes": bad})
+
+
+def test_parse_tool_allowlist_accepts_comma_string() -> None:
+    """tool_allowlist 兼容逗号分隔字符串写法。"""
+    cfg = parse_server_config(
+        {"name": "x", "command": "c", "tool_allowlist": "echo, add ,"}
+    )
+    assert cfg.tool_allowlist == ["echo", "add"]
+
+
+def test_parse_tool_allowlist_rejects_wrong_type() -> None:
+    """tool_allowlist 既不是字符串也不是列表时拒绝。"""
+    with pytest.raises(ValueError):
+        parse_server_config({"name": "x", "command": "c", "tool_allowlist": 42})
+
+
+def test_parse_request_timeout() -> None:
+    """request_timeout 正常解析（数字/数字字符串）并做区间校验。"""
+    assert parse_server_config(
+        {"name": "slow", "command": "c", "request_timeout": 600}
+    ).request_timeout == 600.0
+    assert parse_server_config(
+        {"name": "slow", "command": "c", "request_timeout": "330"}
+    ).request_timeout == 330.0
+    for bad in (1, 99999, "abc"):
+        with pytest.raises(ValueError):
+            parse_server_config({"name": "x", "command": "c", "request_timeout": bad})
+
+
+async def test_tool_allowlist_filters_tools() -> None:
+    """白名单只放行名单内工具（空名单不过滤，行为不变）。"""
+    cfg = MCPServerConfig(
+        name="echo-filtered",
+        command=PYTHON,
+        args=[ECHO_SERVER],
+        tool_allowlist=["echo"],
+    )
+    conn = await asyncio.wait_for(_connect(cfg), timeout=20)
+    try:
+        assert [t.name for t in conn.tools] == ["echo"]
+    finally:
+        await conn.disconnect()
+
+
 def test_parse_server_config_args_string() -> None:
     """args 支持字符串（按 shell 规则拆分）。"""
     cfg = parse_server_config({"name": "x", "command": "python", "args": "-u server.py --flag"})

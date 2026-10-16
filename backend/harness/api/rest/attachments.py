@@ -119,6 +119,10 @@ def setup_attachment_routes(registry: ServiceRegistry) -> None:
                 if limit is None:
                     # 交给 classify 抛「不支持的文件类型」，保持错误消息单一来源
                     classify(filename, 0)
+                    # size_limit_for_ext 返回 None 与 classify 抛错的条件完全一致，
+                    # 故此处不可达；显式抛出仅作兜底，防止后续语义变更时把 None
+                    # 静默传给 _read_capped（期望 int）而引发 TypeError。
+                    raise AttachmentError(f"不支持的文件类型: {filename}")
                 data = await _read_capped(f, limit)
                 kind, mime = classify(filename, len(data))
             except AttachmentError as e:

@@ -1,0 +1,13 @@
+{
+  "name": "notes-demo",
+  "version": "1.0.0",
+  "description": "REA MCP 集成验证用示例应用：迷你笔记应用（Electron 主进程 + 预加载 + 渲染进程，含 IPC 边界）",
+  "license": "MIT",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "28.0.0"
+  }
+}

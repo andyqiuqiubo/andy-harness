@@ -471,8 +471,6 @@ class TestMissedRunPolicy:
 
     async def test_tick_skips_missed_run_and_advances(self, service, db) -> None:
         """_tick 层：错过太久的任务不执行 runner，记录 skipped 且 next_run_at 推进到未来。"""
-        from datetime import timedelta
-
         from harness.modules.scheduler.service import _now_local, _to_iso
 
         task = self._mk_task(service, db, {"type": INTERVAL, "interval_minutes": 10}, late_minutes=100)
@@ -491,7 +489,6 @@ class TestMissedRunPolicy:
 
                 return _O()
 
-        plug = type("P", (), {})()  # 最小替身：只用到 _tick 用到的字段
         from plugins.scheduler.main import SchedulerPlugin
 
         plugin = SchedulerPlugin.__new__(SchedulerPlugin)

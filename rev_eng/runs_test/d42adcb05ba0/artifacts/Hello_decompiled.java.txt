@@ -1,0 +1,47 @@
+Compiled from "Hello.java"
+public class Hello {
+  private java.lang.String greeting;
+
+  public Hello();
+    Code:
+       0: aload_0
+       1: invokespecial #1                  // Method java/lang/Object."<init>":()V
+       4: aload_0
+       5: ldc           #7                  // String Hello, World!
+       7: putfield      #9                  // Field greeting:Ljava/lang/String;
+      10: return
+
+  public java.lang.String sayHello(java.lang.String);
+    Code:
+       0: aload_1
+       1: ifnull        11
+       4: aload_1
+       5: invokevirtual #15                 // Method java/lang/String.isEmpty:()Z
+       8: ifeq          16
+      11: aload_0
+      12: getfield      #9                  // Field greeting:Ljava/lang/String;
+      15: astore_1
+      16: aload_1
+      17: invokedynamic #21,  0             // InvokeDynamic #0:makeConcatWithConstants:(Ljava/lang/String;)Ljava/lang/String;
+      22: areturn
+
+  public static void main(java.lang.String[]);
+    Code:
+       0: new           #10                 // class Hello
+       3: dup
+       4: invokespecial #25                 // Method "<init>":()V
+       7: astore_1
+       8: getstatic     #26                 // Field java/lang/System.out:Ljava/io/PrintStream;
+      11: aload_1
+      12: aload_0
+      13: arraylength
+      14: ifle          23
+      17: aload_0
+      18: iconst_0
+      19: aaload
+      20: goto          25
+      23: ldc           #32                 // String
+      25: invokevirtual #34                 // Method sayHello:(Ljava/lang/String;)Ljava/lang/String;
+      28: invokevirtual #37                 // Method java/io/PrintStream.println:(Ljava/lang/String;)V
+      31: return
+}

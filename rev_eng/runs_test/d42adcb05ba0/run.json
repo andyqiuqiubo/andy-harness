@@ -1,0 +1,158 @@
+{
+  "run_id": "d42adcb05ba0",
+  "subject_name": "Hello.class",
+  "subject_path": "H:\\jsd-andyharness\\src\\rev_eng\\samples\\java\\Hello.class",
+  "subject_sha256": "2fb106f349f7394827320162046df88cd494e8fa579eb764f011fb8f79f01fc8",
+  "created_at": "2026-10-15T20:49:37+0800",
+  "finished_at": "2026-10-15T20:49:38+0800",
+  "status": "degraded",
+  "stages": {
+    "rea_static": {
+      "stage": "rea_static",
+      "status": "skipped",
+      "engine": "none",
+      "target_engine": "rea+ghidra",
+      "summary": "未在本次运行选中的阶段",
+      "facts": {},
+      "artifacts": [],
+      "logs": [],
+      "error": "",
+      "duration_ms": 0
+    },
+    "java_decompile": {
+      "stage": "java_decompile",
+      "status": "ok",
+      "engine": "javap",
+      "target_engine": "javap",
+      "summary": "javap 反编译完成：H，2 个方法",
+      "facts": {
+        "decompiler": "javap",
+        "class_name": "H",
+        "super_class": "",
+        "interfaces": [],
+        "method_count": 2,
+        "major_version": null
+      },
+      "artifacts": [
+        {
+          "stage": "java_decompile",
+          "kind": "java_decompile",
+          "name": "Hello_decompiled.java.txt",
+          "path": "H:\\jsd-andyharness\\src\\rev_eng\\runs_test\\d42adcb05ba0\\artifacts\\Hello_decompiled.java.txt",
+          "summary": "javap 反编译文本（1677 字符，2 个方法）",
+          "sha256": "07c98f22bf421ff572428961296121b51a1a05f38f01b23a24393b59458619ed",
+          "bytes": 1677
+        }
+      ],
+      "logs": [],
+      "error": "",
+      "duration_ms": 711
+    },
+    "frida_dynamic": {
+      "stage": "frida_dynamic",
+      "status": "skipped",
+      "engine": "none",
+      "target_engine": "frida",
+      "summary": "未在本次运行选中的阶段",
+      "facts": {},
+      "artifacts": [],
+      "logs": [],
+      "error": "",
+      "duration_ms": 0
+    },
+    "firecracker_sandbox": {
+      "stage": "firecracker_sandbox",
+      "status": "skipped",
+      "engine": "none",
+      "target_engine": "firecracker",
+      "summary": "未在本次运行选中的阶段",
+      "facts": {},
+      "artifacts": [],
+      "logs": [],
+      "error": "",
+      "duration_ms": 0
+    },
+    "pentagi_analysis": {
+      "stage": "pentagi_analysis",
+      "status": "skipped",
+      "engine": "none",
+      "target_engine": "pentagi",
+      "summary": "未在本次运行选中的阶段",
+      "facts": {},
+      "artifacts": [],
+      "logs": [],
+      "error": "",
+      "duration_ms": 0
+    },
+    "rebuild_exe": {
+      "stage": "rebuild_exe",
+      "status": "skipped",
+      "engine": "none",
+      "target_engine": "tcc-rebuild",
+      "summary": "未在本次运行选中的阶段",
+      "facts": {},
+      "artifacts": [],
+      "logs": [],
+      "error": "",
+      "duration_ms": 0
+    },
+    "evidence_v2": {
+      "stage": "evidence_v2",
+      "status": "ok",
+      "engine": "evidence_v2",
+      "target_engine": "evidence_v2",
+      "summary": "证据固化完成：3 条证据，离线校验 通过",
+      "facts": {
+        "bundle_id": "d42adcb05ba0",
+        "items": 3,
+        "chain_head": "d9ed105cff5ee61baf32850e1e470aa4934e7dd8b3336ea9ba04a55e116605a7",
+        "evidence_dir": "H:\\jsd-andyharness\\src\\rev_eng\\runs_test\\d42adcb05ba0",
+        "verify": {
+          "ok": true,
+          "schema": "andy-harness.evidence/v2",
+          "bundle_id": "d42adcb05ba0",
+          "items_checked": 3,
+          "chain_head": "d9ed105cff5ee61baf32850e1e470aa4934e7dd8b3336ea9ba04a55e116605a7",
+          "problems": []
+        }
+      },
+      "artifacts": [
+        {
+          "stage": "evidence_v2",
+          "kind": "evidence_json",
+          "name": "evidence.json",
+          "path": "H:\\jsd-andyharness\\src\\rev_eng\\runs_test\\d42adcb05ba0\\evidence.json",
+          "summary": "Evidence v2 证据包（机器可读）",
+          "sha256": "",
+          "bytes": 0
+        },
+        {
+          "stage": "evidence_v2",
+          "kind": "evidence_md",
+          "name": "evidence.md",
+          "path": "H:\\jsd-andyharness\\src\\rev_eng\\runs_test\\d42adcb05ba0\\evidence.md",
+          "summary": "Evidence v2 证据报告（人读）",
+          "sha256": "",
+          "bytes": 0
+        }
+      ],
+      "logs": [
+        "证据包目录：H:\\jsd-andyharness\\src\\rev_eng\\runs_test\\d42adcb05ba0"
+      ],
+      "error": "",
+      "duration_ms": 128
+    }
+  },
+  "evidence_bundle_id": "d42adcb05ba0",
+  "evidence_dir": "H:\\jsd-andyharness\\src\\rev_eng\\runs_test\\d42adcb05ba0",
+  "evidence_report": {
+    "ok": true,
+    "schema": "andy-harness.evidence/v2",
+    "bundle_id": "d42adcb05ba0",
+    "items_checked": 3,
+    "chain_head": "d9ed105cff5ee61baf32850e1e470aa4934e7dd8b3336ea9ba04a55e116605a7",
+    "problems": []
+  },
+  "run_dir": "H:\\jsd-andyharness\\src\\rev_eng\\runs_test\\d42adcb05ba0",
+  "error": ""
+}

@@ -182,6 +182,12 @@ class APIClientImpl {
     })
   }
 
+  /** 通用 multipart 上传（知识库文档等），调用方自行拼装 FormData。 */
+  async uploadForm<T>(url: string, form: FormData): Promise<T> {
+    // 注意：multipart 不设 Content-Type，让浏览器自带 boundary
+    return request<T>(url, { method: 'POST', body: form })
+  }
+
   ws = {
     socket: null as WebSocket | null,
     reconnectTimer: null as ReturnType<typeof setTimeout> | null,

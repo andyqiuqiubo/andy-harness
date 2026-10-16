@@ -34,11 +34,16 @@
 - **会话导出 / 导入 / 分叉 fork**：鼠标悬浮会话点「⋮」（或右键）即可导出为 JSON（含消息与任务清单）随身携带、复制为新会话（分叉）、重命名、归档、删除；页头「导入」可从导出的 JSON 恢复为新会话，也可从任意历史消息「复制为新会话」试错。
 - **MCP 客户端**：通过 Model Context Protocol 接入外部工具生态（数据库、浏览器、SaaS 等）。支持两种传输——**本地进程 (stdio)** 与 **远程服务 (SSE/HTTP)**；配置 `mcp.json`（或 `MCP_CONFIG_PATH`）后自动连接并把远端工具注册给 AI 调用，设置页可查看连接状态、重连、增删 server（零第三方依赖）
 - **MCP 市场**：内置 MCP 市场，一键接入 libgen / deepwiki / context7 / cloudflare-docs / gitmcp 等**免鉴权公开 MCP 服务**，立即获得文档检索 / 代码库问答 / 百科等远程工具；与插件市场共用前端面板
+- **「工程强逆向」端到端逆向流水线**：把 **REA 静态逆向 → Java class 反编译 → Frida MCP 动态插桩 → Firecracker 沙箱执行 → PentAGI 自动化分析 → 功能等价 exe 重建 → Evidence v2 证据固化**组合成一条流水线，阶段间以结构化 facts 流转（静态发现的字符串会作为动态阶段运行时内存扫描特征，形成"静态—动态"交叉验证），最终产出**哈希链防篡改、可离线校验**的 Evidence v2 证据包。入口在「更多功能 → 工程强逆向」（与「工作流」同级），也可不启动后端直接用 CLI 跑：`python rev_eng/tools/run_pipeline.py --subject <样本>`。Frida MCP 服务与 Evidence v2 模块均为本项目自研，Frida/Ghidra/JDK 全部隔离安装在工作区 `.tools/`；Firecracker（需 KVM）与 PentAGI（需 Docker）在本机不可用时自动降级为本地等价执行（接口与产物结构一致，换环境即启用真件）。🔁 还能「**重建出可运行的 exe**」：`rebuild_gui_exe.py` 读取证据包里的静态事实，按**样本能力特征自动选择 UI 形态**（`process_manager` 进程管理器 / `installer_wizard` 安装向导 / `strings_browser` 可搜索字符串浏览器 / `facts_browser` 纯事实兜底；新增形态只需往 `rebuild_templates/` 放模板并在 `rebuild_kinds.py` 登记），用项目内隔离的 TCC 编译成**原生 PE**——双击即出界面，可再次送进流水线反编译，形成「逆向 → 重建 → 再逆向」闭环。**安装器形态会复刻原版界面并真实安装**：对话框模板取样本 RT_DIALOG 原始字节（标题/控件/id/几何零损失，`CreateDialogIndirectParam` 直建），Install 时从自身 overlay 取内嵌载荷、调 `.tools/7zip/` 的解压器真实释放到所选目录并按输出推进进度条。窗口标题优先取样本 PE 版本资源的 FileDescription（权威），取不到才回退到字符串打分（达不到阈值诚实用样本名）；图标从样本 PE 资源段原样提取；PE 解析由后端共享模块 `pe_resources.py` 统一提供（RT_DIALOG/版本/图标/导入表/UTF-16 串/尾部载荷），全程不臆造。四个样本实测自动选型：2.4 MB Process Explorer → `process_manager`（18,944 字节，真枚举进程）、1.36 MB 7-Zip 安装程序 → `installer_wizard`（解压出 106 个真实文件）、17 KB find.exe → `strings_browser`（14,848 字节）、1.5 KB 自生成 PE → `facts_browser`（8,704 字节）。已在 17 KB 系统小工具、1.5 KB 自生成 PE 与 **2.4 MB 真实 GUI 应用（Sysinternals Process Explorer，微软签名）**上完成三轮验证——第三轮实测 Ghidra 原生反编译 275 秒、3,628 个函数、3,556 条字符串并产出可读 C 伪代码，完整说明与三轮验证记录见 [docs/工程强逆向-端到端集成总结.md](docs/工程强逆向-端到端集成总结.md)
+- **「工程强逆向」七阶段流水线（含「功能等价 exe 重建」与「Java class 反编译」）**：在 REA 静态 → **Java class 反编译** → Frida 动态 → Firecracker 沙箱 → PentAGI 分析之后新增**功能等价重建**阶段——**对可执行文件样本，流水线结束即自动产出新的 exe**（TCC 编译的原生 PE，形态按样本能力特征自动选择，产物落在 `runs/<id>/rebuild/<name>_rebuilt.exe`，同时作为证据条目进哈希链）；对 Java class 样本单独反编译为结构文本；非可执行样本显式跳过并说明原因（不产出噪音 exe）。重建也可对任意历史 run 手工触发：`POST /api/reverse-engineering/runs/{id}/rebuild`（与流水线内自动重建**共用同一实现**）。重建工具以 `run.json` 为唯一事实来源，流水线在重建前会先落盘一次事实快照
+- **「工程强逆向」实时进展反馈**：七阶段流水线的每个阶段与步骤都通过 **SSE 进度流**（`GET /api/reverse-engineering/runs/{id}/progress`）实时推送——阶段开始带名称与序号（`phase_start`）、执行中以「已完成/总数 + 百分比 + 当前步骤说明」持续更新（`phase_progress`）、阶段结束明确标记完成/跳过/失败并附摘要（`phase_done`），运行收口推送 `run_done`。进度经**内存事件总线**（`reverse_engineering/progress.py`）分发：`emit` 为 O(1) 非阻塞操作、绝不等待订阅者；订阅先**回放历史再增量推送**（迟到连接与断线重连都安全），SSE 与 WebSocket 一致支持 `?token=` 鉴权。`POST /runs` 改为**后台任务立即返回 `run_id`**，前端进度面板实时高亮当前阶段、展示整体与步骤进度，并含与全站风格一致的「返回会话」按钮。**重启自愈**：后端启动时自动把磁盘上遗留的 `running` 记录收敛为 `interrupted`（进程内后台任务随进程终止，这些记录永远不会再有终态），避免历史列表长期挂着一串假"运行中"；SSE 端点对不存在的 run 返回 404、对内存总线已空（重启后）的已终结 run 合成终态事件立即收口，前端另有 15 秒连接看门狗——彻底消除"选择文件按钮被死 run 锁死 / 进度面板永远等待"的问题
+- **「工程强逆向」文件选择上传与自动识别路由**：前端「工程强逆向」页改为**文件选择对话框**（`<input type="file">`，Tauri 与浏览器均可用），不再要求用户手动输入绝对路径；上传后后端保存到 `runs/<id>/uploads/` 并立即调用 `input_dispatch` 自动识别类型，再按类型匹配处理流程——① **可执行文件**（PE / ELF / Mach-O 魔数自证）→ 跑完整**七阶段**流水线，末段自动重建生成功能等价的新 exe；② **Java class 文件**（`0xCAFEBABE` 魔数 + 版本号）→ 执行 `java_decompile` 阶段：若设置了环境变量 `ANDY_JAVA_DECOMPILER_JAR` 指向 CFR / FernFlower / Jadx 的 jar（**按 jar 文件名自动识别类型**并分别构造正确命令行；FernFlower 把结果打包成 jar，会自动解压出 `.java`），则**优先输出真正的 `.java` 源文件**；未配置或源码级反编译器调用失败则**回退 JDK `javap`**，输出 `.java.txt` 结构文本（类签名/字段/方法/字节码，并标记 `degraded`），绝不因缺工具而中断；③ **源代码** → 代码理解与重构；④ **无法识别** → 通用二进制分诊。规则与处理器均为**注册表 + 策略模式**（`@register_rule` / `@register_handler`），新增输入类型无需改动核心分类逻辑；REST 新增 `POST /api/reverse-engineering/runs/upload`（multipart，立即返回 `run_id` + 分类结果 + 处理流程）。旧的 `POST /runs`（传路径）与 `POST /classify` 仍保留
+- **REA 逆向工程 MCP 服务（本地 vendored，含原生反编译）**：以源码方式集成 [morluto/rea](https://github.com/morluto/rea)（Reverse Engineer Anything，v6.4.0 / MIT，锁定 commit `a56f7bb`，完整快照见 `mcp_servers/rea/`）——让 AI 在不看源码的前提下分析本地二进制与应用，结论附证据与局限，分析全程本机执行。**原生反编译已就绪**：项目内隔离安装 Ghidra 12.1.4 + Temurin JDK 21（工作区 `.tools/`，不依赖系统全局安装、不影响系统 JDK），可对原生 PE（x86/x64 exe/dll）输出**反编译伪代码**、汇编、函数清单、字符串、调用图与交叉引用；另有引擎无关的静态分析（JS/Electron 模块图、PE 资源树、.NET、文件摘要）。构建与用法见 [mcp_servers/README.md](mcp_servers/README.md)；为接入它，MCP 客户端新增 `max_line_bytes`（大响应帧上限）、`tool_allowlist`（工具白名单）与 `request_timeout`（长任务超时）三个 per-server 选项（默认关闭、不影响存量配置）
 - **问答对操作**：每条提问可「复制 / 删除本轮（物理删除）」；每条回答可「复制 / 追问 / 从此处分叉」——鼠标悬浮到消息上即可看到操作按钮
 - **会话文件传输**：聊天输入区点「📎」即可上传**文档**（txt/md/csv/json/py/js 等 26 种）与**图片**（png/jpg/gif/webp/bmp）随消息发给模型——文档内联为文本、图片缩放后按 OpenAI 视觉规范以 base64 注入，`deepseek-v4-flash` 实测可读文档内容、识别图片颜色；单条消息文档≤5、图片≤4、总数≤8，文档≤200KB、图片≤1.5MB（自动缩放控 token）；删除会话连带清理附件
 - **大输出自动落盘**：工具返回超大结果时自动落盘为「制品」，上下文只保留摘要与路径，避免撑爆 token 预算；模型可用 `read_artifact` 分页回读全文，设置页「制品」标签可查看/删除
 - **长期记忆**：跨会话记住用户偏好与项目事实（全局/会话两种作用域），新会话自动带入相关记忆；AI 可用 `memory_save` / `memory_search` 工具读写，设置页「记忆」标签可手动增删改查。**并支持定时自主总结**：后台按间隔把新增问答压缩成长期记忆（可关闭/调整间隔，也可在设置页「立即总结」）
-- **运行轨迹（Tracing）**：每次对话的完整 span 链（模型调用 + 工具调用的耗时、token 用量、输入输出摘要）落在「轨迹」标签页，可用泳道图一眼看出「哪里慢、哪里贵、哪里错」
+- **运行轨迹（Tracing）**：每次对话的完整 span 链（模型调用 + 工具调用的耗时、token 用量、输入输出摘要）落在「设置 → 审计 → 运行轨迹」子页签，可用泳道图一眼看出「哪里慢、哪里贵、哪里错」
 - **子代理委派**：AI 可用 `task` 工具把一个自包含子任务交给「上下文干净」的子代理在独立会话中完成，只把结论摘要带回主对话，主上下文不被中间探索过程污染
 - **定时任务**：按「每天固定时间 / 每周 / 固定间隔 / 一次性」自动执行提示词；每个任务可多选 **MCP 服务器、Skills、其他工具**（未勾选的一律不开放），在新建的隔离会话里运行并记录运行历史，设置页「定时任务」标签页可视化配置
 - **插件化架构**：一切皆插件，内核零业务逻辑，工具/Provider/服务/UI 均可插件化
@@ -77,14 +82,15 @@
 - **洞察看板（Insights Dashboard）**：会话 / 消息 / Token / 工具调用等内置指标 + 插件自定义指标聚合展示，入口 `/insights`
 - **插件开发者工作台（DevKit）**：面向二次开发者的插件脚手架与开发辅助工具，入口 `/devkit`
 - **集成中心（Integration Hub）**：飞书三模式接入——`api`（app_id/app_secret 直调开放接口）/ `cli`（lark-cli 子进程）/ `channel`（WebSocket 长连，群里 @机器人即答，可选 `feishu` extra：`lark-oapi>=1.7.0`）；出网代理经 `backend/.env.local` 注入（已 git-ignore，启动脚本与后端统一读取）
-- **OortCloud 免费额度集成（智连器）**：智连器新增 **OortCloud** 接入——点击「免费领取」跳转统一登录页授权后，后端自动领取平台下发的 **10 元免费模型额度**（免费 NewAPI 令牌），并自动创建 `OortCloud` 模型 Provider，会话里即可直接选用免费模型，**无需自有 API Key、无需付费**。领取流程含 state 防重放、令牌密钥本地加密存储；`appid` / `secretkey` 为可选应用凭证（多租户部署仅靠用户登录令牌即可领取，已与对接方确认无需填写）。管理接口对齐 NewAPI 规范（`accesstoken` + `requesttype=app`），对话流为 OpenAI 兼容 `/v1/chat/completions` 并补 `X-Roo-App-Version` 头。REST `/api/integrations/oortcloud/*` + 前端领取入口（设置页 Providers 标签 + 智连器面板）/ 回调页 `/oauth/oortcloud/callback`。
-- **权限审计与审计日志**：管理员校验（`require_admin`）之上记录状态变更审计事件，设置页「审计日志」标签可查询操作流水
+- **OortCloud 免费额度集成（智连器）**：智连器新增 **OortCloud** 接入——点击「免费领取」跳转统一登录页授权后，后端自动领取平台下发的 **10 元免费模型额度**（免费 NewAPI 令牌），并自动创建 `OortCloud` 模型 Provider，会话里即可直接选用免费模型，**无需自有 API Key、无需付费**。领取流程含 state 防重放、令牌密钥本地加密存储；`appid` / `secretkey` 为可选应用凭证（多租户部署仅靠用户登录令牌即可领取，已与对接方确认无需填写）。管理接口对齐 NewAPI 规范（`accesstoken` + `requesttype=app`），对话流为 OpenAI 兼容 `/v1/chat/completions` 并补 `X-Roo-App-Version` 头。REST `/api/integrations/oortcloud/*` + 前端领取入口（设置页「模型」标签 + 智连器面板）/ 回调页 `/oauth/oortcloud/callback`。
+- **权限审计与审计日志**：管理员校验（`require_admin`）之上记录状态变更审计事件，设置页「审计 → 审计日志」子页签可查询操作流水
+- **知识库系统（Knowledge Base）**：私有知识的「上传 → 分段清洗 → 索引 → 检索 → 技能化」全链路（方案见项目根目录《知识库系统-完整解决方案.md》），**管理界面在 `/knowledge`（会话页工具箱可直达）**：知识库卡片、文档上传（分段策略可覆盖）、状态与分段预览、检索测试（含技能模式）、嵌入模型管理。P1 支持 txt/md/csv/json/log/docx/pdf/图片（图片抽取为资产、OCR/VLM 描述参与索引、缺描述不丢分段）；音频（mp3/wav/m4a 等）经内置 **AudioAdapter** 走 OpenAI 兼容 ASR 转写（配置 `HARNESS_KB_ASR_ENDPOINT` / `HARNESS_KB_ASR_API_KEY` / `HARNESS_KB_ASR_MODEL` 后启用，可写入 `backend/.env.local`；未配置时上传音频返回明确指引）；分段策略 S1 通用规则 / S2 结构感知 / S3 父子 / S4 问答对**按文档特征自动匹配**（可手动覆盖），7 条公共清洗规则；检索支持 keyword（FTS5+BM25，中文 bigram 分词）/ semantic（cosine）/ hybrid（RRF 融合）三模式 + 可选 Rerank + 阈值过滤，缺索引优雅降级、空库不报错；嵌入模型可自定义（OpenAI 兼容端点、保存前连通性探针、密钥加密存储、换模型自动标记全量重建）。**技能化**：`knowledge_base_search` 工具已注册，模型经 function calling 自主判定调用（系统提示内置决策引导），提问分析（语言/实体/子查询/KB 路由，子查询≤4）后返回带来源标注的分段；配套内置 **`knowledge-base` 技能**（`backend/skills/knowledge-base/SKILL.md`，设置页「技能」可查看/启停）：规定检索调用规范、来源标注与拒答规则、建库/上传/重建等维护流程，并附 `references/management-api.md` 端点参考（按需加载）。REST：`/api/kb/*`（管理面，写接口需管理员）、`/api/retrieval`、`/api/skills/knowledge_base_search`（55 项测试覆盖）
 
 ---
 
 ## 演示
 
-![andy-harness 演示](gif/screenshot_2026-10-12_20-40-59.gif)
+![andy-harness 演示](docs/media/gif/screenshot_2026-10-12_20-40-59.gif)
 
 > 演示 AI 对话（OortCloud 接入）、评测实验室（评测数据集与 provider × 模型对比矩阵）、设置页各标签（插件集成 / Skills 技能市场 / 安全权限）、元气伙伴宠物插件等特性（GIF）。
 
@@ -99,6 +105,7 @@
 
 - Python 3.11+
 - Node.js 22.12+（或 20.19+；Vite 8 的 engines 要求 `^20.19.0 || >=22.12.0`，Node 22.0~22.11 不满足，实测 Node 24 正常）
+  - 注意：可选的 REA 逆向工程 MCP 服务（`mcp_servers/rea`）要求 Node **>= 22.19**（或 24.11+ / 26+），已构建过该服务时请确保 Node 满足其要求
 - pnpm 10+
 - uv（Python 包管理器）
 - **Rust 工具链（仅桌面壳需要）**：用 [rustup](https://rustup.rs/) 安装稳定版（`rustc` ≥ 1.77.2）；只跑浏览器模式（`start-all.bat` / `make backend` + `make frontend`）可跳过
@@ -133,7 +140,7 @@ cd frontend && pnpm build
 DEEPSEEK_API_KEY=sk-your-api-key-here
 ```
 
-> 也可以启动后在设置页面配置：http://localhost:5173/settings → Providers → 编辑 DeepSeek → 填入 API Key
+> 也可以启动后在设置页面配置：http://localhost:5173/settings → 模型 → 编辑 DeepSeek → 填入 API Key
 
 ### 启动开发服务器
 
@@ -328,7 +335,7 @@ Jev Manager 已激活，但未配置 API Key。请在设置页面配置 jev_mana
 | 10 | 按「Node.js 22+」装了 Node 22.0 却起不来 | Vite 8 的真实要求是 `^20.19.0 \|\| >=22.12.0` | 用 Node **22.12+**（或 20.19+）；实测 Node 24 正常 |
 | 11 | `start-all.bat` 一闪就退，提示「系统找不到指定的路径」 | 没先装依赖（仓库不含 `.venv` / `node_modules`） | 先执行安装步骤；`start-all.bat` **不会**自动装依赖，只复用已有环境 |
 | 12 | 提示 `Port 8000 is already in use`（或 5173） | 有旧实例仍在运行 | 先双击 `stop-all.bat`，再启动 |
-| 13 | 界面能打开但发消息失败 | 没配模型 API Key | 「设置 → Providers → 编辑 DeepSeek → 填 Key 并启用」；仅内置 DeepSeek 支持环境变量 `DEEPSEEK_API_KEY` |
+| 13 | 界面能打开但发消息失败 | 没配模型 API Key | 「设置 → 模型 → 编辑 DeepSeek → 填 Key 并启用」；仅内置 DeepSeek 支持环境变量 `DEEPSEEK_API_KEY` |
 | 14 | 桌面壳模式看不到浏览器模式的历史会话 | 两者数据目录不同（桌面壳 `%APPDATA%\andy-harness`，浏览器模式 `backend/data/`） | 属设计如此，详见「桌面壳（Tauri）启动」章节 |
 
 ### 前置工具怎么装
@@ -385,8 +392,8 @@ Vite 默认把开发服务器绑定到 `localhost`（解析为 IPv6 `[::1]`）�
 ### 5. 能启动但没法对话？需要先配 Provider 的 API Key
 不配 Key 也能启动（后端日志只会有 `Jev Manager 已激活，但未配置 API Key` 的警告），但发消息会失败。配置方式二选一：
 
-- 启动后在页面设置：http://localhost:5173/settings → Providers → 编辑对应 Provider → 填入 Key 并启用；
-- 或通过环境变量配置：**仅内置 DeepSeek 插件**支持环境变量回退 `DEEPSEEK_API_KEY`；Qwen / Doubao 目前只从「设置页 → Providers」的插件配置读取 Key（或在自定义 Provider 里配置任意 OpenAI 兼容端点的 Key）。
+- 启动后在页面设置：http://localhost:5173/settings → 模型 → 编辑对应 Provider → 填入 Key 并启用；
+- 或通过环境变量配置：**仅内置 DeepSeek 插件**支持环境变量回退 `DEEPSEEK_API_KEY`；Qwen / Doubao 目前只从「设置页 → 模型」的插件配置读取 Key（或在自定义 Provider 里配置任意 OpenAI 兼容端点的 Key）。
 
 > **Jev 结构化决策**需要**单独的** `jev_manager` API Key（设置 → 插件管理 → Jev Manager），与 Provider Key 不是同一个。未配置时调用 Jev 工具只会返回友好错误提示，不影响普通对话。
 
@@ -486,7 +493,7 @@ Jev 是 TypeSafe AI 的结构化决策模型，支持三种原语：
 
 无需准备任何 API Key，即可在本项目里使用 OortCloud 平台下发的 **10 元免费模型额度**（免费 NewAPI 令牌）进行对话：
 
-1. 进入设置页 → Providers 标签（或「智连器」面板），找到 **OortCloud 免费额度** 卡片；未领取时显示「免费领取 OortCloud 10 元模型额度」提示与「免费领取」按钮。
+1. 进入设置页 → 模型标签（或「智连器」面板），找到 **OortCloud 免费额度** 卡片；未领取时显示「免费领取 OortCloud 10 元模型额度」提示与「免费领取」按钮。
 2. 点击「免费领取」→ 浏览器跳转到 OortCloud 统一登录页，按提示登录并授权（一般无需填写 `appid` / `secretkey`）。
 3. 授权后自动回跳本应用回调页，后台领取平台下发的 **10 元免费模型额度** 并自动创建 `OortCloud` Provider（令牌密钥经本地加密保存）。
 4. 回到会话页，右上角 Provider 列表即可选用 **OortCloud** 及其免费模型，**不产生自有 API Key 费用**。
@@ -497,18 +504,18 @@ Jev 是 TypeSafe AI 的结构化决策模型，支持三种原语：
 ### 从插件市场安装插件
 
 1. 进入设置页面（聊天页面右上角齿轮图标）
-2. 切换到"插件管理"
-3. 点击"从插件市场安装插件"
+2. 切换到「插件 → 赋能器」（本机能力插件）
+3. 点击「从插件市场安装插件」
 4. 在市场卡片上点击「说明」查看详细介绍，点击「安装」一键安装（服务端直装）
-5. 安装后插件出现在插件管理列表，可启用/停用/配置；卸载后可从市场随时重装
+5. 安装后插件出现在赋能器列表，可启用/停用/配置；卸载后可从市场随时重装
 6. 系统内置插件默认为系统插件，不显示删除按钮；仅市场安装的插件可卸载
 
 > 想要自己开发插件发布到市场：用 DevKit 工作台（`/devkit`）生成插件脚手架，或直接以 `backend/plugins/` 内置插件（如 `tool_calculator`、`integration_hub`）为模板照抄结构。
 
 ### 切换主题
 
-1. 设置 → 通用设置
-2. 选择主题（黑客帝国 / 深海蓝 / 日落紫红 / 中性深灰 / 亮色）
+1. 设置 → 通用
+2. 选择主题（黑客帝国 / 深海蓝 / 日落紫红 / 中性深灰 / 亮色，默认亮色）
 3. 或在对话中让 AI "换个蓝色主题"
 
 ### 使用 Computer Use 桌面操控
@@ -523,10 +530,9 @@ Computer Use 是本项目的一等目标（操控整个本机桌面，浏览器�
 
 ### 从技能市场 / MCP 市场安装能力
 
-1. 进入设置页面（聊天页面右上角齿轮图标）→ 切换到「插件管理」
-2. 点击「从插件市场安装插件」可装**插件**；同面板也提供**技能市场**与 **MCP 市场**入口
-3. 技能市场：一键安装 SKILL.md 技能包（说明弹窗查看详情），卸载可重装
-4. MCP 市场：一键接入 libgen / deepwiki / context7 等免鉴权公开 MCP 服务，立即获得远程工具（连接失败也会保留配置并提示原因）
+1. 进入设置页面（聊天页面右上角齿轮图标）→ 分别切换到「Skills」/「MCP」标签
+2. 技能市场：一键安装 SKILL.md 技能包（说明弹窗查看详情），卸载可重装
+3. MCP 市场：一键接入 libgen / deepwiki / context7 等免鉴权公开 MCP 服务，立即获得远程工具（连接失败也会保留配置并提示原因）
 
 ---
 
@@ -591,7 +597,15 @@ andy-harness/
 ├── desktop/           # 桌面壳（Tauri 2）：Rust 壳 + 后端启动器
 │   ├── src-tauri/     # Tauri 配置 / Cargo / Rust 主逻辑（拉起与回收后端）
 │   └── launcher/      # launch-backend.py（解析 venv / 数据目录 / 端口）
-├── docs/              # 说明文档（用户手册 / 发布清单 / 插件指南 / 审计与分析报告 / 截图）
+├── rev_eng/           # 工程强逆向：样本 + 工具脚本（EXE 生成器 / 流水线 CLI）+ runs/ 运行产物与证据包
+├── docs/              # 说明文档（用户手册 / 发布清单 / 插件指南 / 审计与分析报告 / 截图 / 媒体资产）
+│   ├── manual/        # 用户使用手册与界面截图
+│   ├── marketing/     # 公众号推文等营销文案
+│   ├── reports/       # 代码审查、实施总结等报告
+│   └── media/         # 演示 GIF / 视频等媒体资产
+├── mcp_servers/       # 本地 vendored MCP 服务（rea：逆向工程，含验证样本；见 mcp_servers/README.md）
+├── tests/             # 测试集合
+│   └── e2e/           # 端到端测试与脚本
 ├── examples/          # 示例（预留目录）
 └── .github/           # CI 工作流 + Issue / PR 模板
 ```
@@ -614,13 +628,15 @@ andy-harness/
 ## 使用与开发文档
 
 **面向使用者**
-- [andy-harness v1.0.0 用户使用手册](docs/andy-harness-v1.0.0用户使用手册.md) — 图文版完整手册（安装启动、对话、会话管理、设置页十大标签、主题、认证、排错、**环境变量与数据文件全表**，共 16 张界面截图）
+- [andy-harness v1.0.0 用户使用手册](docs/andy-harness-v1.0.0用户使用手册.md) — 图文版完整手册（安装启动、对话、会话管理、设置页十一大标签、1.0.x 新增能力、主题、认证、排错、**环境变量与数据文件全表**，全部截图取自当前版本实机运行界面）
 - [常见问题排错](#-下载后常见问题排错) — 见下方专章（12 条）
 - [已知问题与注意事项](#已知问题与注意事项) — 预览版已知限制与避坑要点
 
 **面向开发者**
 - [桌面壳说明](desktop/README.md) — Tauri 壳的设计要点、开发运行与打包（含 sidecar 说明）
 - [前端开发说明](frontend/README.md) — Vue 3 / Pinia / i18n / 前端插件与测试
+- [本地 MCP 服务（REA）](mcp_servers/README.md) — vendored 逆向工程 MCP 服务的构建、注册、`max_line_bytes` / `tool_allowlist` 选项与端到端验证记录
+- [工程强逆向集成总结](docs/工程强逆向-端到端集成总结.md) — REA / Frida MCP / Firecracker / PentAGI / 功能等价重建 / Evidence v2 六阶段流水线、数据流转、降级策略与两轮验证
 - [免责声明](DISCLAIMER.md) — Token 成本、工具与桌面自动化的风险边界
 
 > 说明性 / 过程性文档（架构详设、开发计划、插件开发指南、审计与验证报告、CHANGELOG 等）自 v1.0.0 起不纳入版本管理，仅作者本地留存；历史变更与版本说明见 [GitHub Releases](https://github.com/andyqiuqiubo/andy-harness/releases)。

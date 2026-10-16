@@ -1,0 +1,6 @@
+﻿procexp64.exe : Valid
+   signer: CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US
+   valid : 04/17/2026 02:59:43 -> 04/16/2027 02:59:43
+7z2500.exe : NotSigned
+   signer: 
+   valid :  -> 

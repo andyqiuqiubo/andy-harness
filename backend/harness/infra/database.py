@@ -327,6 +327,105 @@ CREATE INDEX IF NOT EXISTS idx_audit_session   ON permission_audit(session_id);
 CREATE INDEX IF NOT EXISTS idx_audit_tool      ON permission_audit(tool_name, created_at);
 """
 
+# ── 知识库系统（KB / 文档 / 分段 / 嵌入模型）──────────────────────────
+# 分阶段存储：storage_stage 标记文档属 P1（文本/图文）还是 P2（音视频/特殊格式）。
+# 全文检索走 SQLite FTS5 虚表（clean_fulltext 已做中文 bigram 预分词），
+# 语义检索用 kb_segments.embedding（BLOB 存 float32 序列）做 numpy cosine。
+_CREATE_KNOWLEDGE_BASES = """
+CREATE TABLE IF NOT EXISTS knowledge_bases (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    embedding_model_id TEXT,
+    index_type TEXT NOT NULL DEFAULT 'fulltext',   -- fulltext / vector / both
+    default_retrieval_mode TEXT NOT NULL DEFAULT 'keyword',
+    rerank_enabled INTEGER NOT NULL DEFAULT 0,
+    storage_stage TEXT NOT NULL DEFAULT 'P1',
+    need_reindex INTEGER NOT NULL DEFAULT 0,       -- 换模型后需重建索引
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+_CREATE_KB_DOCUMENTS = """
+CREATE TABLE IF NOT EXISTS kb_documents (
+    id TEXT PRIMARY KEY,
+    kb_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    file_type TEXT NOT NULL DEFAULT '',
+    origin_path TEXT NOT NULL DEFAULT '',
+    storage_stage TEXT NOT NULL DEFAULT 'P1',
+    status TEXT NOT NULL DEFAULT 'pending',        -- pending/processing/ready/empty/failed
+    segment_count INTEGER NOT NULL DEFAULT 0,
+    char_count INTEGER NOT NULL DEFAULT 0,
+    asset_count INTEGER NOT NULL DEFAULT 0,
+    segment_strategy TEXT NOT NULL DEFAULT 'auto', -- auto/S1/S2/S3/S4（手动覆盖）
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (kb_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE
+);
+"""
+
+_CREATE_KB_SEGMENTS = """
+CREATE TABLE IF NOT EXISTS kb_segments (
+    id TEXT PRIMARY KEY,
+    doc_id TEXT NOT NULL,
+    kb_id TEXT NOT NULL,
+    content TEXT NOT NULL,                        -- 清洗后文本（子分段或普通分段）
+    clean_fulltext TEXT NOT NULL DEFAULT '',      -- 参与全文索引（含图描述 / 父子时含父上下文）
+    position INTEGER NOT NULL DEFAULT 0,
+    parent_id TEXT,                               -- 父子分段的子分段指向父分段
+    embedding BLOB,                               -- float32 序列；无向量索引时为 NULL
+    metadata_json TEXT NOT NULL DEFAULT '{}',     -- 标题层级/资产引用/truncated 等
+    hash TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (doc_id) REFERENCES kb_documents(id) ON DELETE CASCADE
+);
+"""
+
+_CREATE_KB_EMBEDDING_MODELS = """
+CREATE TABLE IF NOT EXISTS kb_embedding_models (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'openai',
+    model_name TEXT NOT NULL,
+    endpoint TEXT NOT NULL DEFAULT '',
+    api_key_encrypted TEXT NOT NULL DEFAULT '',   -- 加密存储；返回时脱敏
+    dimensions INTEGER NOT NULL DEFAULT 0,
+    normalize INTEGER NOT NULL DEFAULT 1,
+    batch_size INTEGER NOT NULL DEFAULT 32,
+    rerank_enabled INTEGER NOT NULL DEFAULT 0,
+    rerank_model TEXT NOT NULL DEFAULT '',
+    rerank_endpoint TEXT NOT NULL DEFAULT '',
+    rerank_api_key_encrypted TEXT NOT NULL DEFAULT '',
+    rerank_top_n INTEGER NOT NULL DEFAULT 10,
+    probe_ok INTEGER NOT NULL DEFAULT 0,          -- 保存时连通性探测结果
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+# FTS5 全文索引：contentless 由普通表承载（unindexed 列），
+# 便于删除/重建分段时同步维护倒排索引（外部内容表）。
+_CREATE_KB_SEGMENTS_FTS = """
+CREATE VIRTUAL TABLE IF NOT EXISTS kb_segments_fts USING fts5(
+    segment_id UNINDEXED,
+    kb_id UNINDEXED,
+    doc_id UNINDEXED,
+    clean_fulltext,
+    tokenize = 'unicode61'
+);
+"""
+
+_CREATE_INDEX_KB_DOCS = """
+CREATE INDEX IF NOT EXISTS idx_kb_docs_kb ON kb_documents(kb_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_kb_segments_doc ON kb_segments(doc_id, position);
+CREATE INDEX IF NOT EXISTS idx_kb_segments_kb ON kb_segments(kb_id, position);
+CREATE INDEX IF NOT EXISTS idx_kb_segments_hash ON kb_segments(kb_id, hash);
+CREATE INDEX IF NOT EXISTS idx_kb_segments_parent ON kb_segments(parent_id);
+"""
+# 注意：FTS5 虚表（kb_segments_fts）不能再建普通索引（SQLite 报
+# "virtual tables may not be indexed"）。kb_id 过滤走与 kb_segments 的 JOIN，
+# 由 idx_kb_segments_kb 承担，无需（也不能）在虚表上另建索引。
+
 _CREATE_INDEX_MESSAGES_SESSION = """
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
 """
@@ -422,6 +521,12 @@ class Database:
             + _CREATE_TEMPLATES
             + _CREATE_WORKFLOWS
             + _CREATE_WORKFLOW_RUNS
+            + _CREATE_KNOWLEDGE_BASES
+            + _CREATE_KB_DOCUMENTS
+            + _CREATE_KB_SEGMENTS
+            + _CREATE_KB_EMBEDDING_MODELS
+            + _CREATE_KB_SEGMENTS_FTS
+            + _CREATE_INDEX_KB_DOCS
             + _CREATE_INDEX_AUDIT
             + _CREATE_INDEX_MESSAGES_SESSION
             + _CREATE_INDEX_SNAPSHOTS_SESSION

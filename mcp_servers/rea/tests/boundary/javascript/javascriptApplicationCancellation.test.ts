@@ -1,0 +1,161 @@
+import { setImmediate } from "node:timers";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
+import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
+import { analyzeJavaScriptApplication } from "../../support/javascriptApplicationScope.js";
+
+describe("JavaScript application cancellation", () => {
+  it("interrupts semantic graph commitment before result validation", async () => {
+    const root = await createTestTempDirectory("rea-js-cancel-semantic-");
+    await writeFile(
+      join(root, "main.js"),
+      Array.from(
+        { length: 500 },
+        (_, index) =>
+          `export function inspect${index}(value) { return JSON.stringify(value); }`,
+      ).join("\n"),
+    );
+    const controller = new AbortController();
+    const phases: string[] = [];
+    const result = await analyzeJavaScriptApplication(
+      { input_path: root, format: "directory" },
+      {
+        signal: controller.signal,
+        progress: {
+          async report(event) {
+            phases.push(event.phase);
+            if (event.phase === "seal_javascript_semantic_graph")
+              setImmediate(() => controller.abort());
+          },
+        },
+      },
+    );
+    if (result.ok)
+      throw new Error(
+        "Cancelled commitment must not publish a successful analysis",
+      );
+    expect(projectAnalysisError(result.error)).toMatchObject({
+      code: "cancelled",
+      details: { reason: "cancelled" },
+    });
+    expect(phases).toContain("seal_javascript_semantic_graph");
+    expect(phases).not.toContain("validate_javascript_application_result");
+  });
+
+  it("honors control turns and cancellation while preparing one large source for owned analysis (#1462)", async () => {
+    const root = await createTestTempDirectory("rea-js-cancel-in-file-");
+    await writeFile(
+      join(root, "index.js"),
+      Array.from(
+        { length: 1200 },
+        (_, index) =>
+          `export function f${index}(){return {name:'f${index}',value:${index}};}`,
+      ).join("\n"),
+    );
+    const controller = new AbortController();
+    const phases: string[] = [];
+    let turns = 0;
+    // Count event-loop turns once the file starts; parsing, analysis and
+    // projection of this one file must leave room for them.
+    const tick = (): void => {
+      turns += 1;
+      if (turns === 3) controller.abort();
+      else if (!controller.signal.aborted) setImmediate(tick);
+    };
+    const result = await analyzeJavaScriptApplication(
+      { input_path: root, format: "directory" },
+      {
+        signal: controller.signal,
+        progress: {
+          async report(event) {
+            phases.push(event.phase);
+            if (event.phase === "parse_javascript_source") setImmediate(tick);
+          },
+        },
+      },
+    );
+    if (result.ok) throw new Error("Cancelled analysis must not succeed");
+    expect(projectAnalysisError(result.error)).toMatchObject({
+      code: "cancelled",
+    });
+    expect(phases).toContain("parse_javascript_source");
+    expect(phases).not.toContain("build_javascript_application_graph");
+  });
+
+  it.each([
+    "parse_javascript_source",
+    "build_javascript_application_graph",
+    "seal_javascript_application_graph",
+    "build_javascript_semantic_graph",
+    "seal_javascript_semantic_graph",
+    "validate_javascript_application_result",
+    "create_javascript_application_evidence",
+    "seal_javascript_application_result",
+    "validate_javascript_application_evidence",
+    "hash_javascript_application_evidence",
+  ])("rejects cancellation scheduled during %s", async (phase) => {
+    const root = await createTestTempDirectory("rea-js-cancel-phase-");
+    await writeFile(
+      join(root, "main.js"),
+      "export function inspect(value) { return JSON.stringify(value); }\n",
+    );
+    const controller = new AbortController();
+    let requested = false;
+    const terminal: string[] = [];
+    const result = await analyzeJavaScriptApplication(
+      { input_path: root, format: "directory" },
+      {
+        signal: controller.signal,
+        progress: {
+          async report(event) {
+            if (event.terminal) terminal.push(event.phase);
+            if (event.phase === phase) {
+              requested = true;
+              setImmediate(() => controller.abort());
+            }
+          },
+        },
+      },
+    );
+    expect(requested).toBe(true);
+    if (result.ok) throw new Error("Cancelled analysis must return a failure");
+    const failure = projectAnalysisError(result.error);
+    expect(failure).toMatchObject({ code: "cancelled" });
+    if (phase === "parse_javascript_source")
+      expect(failure).toMatchObject({
+        details: {
+          operation: "analyze_javascript_application",
+          cleanup: "complete",
+          partial_observation: {
+            normalized_result: {
+              statistics: { relevant_files: 1, parse_failures: 0 },
+            },
+          },
+        },
+      });
+    expect(terminal).toEqual([]);
+  });
+
+  it("honors cancellation observed during the terminal publication race", async () => {
+    const root = await createTestTempDirectory("rea-js-cancel-terminal-");
+    await writeFile(join(root, "main.js"), "export const value = 1;\n");
+    const controller = new AbortController();
+    const result = await analyzeJavaScriptApplication(
+      { input_path: root, format: "directory" },
+      {
+        signal: controller.signal,
+        progress: {
+          async report(event) {
+            if (event.terminal) controller.abort();
+          },
+        },
+      },
+    );
+    if (result.ok) throw new Error("Expected cancellation before admission");
+    expect(projectAnalysisError(result.error)).toMatchObject({
+      details: { reason: "cancelled" },
+    });
+  });
+});

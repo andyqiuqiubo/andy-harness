@@ -34,3 +34,6 @@ def isolated_test_db(tmp_path_factory: pytest.TempPathFactory) -> None:
     mcp_cfg = mcp_dir / "mcp.json"
     mcp_cfg.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
     os.environ["MCP_CONFIG_PATH"] = str(mcp_cfg)
+    # 知识库原文件 / 资产落盘目录同样隔离：否则上传测试会把文件写进真实的
+    # data/knowledge/（数据库已隔离但文件没有）。
+    os.environ["HARNESS_KNOWLEDGE_DIR"] = str(tmp_path_factory.mktemp("test-knowledge") / "knowledge")

@@ -445,14 +445,15 @@ class SchedulerService:
         raw = (spec.run_at or "").strip()
         if not raw:
             raise ValueError("一次性任务必须设置运行时间（run_at）")
-        if _parse_datetime(raw) is None:
+        parsed = _parse_datetime(raw)
+        if parsed is None:
             raise ValueError(f"一次性任务的运行时间格式无效: {raw}（应为 YYYY-MM-DD HH:MM）")
         # 拒绝过去时间：一次性任务若设在过去，``compute_next_run`` 返回空串导致
         # ``due_tasks``（``next_run_at != ''``）永不选中——任务显示为已启用却永远
         # 不执行且无任何提示（回归测试 ``test_once_task_requires_future_run_at`` 守护点）。
         # SEC-33 的「once 不计入 missed-run 跳过」语义作用于运行时 next_run_at 被拨回
         # 过去的存量任务（见 test_once_task_never_skipped 的 DB 覆盖模拟），而非创建入口。
-        if _parse_datetime(raw) <= _now_local():
+        if parsed <= _now_local():
             raise ValueError(f"一次性任务的运行时间必须晚于当前时间: {raw}")
 
     def create_task(

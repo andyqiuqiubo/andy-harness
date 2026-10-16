@@ -48,12 +48,11 @@ def auth_client(tmp_path: str, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("HARNESS_AUTH_ADMIN_PASSWORD", ADMIN_PASSWORD)
     monkeypatch.setenv("HARNESS_AUTH_SECRET", "test-fixed-secret")
 
-    from harness.main import app
-
     # SEC-28 测试隔离：登录限速计数按 IP+用户名累计，TestClient 的 client.host 恒为
     # "testclient"，若不在每个测试前清零，前一测试的失败登录会污染后一测试
     # （尤其限速测试自身会打满配额，导致后续依赖 admin 登录的测试被误限速）。
     from harness.api.rest import auth as auth_route
+    from harness.main import app
 
     auth_route._login_attempts.clear()
     with TestClient(app) as client:

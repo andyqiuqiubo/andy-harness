@@ -48,11 +48,21 @@ _OPEN_ENDPOINT_TIMEOUT = 20.0
 
 # 单个 JSON-RPC 请求的等待上限（抽成常量便于测试调小）
 _REQUEST_TIMEOUT = 60.0
+# per-server 可覆盖的请求等待上限区间：默认 60s；冷启动/单次分析耗时的 server
+# （如 REA + Ghidra 原生分析，其提供方启动截止即 330s）可在 mcp.json 用
+# request_timeout 调大，其余 server 不受影响。
+_MIN_REQUEST_TIMEOUT = 5.0
+_MAX_REQUEST_TIMEOUT = 3600.0
 
 # ── stdio 传输的资源上限（SEC-15） ──
 # 单行 JSON-RPC 上限：失控/恶意 server 输出超长单行时，超出部分直接丢弃并断开，
 # 避免 `readline()` 无上限把内存打满。
 _MAX_LINE_BYTES = 1 * 1024 * 1024  # 1 MB
+# per-server 可调的单行上限区间：默认 1MB；部分 server 的 tools/list 响应天然
+# 很大（如 REA 的 170 工具目录约 2MB），可在 mcp.json 用 max_line_bytes 调大，
+# 硬上限防止误配把上面的内存护栏打穿。
+_MAX_LINE_BYTES_MIN = 64 * 1024  # 64 KB
+_MAX_LINE_BYTES_CAP = 64 * 1024 * 1024  # 64 MB
 # 丢弃超长行时最多再吞掉多少字节后放弃（防无限吞）
 _MAX_SKIP_BYTES = 64 * 1024 * 1024  # 64 MB
 # stderr 最多记录多少行（之后仍继续抽干，只是不再打日志）
@@ -83,6 +93,16 @@ class MCPServerConfig:
 
     - stdio：`command` + `args`
     - sse：`url`
+
+    可选的 per-server 开关（默认值保持既有行为，不影响存量配置）：
+
+    - `max_line_bytes`：stdio 单行读取上限。响应帧大的 server（如 REA 的
+      tools/list 约 2MB）可在配置中调大，否则超长行被 SEC-15 护栏丢弃、
+      表现为握手假死。
+    - `tool_allowlist`：远端工具白名单（空 = 不过滤）。只把名单内的工具
+      注册给 AI，抑制工具数量过多的 server 挤占模型上下文。
+    - `request_timeout`：单次 JSON-RPC 请求的等待上限（秒，默认 60）。慢
+      server（如 REA 冷启动 Ghidra 可达 330s）需按需调大，避免误杀长任务。
     """
 
     name: str
@@ -94,6 +114,9 @@ class MCPServerConfig:
     headers: dict[str, str] = field(default_factory=dict)
     description: str = ""
     enabled: bool = True
+    max_line_bytes: int = _MAX_LINE_BYTES
+    tool_allowlist: list[str] = field(default_factory=list)
+    request_timeout: float = _REQUEST_TIMEOUT
 
 
 # ────────────────────────── 协议基类 ──────────────────────────
@@ -172,17 +195,29 @@ class BaseMCPConnection(ABC):
     async def _list_tools(self) -> list[MCPToolSpec]:
         result = await self._request("tools/list", {})
         raw_tools = result.get("tools", []) if isinstance(result, dict) else []
+        allowlist = self.config.tool_allowlist
         specs: list[MCPToolSpec] = []
         for t in raw_tools:
             if not isinstance(t, dict):
                 continue
+            name = str(t.get("name", ""))
+            # 白名单命中才注册（空名单 = 不过滤）；未命中的不进 ToolRegistry
+            if allowlist and name not in allowlist:
+                continue
             specs.append(
                 MCPToolSpec(
                     server=self.config.name,
-                    name=str(t.get("name", "")),
+                    name=name,
                     description=str(t.get("description", "")),
                     input_schema=t.get("inputSchema") or {"type": "object", "properties": {}},
                 )
+            )
+        if allowlist:
+            logger.info(
+                "MCP server '%s' 工具白名单生效：注册 %d / 广播 %d 个工具",
+                self.config.name,
+                len(specs),
+                len(raw_tools),
             )
         return specs
 
@@ -229,7 +264,7 @@ class BaseMCPConnection(ABC):
             self._pending[req_id] = future
             await self._send(payload)
             try:
-                return await asyncio.wait_for(future, timeout=_REQUEST_TIMEOUT)
+                return await asyncio.wait_for(future, timeout=self.config.request_timeout)
             except TimeoutError as e:
                 self._pending.pop(req_id, None)
                 raise RuntimeError(f"MCP request timeout: {method} server={self.config.name}") from e
@@ -359,25 +394,27 @@ class MCPServerConnection(BaseMCPConnection):
     def _read_loop_sync(self) -> None:
         """后台线程：阻塞读子进程 stdout，逐行回投主循环分发。
 
-        单行读取带 1MB 上限：恶意/失控 server 输出超长单行时丢弃该行并继续，
-        避免 `readline()` 无上限导致内存被一条消息打满（SEC-15-③）。
+        单行读取带上限（默认 1MB，per-server 可用 max_line_bytes 调大）：
+        恶意/失控 server 输出超长单行时丢弃该行并继续，避免 `readline()`
+        无上限导致内存被一条消息打满（SEC-15-③）。
         """
         proc = self._proc
         loop = self._owner_loop
         if proc is None or proc.stdout is None or loop is None:
             return
+        limit = self.config.max_line_bytes
         try:
             while not self._closed:
-                raw = proc.stdout.readline(_MAX_LINE_BYTES)
+                raw = proc.stdout.readline(limit)
                 if not raw:
                     break
-                if len(raw) >= _MAX_LINE_BYTES and not raw.endswith(b"\n"):
+                if len(raw) >= limit and not raw.endswith(b"\n"):
                     logger.error(
                         "MCP server '%s' 单行输出超过 %d 字节，已丢弃该行（防内存打满）",
                         self.config.name,
-                        _MAX_LINE_BYTES,
+                        limit,
                     )
-                    if not self._skip_to_newline(proc.stdout):
+                    if not self._skip_to_newline(proc.stdout, limit):
                         break  # 吞到上限仍无换行 → 放弃该通道
                     continue
                 line = raw.decode("utf-8", errors="replace").strip()
@@ -403,8 +440,11 @@ class MCPServerConnection(BaseMCPConnection):
                 pass
 
     @staticmethod
-    def _skip_to_newline(stream: Any) -> bool:
+    def _skip_to_newline(stream: Any, limit: int) -> bool:
         """吞掉当前行的剩余内容直到换行。
+
+        Args:
+            limit: 与读取循环一致的单行上限。
 
         Returns:
             True 表示已吞到换行（可继续读下一行）；False 表示达到丢弃上限或 EOF。
@@ -412,7 +452,7 @@ class MCPServerConnection(BaseMCPConnection):
         skipped = 0
         try:
             while skipped < _MAX_SKIP_BYTES:
-                chunk = stream.readline(_MAX_LINE_BYTES)
+                chunk = stream.readline(limit)
                 if not chunk:
                     return False
                 skipped += len(chunk)
@@ -769,6 +809,45 @@ def parse_server_config(raw: dict[str, Any]) -> MCPServerConfig:
     else:
         enabled = bool(raw.get("enabled", True))
 
+    # per-server 单行上限（可选）：响应帧大的 server 调大，默认 1MB
+    max_line_bytes = _MAX_LINE_BYTES
+    raw_max_line = raw.get("max_line_bytes")
+    if raw_max_line is not None:
+        try:
+            max_line_bytes = int(raw_max_line)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"MCP server '{raw.get('name')}' max_line_bytes 必须为整数") from e
+        if not (_MAX_LINE_BYTES_MIN <= max_line_bytes <= _MAX_LINE_BYTES_CAP):
+            raise ValueError(
+                f"MCP server '{raw.get('name')}' max_line_bytes 必须在 "
+                f"{_MAX_LINE_BYTES_MIN}~{_MAX_LINE_BYTES_CAP} 字节之间"
+            )
+
+    # 工具白名单（可选）：列表或逗号分隔字符串；空 = 不过滤
+    raw_allowlist = raw.get("tool_allowlist")
+    if raw_allowlist is None:
+        tool_allowlist: list[str] = []
+    elif isinstance(raw_allowlist, str):
+        tool_allowlist = [t.strip() for t in raw_allowlist.split(",") if t.strip()]
+    elif isinstance(raw_allowlist, list):
+        tool_allowlist = [str(t).strip() for t in raw_allowlist if str(t).strip()]
+    else:
+        raise ValueError(f"MCP server '{raw.get('name')}' tool_allowlist 必须为字符串或列表")
+
+    # per-server 请求超时（可选，秒）：慢 server（冷启动/长分析）调大，默认 60s
+    request_timeout = _REQUEST_TIMEOUT
+    raw_timeout = raw.get("request_timeout")
+    if raw_timeout is not None:
+        try:
+            request_timeout = float(raw_timeout)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"MCP server '{raw.get('name')}' request_timeout 必须为数字") from e
+        if not (_MIN_REQUEST_TIMEOUT <= request_timeout <= _MAX_REQUEST_TIMEOUT):
+            raise ValueError(
+                f"MCP server '{raw.get('name')}' request_timeout 必须在 "
+                f"{_MIN_REQUEST_TIMEOUT}~{_MAX_REQUEST_TIMEOUT} 秒之间"
+            )
+
     return MCPServerConfig(
         name=str(raw.get("name") or url or command),
         type=cfg_type,
@@ -779,6 +858,9 @@ def parse_server_config(raw: dict[str, Any]) -> MCPServerConfig:
         headers={str(k): str(v) for k, v in (raw.get("headers") or {}).items()},
         description=str(raw.get("description") or ""),
         enabled=enabled,
+        max_line_bytes=max_line_bytes,
+        tool_allowlist=tool_allowlist,
+        request_timeout=request_timeout,
     )
 
 
@@ -874,6 +956,13 @@ class MCPClientService:
                     "description": cfg.description,
                     "disabled": not cfg.enabled,
                 }
+                # 非默认的 per-server 选项才落盘，保持 mcp.json 简洁
+                if cfg.max_line_bytes != _MAX_LINE_BYTES:
+                    servers[name]["max_line_bytes"] = cfg.max_line_bytes
+                if cfg.tool_allowlist:
+                    servers[name]["tool_allowlist"] = cfg.tool_allowlist
+                if cfg.request_timeout != _REQUEST_TIMEOUT:
+                    servers[name]["request_timeout"] = cfg.request_timeout
         atomic_write_json(path, {"mcpServers": servers})
 
     def add_server(self, cfg: MCPServerConfig, *, overwrite: bool = False) -> None:

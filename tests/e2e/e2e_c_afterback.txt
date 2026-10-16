@@ -1,0 +1,10 @@
+﻿bsk.exe : A new bsk version is available: 0.3.0 -> 0.3.2. The daemon will upgra
+de bsk automatically.
+所在位置 行:503 字符: 369
++ ... _stream.js; & 'C:\Users\Administrator\.local\bin\bsk.exe' evaluate -- ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (A new bsk versi... automatically. 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+{"assistantRows":7,"isStreaming":true,"lastAssistantText":"Live verification was thin this round (the government page i","stopBtnVisible":true,"stoppedBadges":["鐢ㄦ埛宸插仠姝㈠洖绛?],"streamingTextHead":"016** the G20 summit's cultura","streamingTextLen":361}

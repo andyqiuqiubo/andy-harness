@@ -42,6 +42,10 @@ class ServerAdd(BaseModel):
 
     - stdio：`command` + `args`
     - sse：`url`（可带 `headers`）
+    - 可选 per-server 选项：`max_line_bytes`（stdio 单行上限，64KB~64MB，
+      响应帧大的 server 如 REA 需要调大）、`tool_allowlist`（工具白名单，
+      空 = 不过滤）、`request_timeout`（单请求等待上限秒数，5~3600，默认 60；
+      冷启动慢的 server 如 REA+Ghidra 需要调大）
     """
 
     name: str
@@ -53,6 +57,9 @@ class ServerAdd(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     description: str = ""
     enabled: bool = True
+    max_line_bytes: int | None = None
+    tool_allowlist: list[str] = Field(default_factory=list)
+    request_timeout: float | None = None
 
 
 def setup_mcp_routes(registry: ServiceRegistry) -> None:

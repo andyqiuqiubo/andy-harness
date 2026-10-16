@@ -1,0 +1,8 @@
+{
+  "decompiler": "javap",
+  "class_name": "Hello",
+  "super_class": "",
+  "interfaces": [],
+  "method_count": 2,
+  "major_version": null
+}
