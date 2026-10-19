@@ -45,8 +45,8 @@ from harness.modules.reverse_engineering.pe_resources import (  # noqa: E402
     local_strings,
 )
 
-SRC_ROOT = Path(__file__).resolve().parents[4]  # .../src
-WS_ROOT = Path(__file__).resolve().parents[5]  # 工作区根
+SRC_ROOT = Path(__file__).resolve().parents[4]  # 项目根（含 mcp_servers/rev_eng/backend；目录重组后 src/ 内容已上提）
+WS_ROOT = Path(__file__).resolve().parents[4]  # 目录重组后项目根即工作区根（.tools 所在目录）
 
 REA_DIR = SRC_ROOT / "mcp_servers" / "rea"
 REA_ENTRY = REA_DIR / "scripts" / "rea.mjs"

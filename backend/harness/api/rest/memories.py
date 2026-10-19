@@ -62,6 +62,9 @@ def _get_service(registry: ServiceRegistry) -> MemoryService | None:
 
 def setup_memory_routes(registry: ServiceRegistry) -> None:
     """注册长期记忆路由。"""
+    # 模块级 router 会被重复装配（测试 reload harness.main / 多应用共存）复用：
+    # 先清理此前注册的闭包，避免旧应用（不同 ServiceRegistry）的路由优先匹配。
+    router.routes.clear()
 
     @router.get("/summary-info", summary="记忆自动总结的配置与状态")
     async def summary_info() -> dict[str, Any]:

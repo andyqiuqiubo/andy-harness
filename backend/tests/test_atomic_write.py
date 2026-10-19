@@ -82,3 +82,30 @@ class TestAtomicWriteFailure:
             atomic_write_text(target, "data")
         after_tmp = [p.name for p in tmp_path.iterdir() if ".tmp" in p.name]
         assert len(after_tmp) == original_tmp_count, f"失败后残留临时文件: {after_tmp}"
+
+
+class TestTransientLockRetry:
+    def test_retries_permission_error(self, tmp_path: Path, monkeypatch) -> None:
+        """WinError 5（目标被短暂占用）必须重试，而不是直接失败。
+
+        真机事故：录制器收尾写 session.json 时 os.replace 被心跳线程的读句柄
+        顶掉，封版中断，会话停在 failed，用户到"解析"才发现"未封版"。
+        """
+        from harness.infra import atomic_write as aw
+
+        calls = {"n": 0}
+        real_replace = aw.os.replace
+
+        def flaky(src, dst):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise PermissionError(13, "The process cannot access the file", str(dst))
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(aw.os, "replace", flaky)
+        target = tmp_path / "session.json"
+        atomic_write_json(target, {"status": "ready"})
+
+        assert target.exists()
+        assert calls["n"] == 3, f"未按预期重试（实际 {calls['n']} 次）"
+        assert not [p for p in tmp_path.iterdir() if ".tmp" in p.name], "临时文件未清理"

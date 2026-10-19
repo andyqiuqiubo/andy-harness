@@ -32,6 +32,19 @@ desktop = [
     "pyautogui>=0.9.54",
     "mss>=9.0.1",
 ]
+# andy-repeat（桌面操作录制与确定性回放）所需的可选依赖。
+# 缺失时 andy_repeat 插件加载但 available=false，工具返回明确降级提示（不抛栈）。
+# pynput=全局输入钩子；uiautomation=UIA 语义取证/Pattern 动作（系统 API 薄封装）；
+# mss/pyautogui 复用 desktop extra。图像锚点多尺度匹配可选装 repeat-image。
+repeat = [
+    "pynput>=1.7.6",
+    "uiautomation>=2.0.18",
+    "mss>=9.0.1",
+    "pyautogui>=0.9.54",
+]
+repeat-image = [
+    "opencv-python-headless>=4.9",
+]
 # 飞书 Channel 入站（群里 @机器人回群）所需的可选依赖。
 # 缺失时 feishu_channel 优雅降级（channel 模式不可用，api/cli 模式不受影响）；
 # 需启用飞书群聊入站时再安装（见 feishu_channel.py 顶部的 import 守护）。
@@ -66,6 +79,17 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 exclude = "tests/"
+
+# 无类型桩的第三方/可选桌面库：import 解析为 Any（对齐 computer_use 的可选依赖处理，
+# 不放松自有代码的 strict 检查）。
+[[tool.mypy.overrides]]
+module = [
+    "pynput.*",
+    "uiautomation.*",
+    "comtypes.*",
+    "cv2.*",
+]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

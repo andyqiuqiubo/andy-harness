@@ -10,6 +10,7 @@ import WorkflowListView from '../views/WorkflowListView.vue'
 import DevkitView from '../views/DevkitView.vue'
 import KnowledgeBaseView from '../views/KnowledgeBaseView.vue'
 import ReverseEngineeringView from '../views/ReverseEngineeringView.vue'
+import RepeatStudioView from '../views/RepeatStudioView.vue'
 import OortcloudCallback from '../views/OortcloudCallback.vue'
 
 const router = createRouter({
@@ -74,6 +75,11 @@ const router = createRouter({
       path: '/reverse',
       name: 'reverse',
       component: ReverseEngineeringView,
+    },
+    {
+      path: '/repeat',
+      name: 'repeat',
+      component: RepeatStudioView,
     },
     {
       path: '/oauth/oortcloud/callback',

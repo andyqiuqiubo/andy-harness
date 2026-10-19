@@ -58,9 +58,9 @@ from rebuild_kinds import (  # noqa: E402
     render,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-RUNS_DIR = REPO_ROOT / "src" / "rev_eng" / "runs"
-SAMPLES_DIR = REPO_ROOT / "src" / "rev_eng" / "samples"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+RUNS_DIR = REPO_ROOT / "rev_eng" / "runs"
+SAMPLES_DIR = REPO_ROOT / "rev_eng" / "samples"
 TCC = REPO_ROOT / ".tools" / "tcc" / "tcc" / "tcc.exe"
 
 
@@ -68,7 +68,7 @@ TCC = REPO_ROOT / ".tools" / "tcc" / "tcc" / "tcc.exe"
 # PE 解析：复用后端共享模块（rev_eng 工具与流水线阶段同一套实现，避免两处漂移）
 # ---------------------------------------------------------------------------
 
-_BACKEND = REPO_ROOT / "src" / "backend"
+_BACKEND = REPO_ROOT / "backend"
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 

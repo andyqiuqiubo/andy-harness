@@ -883,6 +883,9 @@ onUnmounted(() => {
               <router-link to="/reverse" class="toolbox-item" @click="showToolbox = false">
                 <span>🔬</span><span>{{ t('nav.reverse') }}</span>
               </router-link>
+              <router-link to="/repeat" class="toolbox-item" @click="showToolbox = false">
+                <span>🔁</span><span>{{ t('nav.repeat') }}</span>
+              </router-link>
               <router-link to="/templates" class="toolbox-item" @click="showToolbox = false">
                 <span>📦</span><span>{{ t('nav.templates') }}</span>
               </router-link>

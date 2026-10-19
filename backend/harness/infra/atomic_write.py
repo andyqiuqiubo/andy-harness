@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -72,7 +73,21 @@ def atomic_write_text(
                 os.chmod(target, 0o200 | (target.stat().st_mode & 0o777))  # 加写权限
             except OSError:
                 pass
-        os.replace(tmp, target)  # 原子替换（覆盖已存在的目标）
+        # Windows：目标文件可能被其他进程**短暂**打开（心跳线程读 session.json、
+        # 杀软扫描新文件），此时 os.replace 抛 WinError 5。原实现直接失败，
+        # 导致录制封版中断、会话永远停在 draft/failed（真机坐实：
+        # r-20261019-155147-086adc 收尾时 PermissionError）。
+        last_err: OSError | None = None
+        for attempt in range(6):
+            try:
+                os.replace(tmp, target)  # 原子替换（覆盖已存在的目标）
+                last_err = None
+                break
+            except PermissionError as e:  # noqa: PERF203
+                last_err = e
+                time.sleep(0.05 * (attempt + 1))
+        if last_err is not None:
+            raise last_err
         if chmod is not None:
             try:
                 os.chmod(target, chmod)

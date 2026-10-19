@@ -9,6 +9,8 @@
 
 未启用认证或无 AuthService 时完全放行（本地单用户行为不变）。
 WebSocket 不走 HTTP 中间件，在端点内按 `?token=` 校验。
+SSE（`GET .../events` 或 `Accept: text/event-stream`）同样不能用自定义头
+（浏览器 EventSource 限制），故中间件对本类请求接受 `?token=`。
 """
 
 from __future__ import annotations
@@ -71,6 +73,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         header = request.headers.get("Authorization", "")
         token = header[7:].strip() if header.startswith("Bearer ") else ""
+        if not token:
+            # EventSource 无法设置请求头：仅对事件流请求接受 ?token=，
+            # 避免普通接口把令牌暴露在 URL/访问日志里。
+            is_stream = request.method == "GET" and (
+                path.endswith("/events")
+                or "text/event-stream" in request.headers.get("accept", "").lower())
+            if is_stream:
+                token = (request.query_params.get("token") or "").strip()
         if not token:
             return _unauthorized()
         user = auth_service.user_from_token(token)

@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // Dify 风格工作流编辑器：节点 data 按类型异构且运行时可变，动态图结构暂用 any 承载。
 // TODO(1.1): 引入节点数据判别联合类型，移除本文件的 no-explicit-any 豁免。
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { apiClient } from '../api/client'
 import { useProviderStore } from '../stores/providers'
@@ -14,6 +14,12 @@ const { t } = useLanguage()
 const providerStore = useProviderStore()
 const route = useRoute()
 const router = useRouter()
+
+/** 返回：有来源页则回到来源页，否则回退到工作流列表。 */
+function goBack() {
+  if (window.history.length > 1) router.back()
+  else router.push('/workflows')
+}
 
 // LLM 节点的厂商选项只列出可用厂商（已启用 + 已配 Key）：
 // 停用 / 未配 Key 的选了也必然失败，不应出现在选框里（与会话页同一判定）。
@@ -73,6 +79,17 @@ const NODE_DEFS: Record<string, any> = {
     // Dify 变量赋值器：操作模式 set/clear/append/extend/加减乘除
     make: () => ({ variables: [{ name: '', value: '', op: 'set' }] }),
   },
+  // 桌面录制步骤（andy-repeat 产物）。缺定义会让画布无法渲染/编辑录制流程。
+  gui: {
+    type: 'gui', icon: '🖱', color: '#3182ce', inputs: ['in'], outputs: ['out'],
+    make: () => ({
+      sid: 's01', action: 'click', label: '', risk: 'write',
+      target: { scope: 'window', app_hint: {}, locators: [] },
+      params: {}, timing: {}, assertion: null, risk_policy: undefined,
+      policy: { on_fail: 'suspend_manual', retries: 2, backoff_ms: 800 },
+      evidence: {}, meta: { confidence: 0.5, needs_review: true },
+    }),
+  },
 }
 
 const PALETTE_GROUPS: { key: string; types: string[] }[] = [
@@ -82,6 +99,7 @@ const PALETTE_GROUPS: { key: string; types: string[] }[] = [
   { key: 'logic', types: ['condition'] },
   { key: 'integration', types: ['http'] },
   { key: 'variable', types: ['assign'] },
+  { key: 'desktop', types: ['gui'] },
 ]
 
 // Dify If-ELSE 运算符全集（https://docs.dify.ai/zh/cloud/use-dify/nodes/ifelse）
@@ -111,6 +129,29 @@ const graph = reactive<{ nodes: any[]; edges: any[] }>({
   edges: [],
 })
 const viewport = reactive({ x: 40, y: 40, zoom: 1 })
+
+/** 载入后自适应：按节点包围盒缩放并居中（录制流程一屏可见）。 */
+function fitView() {
+  const el = viewportRef.value
+  if (!el || !graph.nodes.length) return
+  const w = el.clientWidth
+  const h = el.clientHeight
+  if (w < 120 || h < 120) return  // 布局尚未完成（首帧 clientWidth 可能为 0）
+  const xs = graph.nodes.map((n: any) => Number(n.position?.x) || 0)
+  const ys = graph.nodes.map((n: any) => Number(n.position?.y) || 0)
+  const minX = Math.min(...xs)
+  const minY = Math.min(...ys)
+  const maxX = Math.max(...xs) + NODE_W
+  const maxY = Math.max(...ys) + 130
+  const pad = 60
+  const zoom = Math.max(0.3, Math.min(1, Math.min(
+    (w - pad * 2) / Math.max(1, maxX - minX),
+    (h - pad * 2) / Math.max(1, maxY - minY),
+  )))
+  viewport.zoom = zoom
+  viewport.x = (w - (maxX - minX) * zoom) / 2 - minX * zoom
+  viewport.y = (h - (maxY - minY) * zoom) / 2 - minY * zoom
+}
 const viewportRef = ref<HTMLElement | null>(null)
 const selectedId = ref<string | null>(null)
 const connecting = ref<{ source: string; handle: string; x: number; y: number } | null>(null)
@@ -434,7 +475,8 @@ function nodeTitle(node: any) {
     case 'http': return `${node.data.method} ${node.data.url || 'HTTP'}`
     case 'template': return '模板'
     case 'assign': return '变量赋值'
-    default: return NODE_DEFS[node.type]?.type || node.type
+    case 'gui': return node.data.label || '桌面步骤'
+    default: return node.data?.label || NODE_DEFS[node.type]?.type || node.type
   }
 }
 function nodeTitleById(id: string) {
@@ -529,6 +571,9 @@ async function loadWorkflow(id: string) {
     Object.keys(runResults).forEach((k) => delete runResults[k])
     endOutputs.value = {}
     runStatus.value = 'idle'
+    await nextTick()
+    requestAnimationFrame(() => fitView())
+    window.setTimeout(fitView, 200)
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : String(e)
   }
@@ -684,8 +729,8 @@ const availableVars = computed(() => (selectedId.value ? upstreamVars(selectedId
 <template>
   <div class="wf-studio">
     <header class="wf-toolbar">
-      <router-link to="/chat" class="btn-ghost btn-sm">← {{ t('insights.back') }}</router-link>
-      <router-link to="/workflows" class="btn-ghost btn-sm wf-back">← {{ t('workflows.back') }}</router-link>
+      <!-- 单一返回入口：优先回到来源页，无历史时回退到工作流列表 -->
+      <button class="btn-ghost btn-sm" @click="goBack">← {{ t('workflows.back') }}</button>
       <div class="wf-brand">⚡ {{ t('wfEditor.title') }}</div>
       <input v-model="workflowName" class="wf-name-input" :placeholder="t('wfEditor.title')" />
       <div class="wf-tool-actions">
@@ -733,6 +778,7 @@ const availableVars = computed(() => (selectedId.value ? upstreamVars(selectedId
         @drop="onDrop"
         @wheel.prevent="onWheel"
       >
+        <div v-if="loadError" class="wf-load-error">{{ loadError }}</div>
         <div class="wf-world" :style="worldStyle">
           <svg :style="edgeSvgStyle">
             <path
@@ -821,6 +867,29 @@ const availableVars = computed(() => (selectedId.value ? upstreamVars(selectedId
               </div>
             </div>
             <button class="btn-ghost btn-sm" @click="selected.data.variables.push({ name: '', label: '', type: 'string', required: false, default: '' })">{{ t('wfEditor.addVar') }}</button>
+          </template>
+
+          <template v-else-if="selected.type === 'gui'">
+            <div class="wf-cfg-hint">{{ t('wfEditor.guiHint') }}</div>
+            <div class="wf-cfg-item">
+              <label>{{ t('wfEditor.guiLabel') }}</label>
+              <input v-model="selected.data.label" class="form-input" />
+            </div>
+            <div class="wf-cfg-row">
+              <label>{{ t('wfEditor.guiAction') }}</label>
+              <code>{{ selected.data.action }}</code>
+            </div>
+            <div class="wf-cfg-row">
+              <label>{{ t('wfEditor.guiRisk') }}</label>
+              <code>{{ selected.data.risk }}</code>
+            </div>
+            <div class="wf-cfg-row">
+              <label>{{ t('wfEditor.guiLocators') }}</label>
+              <code>{{ (selected.data.target?.locators || []).length }}</code>
+            </div>
+            <div class="wf-cfg-hint">
+              {{ (selected.data.target?.locators || []).map((l: any) => l.kind + (l.by ? ':' + l.by : '')).join(' → ') }}
+            </div>
           </template>
 
           <template v-else-if="selected.type === 'end'">
@@ -1151,6 +1220,7 @@ const availableVars = computed(() => (selectedId.value ? upstreamVars(selectedId
 .wf-pal-icon { font-size: 1rem; }
 .wf-pal-hint { font-size: var(--font-size-xs); color: var(--color-text-tertiary); margin-top: var(--space-sm); line-height: 1.5; }
 
+.wf-load-error { position: absolute; top: 10px; left: 10px; z-index: 20; padding: 6px 10px; font-size: 12px; color: #c53030; background: #fff5f5; border: 1px solid #feb2b2; border-radius: 6px; }
 .wf-canvas { position: relative; flex: 1; overflow: hidden; background-color: var(--bg-main); background-image: radial-gradient(var(--border-color) 1px, transparent 1px); background-size: 22px 22px; cursor: grab; }
 .wf-canvas:active { cursor: grabbing; }
 .wf-world { position: absolute; left: 0; top: 0; width: 0; height: 0; }

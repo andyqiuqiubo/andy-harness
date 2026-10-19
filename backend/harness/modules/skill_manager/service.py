@@ -94,10 +94,19 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
 
 
 def _parse_simple_yaml(raw: str) -> dict[str, str]:
-    """解析 `key: value` 形式的简单 YAML 映射。"""
+    """解析 `key: value` 形式的简单 YAML 映射。
+
+    额外支持块标量（`key: |` / `key: >`，含 `|-`/`>-` 等修饰）：
+    官方 SKILL.md（如 BrowserSkill v0.3.3）的 description 常用多行块书写，
+    不支持会导致 description 为空、整个 skill 被跳过。
+    """
     data: dict[str, str] = {}
-    for line in raw.splitlines():
+    lines = raw.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
         stripped = line.strip()
+        i += 1
         if not stripped or stripped.startswith("#"):
             continue
         if ":" not in stripped:
@@ -105,11 +114,26 @@ def _parse_simple_yaml(raw: str) -> dict[str, str]:
         key, _, value = stripped.partition(":")
         key = key.strip()
         value = value.strip()
-        # 剥离成对引号
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        if key:
-            data[key] = value
+        if not key:
+            continue
+        # 块标量：| 保留换行，> 折叠为空格；收集后续缩进行直到下一个顶层键
+        if value in ("|", ">", "|-", ">-", "|+", ">+"):
+            folded = value[0] == ">"
+            block: list[str] = []
+            while i < len(lines):
+                bl = lines[i]
+                if bl.strip() and not bl.startswith((" ", "\t")):
+                    break  # 回到顶层键，块结束
+                block.append(bl.strip())
+                i += 1
+            while block and not block[-1]:
+                block.pop()
+            value = (" " if folded else "\n").join(seg for seg in block if seg)
+        else:
+            # 剥离成对引号
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+        data[key] = value
     return data
 
 

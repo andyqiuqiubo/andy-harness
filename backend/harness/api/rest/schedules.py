@@ -84,6 +84,9 @@ def _get_service(registry: ServiceRegistry) -> SchedulerService:
 
 def setup_schedule_routes(registry: ServiceRegistry) -> None:
     """注册定时任务路由。"""
+    # 模块级 router 会被重复装配（测试 reload harness.main / 多应用共存）复用：
+    # 先清理此前注册的闭包，避免旧应用（不同 ServiceRegistry）的路由优先匹配。
+    router.routes.clear()
 
     @router.get("/options", summary="可选项：MCP / Skills / 工具 / 模型")
     async def options() -> dict[str, Any]:

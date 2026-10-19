@@ -55,7 +55,7 @@ class WSMessage(BaseModel):
     model: str | None = None
     budget: int = 4096
     temperature: float = 0.7
-    max_tool_iterations: int = 10
+    max_tool_iterations: int | None = None
     system_prompt: str | None = None
     attachments: list[dict[str, Any]] = []
     # 重新回答：指向被重新生成的 user 消息 id。设置后不再新建 user 消息，
@@ -137,6 +137,9 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
         hooks: HookManager 实例
         tool_registry: ToolRegistry 实例
     """
+    # 模块级 router 会被重复装配（测试 reload harness.main / 多应用共存）复用：
+    # 先清理此前注册的闭包，避免旧应用（不同 ServiceRegistry）的路由优先匹配。
+    router.routes.clear()
 
     async def _auto_generate_title(
         session_id: str,
@@ -519,13 +522,22 @@ def setup_ws_routes(services: Any, hooks: Any, tool_registry: Any) -> None:
                 # 成本随会话长度线性增长）。已移除，只保留最终快照作为唯一来源。
 
                 # 执行 AgentLoop
-                from harness.engine.agent_loop import AgentLoop, AgentLoopConfig
+                from harness.engine.agent_loop import (
+                    DEFAULT_MAX_TOOL_ITERATIONS,
+                    AgentLoop,
+                    AgentLoopConfig,
+                )
 
                 config = AgentLoopConfig(
                     model=msg.model or "gpt-4o",
                     budget=msg.budget,
                     temperature=msg.temperature,
-                    max_tool_iterations=msg.max_tool_iterations,
+                    # 客户端未显式指定时回落到内核默认（单一事实来源，避免两处漂移）
+                    max_tool_iterations=(
+                        msg.max_tool_iterations
+                        if msg.max_tool_iterations and msg.max_tool_iterations > 0
+                        else DEFAULT_MAX_TOOL_ITERATIONS
+                    ),
                     system_prompt=msg.system_prompt or "",
                 )
 

@@ -142,6 +142,7 @@ id_rsa.pub
 .npmrc
 
 # 项目中明文 API Key 文件（历史遗留与兜底）
+key.txt
 docs/key.txt
 **/key.txt
 

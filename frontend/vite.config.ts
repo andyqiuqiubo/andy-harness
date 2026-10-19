@@ -2,18 +2,23 @@
 import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vite'
 
+// 后端地址/端口可由环境变量覆盖：默认与一键启动脚本一致（8000/5173），
+// 便于在 8000 已被占用时用独立端口跑演示或隔离环境（如 VITE_BACKEND_TARGET）。
+const backendTarget = process.env.VITE_BACKEND_TARGET || 'http://localhost:8000'
+const devPort = Number(process.env.VITE_PORT || 5173)
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [vue()],
   server: {
-    port: 5173,
+    port: devPort,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: backendTarget,
         changeOrigin: true,
       },
       '/ws': {
-        target: 'ws://localhost:8000',
+        target: backendTarget.replace(/^http/, 'ws'),
         ws: true,
       },
     },

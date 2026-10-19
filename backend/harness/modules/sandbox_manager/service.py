@@ -639,10 +639,18 @@ if len(_sys.argv) >= 2:
 
         proc: subprocess.Popen[str] | None = None
         try:
-            proc = subprocess.Popen(
-                [shell, "/c", code] if shell == "cmd" else [shell, "-c", code],
-                **popen_kwargs,
-            )
+            if shell == "cmd":
+                # ⚠️ 传**原始字符串**（与人在 cmd 里敲同一行等价），不要用 list 形式：
+                # Popen(list) 经 list2cmdline 把整段代码当单个参数转义，代码里的
+                # `--value "dify"` 会变成带字面引号的 `"dify"`（实测 bsk fill 把
+                # 6 字符 "dify" 打进搜索框的元凶）。cmd /c 对原始字符串按其文档化
+                # 引号规则处理，目标程序按 MSVCRT argv 规则正常剥引号。
+                # 注意：cmd /c 只执行第一行——多条命令请用 && 连接（单行）。
+                argv: str | list[str] = f"{shell} /c {code}"
+            else:
+                # bash -c 原生支持多行与引号语义，list 形式无副作用，保持原样。
+                argv = [shell, "-c", code]
+            proc = subprocess.Popen(argv, **popen_kwargs)
             # Windows：施加 Job Object 内存上限，并能在超时/失败时整树终止
             self._apply_job_limits(proc)
             try:

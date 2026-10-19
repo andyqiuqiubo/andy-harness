@@ -16,8 +16,8 @@ from harness.modules.reverse_engineering.models import STAGE_JAVA_DECOMPILE
 from harness.modules.reverse_engineering.pipeline import ReverseEngineeringPipeline
 from harness.modules.reverse_engineering.stages import JavaDecompileStage
 
-SRC_ROOT = Path(__file__).resolve().parents[2]  # .../src
-TOOLS_DIR = Path(os.environ.get("ANDY_REVENG_TOOLS_DIR") or (SRC_ROOT.parent / ".tools"))
+SRC_ROOT = Path(__file__).resolve().parents[2]  # 项目根（目录重组后 src/ 内容已上提至工作区根）
+TOOLS_DIR = Path(os.environ.get("ANDY_REVENG_TOOLS_DIR") or (SRC_ROOT / ".tools"))
 JDK_DIR = TOOLS_DIR / "jdk-21"
 JAVAC = JDK_DIR / "bin" / "javac.exe"
 JAR = JDK_DIR / "bin" / "jar.exe"

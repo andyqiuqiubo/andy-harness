@@ -1,6 +1,6 @@
 # andy-harness
 
-> 插件化 Agent Harness（智能体底座）开源项目：提供对话 GUI、多模型接入（DeepSeek / Qwen / Doubao / 自定义）、会话文件传输（文档/图片多模态）、会话管理与分支、上下文管理、MCP 客户端（stdio / SSE 接入远程工具）、定时任务、长期记忆、子代理委派、运行轨迹 Tracing、Skills 技能系统、技能市场（SKILL.md 一键安装）、工具权限与人工确认、任务清单，以及沙箱与系统设置；并提供 **Computer Use 桌面操控**（截图 / 鼠标 / 键盘 / 命令执行等通用原语，安全围栏 + 截图降本策略，依赖可选 `desktop` extra）与 **MCP 市场**（libgen / deepwiki / context7 等免鉴权公开服务一键接入）；还提供 **桌面壳（Tauri）**（一个原生窗口内跑齐前后端、双击即用，退出自动回收后端进程树）、**多 Agent 编排**（并行任务 / 角色流水线）、**多渠道接入**（Webhook / Telegram）、**会话与消息搜索**、**Docker 沙箱**、**向量记忆检索**、**Checkpoint 断点续跑**、**Eval 回归评测**、**插件 / 技能外部分发安装（zip / git）** 与**可选认证 / 多用户**；1.0.x 已增量落地 **工作流编排（Workflow Studio，Dify 风格可视化画布）**、**模板分享中心（Template Hub）**、**洞察看板（Insights Dashboard）**、**评测实验室（Eval Lab）**、**插件开发者工作台（DevKit）**、**集成中心（飞书 api / cli / channel 三模式）** 与**权限审计与审计日志**。所有功能以插件形式构建，模块间完全解耦，对齐 Claude Code / Codex / Cline / Goose 等主流 Agent 的最佳实践，面向开发者学习与二次开发。敬请下载使用！
+> 插件化 Agent Harness（智能体底座）开源项目：提供对话 GUI、多模型接入（DeepSeek / Qwen / Doubao / 自定义）、会话文件传输（文档/图片多模态）、会话管理与分支、上下文管理、MCP 客户端（stdio / SSE 接入远程工具）、定时任务、长期记忆、子代理委派、运行轨迹 Tracing、Skills 技能系统、技能市场（SKILL.md 一键安装）、工具权限与人工确认、任务清单，以及沙箱与系统设置；并提供 **Computer Use 桌面操控**（截图 / 鼠标 / 键盘 / 命令执行等通用原语，安全围栏 + 截图降本策略，依赖可选 `desktop` extra）与 **Browser Use 浏览器自动化**（内置 vendored 腾讯开源 BrowserSkill v0.3.3 技能，自动填表 / 点击 / 翻页 / 截图等类人化网页操作，网页需求确定性路由、无需手动指定工具）与 **MCP 市场**（libgen / deepwiki / context7 等免鉴权公开服务一键接入）；还提供 **桌面壳（Tauri）**（一个原生窗口内跑齐前后端、双击即用，退出自动回收后端进程树）、**多 Agent 编排**（并行任务 / 角色流水线）、**多渠道接入**（Webhook / Telegram）、**会话与消息搜索**、**Docker 沙箱**、**向量记忆检索**、**Checkpoint 断点续跑**、**Eval 回归评测**、**插件 / 技能外部分发安装（zip / git）** 与**可选认证 / 多用户**；1.0.x 已增量落地 **工作流编排（Workflow Studio，Dify 风格可视化画布）**、**模板分享中心（Template Hub）**、**洞察看板（Insights Dashboard）**、**评测实验室（Eval Lab）**、**插件开发者工作台（DevKit）**、**集成中心（飞书 api / cli / channel 三模式）**、**操作录制回放（andy-repeat：录事件流取证 → 确定性零 token 回放）** 与**权限审计与审计日志**。所有功能以插件形式构建，模块间完全解耦，对齐 Claude Code / Codex / Cline / Goose 等主流 Agent 的最佳实践，面向开发者学习与二次开发。敬请下载使用！
 
 [![CI](https://github.com/andyqiuqiubo/andy-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/andyqiuqiubo/andy-harness/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -39,6 +39,7 @@
 - **「工程强逆向」实时进展反馈**：七阶段流水线的每个阶段与步骤都通过 **SSE 进度流**（`GET /api/reverse-engineering/runs/{id}/progress`）实时推送——阶段开始带名称与序号（`phase_start`）、执行中以「已完成/总数 + 百分比 + 当前步骤说明」持续更新（`phase_progress`）、阶段结束明确标记完成/跳过/失败并附摘要（`phase_done`），运行收口推送 `run_done`。进度经**内存事件总线**（`reverse_engineering/progress.py`）分发：`emit` 为 O(1) 非阻塞操作、绝不等待订阅者；订阅先**回放历史再增量推送**（迟到连接与断线重连都安全），SSE 与 WebSocket 一致支持 `?token=` 鉴权。`POST /runs` 改为**后台任务立即返回 `run_id`**，前端进度面板实时高亮当前阶段、展示整体与步骤进度，并含与全站风格一致的「返回会话」按钮。**重启自愈**：后端启动时自动把磁盘上遗留的 `running` 记录收敛为 `interrupted`（进程内后台任务随进程终止，这些记录永远不会再有终态），避免历史列表长期挂着一串假"运行中"；SSE 端点对不存在的 run 返回 404、对内存总线已空（重启后）的已终结 run 合成终态事件立即收口，前端另有 15 秒连接看门狗——彻底消除"选择文件按钮被死 run 锁死 / 进度面板永远等待"的问题
 - **「工程强逆向」文件选择上传与自动识别路由**：前端「工程强逆向」页改为**文件选择对话框**（`<input type="file">`，Tauri 与浏览器均可用），不再要求用户手动输入绝对路径；上传后后端保存到 `runs/<id>/uploads/` 并立即调用 `input_dispatch` 自动识别类型，再按类型匹配处理流程——① **可执行文件**（PE / ELF / Mach-O 魔数自证）→ 跑完整**七阶段**流水线，末段自动重建生成功能等价的新 exe；② **Java class 文件**（`0xCAFEBABE` 魔数 + 版本号）→ 执行 `java_decompile` 阶段：若设置了环境变量 `ANDY_JAVA_DECOMPILER_JAR` 指向 CFR / FernFlower / Jadx 的 jar（**按 jar 文件名自动识别类型**并分别构造正确命令行；FernFlower 把结果打包成 jar，会自动解压出 `.java`），则**优先输出真正的 `.java` 源文件**；未配置或源码级反编译器调用失败则**回退 JDK `javap`**，输出 `.java.txt` 结构文本（类签名/字段/方法/字节码，并标记 `degraded`），绝不因缺工具而中断；③ **源代码** → 代码理解与重构；④ **无法识别** → 通用二进制分诊。规则与处理器均为**注册表 + 策略模式**（`@register_rule` / `@register_handler`），新增输入类型无需改动核心分类逻辑；REST 新增 `POST /api/reverse-engineering/runs/upload`（multipart，立即返回 `run_id` + 分类结果 + 处理流程）。旧的 `POST /runs`（传路径）与 `POST /classify` 仍保留
 - **REA 逆向工程 MCP 服务（本地 vendored，含原生反编译）**：以源码方式集成 [morluto/rea](https://github.com/morluto/rea)（Reverse Engineer Anything，v6.4.0 / MIT，锁定 commit `a56f7bb`，完整快照见 `mcp_servers/rea/`）——让 AI 在不看源码的前提下分析本地二进制与应用，结论附证据与局限，分析全程本机执行。**原生反编译已就绪**：项目内隔离安装 Ghidra 12.1.4 + Temurin JDK 21（工作区 `.tools/`，不依赖系统全局安装、不影响系统 JDK），可对原生 PE（x86/x64 exe/dll）输出**反编译伪代码**、汇编、函数清单、字符串、调用图与交叉引用；另有引擎无关的静态分析（JS/Electron 模块图、PE 资源树、.NET、文件摘要）。构建与用法见 [mcp_servers/README.md](mcp_servers/README.md)；为接入它，MCP 客户端新增 `max_line_bytes`（大响应帧上限）、`tool_allowlist`（工具白名单）与 `request_timeout`（长任务超时）三个 per-server 选项（默认关闭、不影响存量配置）
+- **「操作录制回放」andy-repeat（录屏取证 → 确定性回放，全自研）**：把「在电脑上演示一遍操作流程」录成**可编辑、可复用、零 token 回放**的技能。核心思路是**录事件流而非录像素**——独立子进程用全局钩子捕获鼠标/键盘/窗口切换，配合 UIA 惰性快照（超时即降级，绝不卡死）取证每个点击落点的控件语义（`AutomationId` / `Name` / `ControlType` / 结构路径等六类定位符），经 **9 阶段确定性编译管线**归并成带定位链与置信度的结构化步骤，投影为工作流画布可继续编辑的 `gui` 节点图。**回放主路径零 AI、零 token、断网可用**：定位链按「UIA → 图像锚点 → 相对 → 坐标」优先级逐环降级解算，动作从 `computer_use` 安全策略唯一出口下发（越界窗口/密码/危险动作硬拦截），AI 只在三处可选出场——步骤语义命名（`repeat.llm_semantic`，默认关）、**视觉辅助核对**（`repeat.vision_enabled`，默认关：解析完成后异步调用百炼视觉理解模型（默认 `qwen3-vl-plus`，`repeat.vision_model` 可换）对每一步的前/后帧做「做了什么 / 画面是否变化 / 是否生效」核对，结果落 bundle 的 `vision.json` 并汇总疑似未生效步骤，REST `GET/POST /api/desktop-repeat/sessions/{sid}/vision`；纯旁路，失败只记日志、绝不阻塞录制与回放，密钥读 `DASHSCOPE_API_KEY` 环境变量或项目根 `key.txt`）与失效修复建议（人工确认才写回）。内置**隐私前置屏蔽**（敏感窗口自动暂停、密码框内容永不记录、回放时转人工输入）、**干跑体检**（每步只解析定位、零注入，验证流程是否仍可跑）、**断点续跑**、**人工介入检测**（真实鼠标一动即挂起）、**紧急停止热键 `Ctrl+Alt+.`**；产物为自包含 bundle（事件流 JSONL + 帧 + manifest，SHA256 根哈希校验、崩溃可截断恢复）。入口在「更多功能 → 操作录制回放」（`/repeat`，与「工作流」「工程强逆向」同级，三栏工作台：录制会话 / 解析为步骤 / 回放进度实时 SSE），也可不启动后端用 CLI：`python -m harness.modules.desktop_repeat.cli record|compile|dry-run|replay|skill`；或经插件 `andy_repeat` 暴露的 10 个 `repeat_*` 工具在对话里直接说「跑一下我录的 ×× 流程」。依赖 `pynput` / `uiautomation` / `mss` / `pyautogui` / `comtypes`，通过 `uv sync --extra repeat` 安装后启用（缺失时整条链路优雅降级为不可用，核心对话能力不受影响）。当前 Windows-first，跨平台在路线图上
 - **问答对操作**：每条提问可「复制 / 删除本轮（物理删除）」；每条回答可「复制 / 追问 / 从此处分叉」——鼠标悬浮到消息上即可看到操作按钮
 - **会话文件传输**：聊天输入区点「📎」即可上传**文档**（txt/md/csv/json/py/js 等 26 种）与**图片**（png/jpg/gif/webp/bmp）随消息发给模型——文档内联为文本、图片缩放后按 OpenAI 视觉规范以 base64 注入，`deepseek-v4-flash` 实测可读文档内容、识别图片颜色；单条消息文档≤5、图片≤4、总数≤8，文档≤200KB、图片≤1.5MB（自动缩放控 token）；删除会话连带清理附件
 - **大输出自动落盘**：工具返回超大结果时自动落盘为「制品」，上下文只保留摘要与路径，避免撑爆 token 预算；模型可用 `read_artifact` 分页回读全文，设置页「制品」标签可查看/删除
@@ -59,6 +60,7 @@
 - **上下文管理**：滑动窗口 / 摘要压缩 / 消息钉住，token 预算可控
 - **沙箱执行**：Python/Shell 代码执行，资源限制，进程树终止
 - **Computer Use 桌面操控**：让 Agent 操控整个本机桌面——截图 / 鼠标点击移动 / 键盘输入 / 文件读写 / 命令执行 / wait / finish 全套通用 OS 级原语；模型「计划先行」再执行，并内置**截图降本策略**（避免每轮都带截图导致图像 token 重复计费）；危险操作（如命令执行）默认需人工授权。依赖 `pyautogui` / `mss`，通过 `uv sync --extra desktop` 安装后启用（**前端暂无桌面操控开关**，由后端插件启用后模型按需自动调用）
+- **Browser Use 浏览器自动化（vendored BrowserSkill + 后端 daemon 托管）**：内置集成 [腾讯开源 BrowserSkill](https://github.com/Tencent/BrowserSkill) **v0.3.3**（cli-v0.3.3，MIT，锁定 commit `d9a78ae`）官方 skill bundle（`backend/skills/browser-skill/`，含 SKILL.md + 9 个 references，来源/校验/差异见 `VENDOR.md`），让 AI **像人一样操作你已登录的 Chrome / Edge**——自动填表、点击、翻页、抓取、截图、借还标签页、网站调试取证，无需用户手动指定工具：提出网页浏览 / 自动化操作类需求时，系统提示会**确定性路由**到 `browser-skill`（`agent_loop._render_browser_hint` 注入），并明确让位规则（网页任务不走 Computer Use 坐标点击）。**守护进程零门槛**：对话宿主沙箱会回收模型 shell 派生的常驻进程（实测 `os error 5`），为此新增内置插件 **`browser_daemon`**——由后端长活进程以独立生命周期确定性拉起/复用 `bsk daemon`（`browser_daemon_status` 工具：探测→必要时启动→轮询复核，日志落 `logs/browser-daemon.log` 可归因），模型一次工具调用即拿到 `ready/next/browser_instances` 结构化就绪结论，**任何情况下都不会再让用户开终端手动执行命令**（唯一留给用户的是 bsk CLI 与浏览器扩展的首次安装，技能正文提供官方商店直链）。三件套（bsk CLI + 扩展 + 技能）版本需一致（v0.3.3 / 协议 1.3），扩展不匹配时给出 Chrome / Edge 官方商店 URL（[Chrome](https://chromewebstore.google.com/detail/hhcmgoofomhgciiibhipgmgkgnoenaoi) · [Edge](https://microsoftedge.microsoft.com/addons/detail/browserskill/emacgiaaaiojkkpkddmmdfhmokgmnikg)）引导更新（中国大陆商店不可达时用已代下载校验的离线包 `D:\browser-skill-extension\v0.3.3` 加载已解压扩展）。配套增强：会话窗口**默认 `--focus` 置顶**（你能直接看到操作过程）、单次任务模型调用预算提高到 **25 轮**、沙箱宿主下 bsk 子进程命令行引号转义修复、SKILL.md frontmatter 解析器支持 YAML 块标量（`description: |`），兼容官方及社区多行描述技能
 - **思维链展示**：DeepSeek reasoning_content 逐步展示，完成后折叠
 - **Provider 状态管理**：密钥配置、连接测试、启用/停用状态联动，停用后模型和工具自动隔离
 - **多主题系统**：黑客帝国 / 深海蓝 / 日落紫红 / 中性深灰 / 亮色，AI 也可切换主题
@@ -528,6 +530,33 @@ Computer Use 是本项目的一等目标（操控整个本机桌面，浏览器�
 4. 危险操作（如执行命令）默认弹出人工确认；未授权不会执行
 5. 内置截图降本策略：不会每轮都带截图，避免图像 token 重复计费
 
+### 使用 Browser Use 浏览器自动化（BrowserSkill）
+
+浏览器 / 网页类任务优先走内置的 vendored **browser-skill**（腾讯开源 BrowserSkill v0.3.3），它借用你**已登录**的 Chrome / Edge 语义化操作页面，比 Computer Use 坐标点击更可靠、更省 token。**守护进程由后端自动托管**（`browser_daemon` 插件）：对话宿主沙箱不允许模型自己起常驻进程，模型会改调 `browser_daemon_status` 工具让后端代为探测与拉起——全程无需你打开终端手动执行任何 bsk 命令。
+
+1. 首次使用需装齐「三件套」，**版本必须一致（当前 v0.3.3）**：
+   - **bsk CLI**（自带后台守护进程）：Windows PowerShell 执行 `irm https://raw.githubusercontent.com/Tencent/BrowserSkill/main/install.ps1 | iex`；macOS / Linux 执行 `curl -fsSL https://raw.githubusercontent.com/Tencent/BrowserSkill/main/install.sh | sh`
+   - **浏览器扩展**：Chrome 商店 https://chromewebstore.google.com/detail/hhcmgoofomhgciiibhipgmgkgnoenaoi ；Edge 加载项 https://microsoftedge.microsoft.com/addons/detail/browserskill/emacgiaaaiojkkpkddmmdfhmokgmnikg ；装好后打开扩展弹窗启用「本地连接」。**中国大陆商店通常不可达**，此时用已代下载并校验的离线包 `D:\browser-skill-extension\v0.3.3`：Chrome 打开 `chrome://extensions` → 开启「开发者模式」→「加载已解压的扩展程序」→ 粘贴该路径（Edge 同理）
+   - **技能**：已内置（`backend/skills/browser-skill/`，设置 → Skills 可查看/启停），无需另行安装
+2. 体检：`bsk --version`（应为 `bsk 0.3.3`）+ `bsk doctor`，扩展应显示 Connected；版本偏差时升级 CLI 或扩展（扩展经商店或离线包更新，CLI 用 `bsk update`）
+3. 直接在对话里提需求即可，例如「用浏览器打开 example.com 总结页面」「抓取某后台最近 10 条数据整理成表格」「排查 localhost:3000 表单保存失败」——AI 会自动加载 browser-skill 按官方流程执行（独立 Agent Window、**默认 `--focus` 置顶**你能直接看到操作过程、借标签页需你确认、验证码等人工接管、结束自动归还标签页并停会话）
+4. 单次任务的模型调用预算已提高到 **25 轮**；搜索类需求直接给结果页 URL（如 `www.baidu.com/s?wd=关键词`）能显著更快完成
+5. 若环境里未装 bsk CLI / 扩展，AI 不会硬凑，而是给出上述对应官方下载 URL 等你装好再继续；沙箱化宿主（含本项目部分执行环境）下守护进程启动受限，技能 references/environment.md 有 `--foreground` 后台任务等处置流程
+6. 安全边界遵循官方设计：页面内容视为不可信数据、不提取 Cookie/凭据、支付与删除等不可逆操作留人工确认；`chrome://` 开头页面与扩展安装页**无法自动化**（浏览器安全限制）；若抓图失败但文字正常，多半是扩展版本低于 0.3.3，升级即可
+
+### 使用 操作录制回放（andy-repeat）
+
+把「每天重复做的桌面操作」录一遍，之后一键回放或让 AI 在对话里替你跑——**录的是事件流与控件语义，不是像素坐标录像**；回放为本地确定性执行，**不调用模型、零 token、断网可用**。
+
+1. 安装依赖并启用：`cd backend && uv sync --extra repeat`（或 `pip install "harness[repeat]"`），插件 `andy_repeat` 随插件扫描自动激活；依赖缺失时入口显示「不可用」提示，不影响其它功能
+2. 打开「更多功能 → 操作录制回放」（`/repeat`），点「● 开始录制」→ 在目标应用里**完整演示一遍流程**（如打开 ERP → 筛选 → 导出）。期间：密码/验证码等敏感窗口会被自动识别并**暂停录制**（按键内容永不落盘），敏感输入在回放时转为人工节点；随时可按暂停热键手动暂停/恢复
+3. 点「停止录制」封版（自动做 SHA256 完整性校验），给流程起名，然后点「解析」查看结构化步骤——每步带定位链与置信度，**黄色卡片 = 低置信步骤**，建议点「编辑」到工作流画布核对调整
+4. 先「干跑体检」：每步只做定位解析、**零注入零副作用**，全部命中再发布/回放；回放窗口右上角实时显示每步进度（SSE），检测到你真实移动鼠标会自动挂起等你处理，紧急停止按 `Ctrl+Alt+.`
+5. 「导出技能」后，在对话里直接说「跑一下我录的每日导出流程」即可由 AI 调用 `repeat_run` 执行（可传参数覆盖占位，如日期/文件名）；同一流程也可挂到定时任务里按计划自动回放
+6. **可选：视觉辅助核对**（`repeat.vision_enabled`，默认关）— 解析完成后异步调用视觉理解模型（默认百炼 `qwen3-vl-plus`）逐步比对前/后帧，产出「疑似未生效」清单供人工复核；纯旁路，失败不影响录制与回放，密钥读 `DASHSCOPE_API_KEY` 或项目根 `key.txt`
+
+> 📘 **面向终端用户的完整操作说明（含逐步截图与故障排查）**：[`docs/manual/andy-repeat-录屏回放用户操作手册.md`](docs/manual/andy-repeat-录屏回放用户操作手册.md)
+
 ### 从技能市场 / MCP 市场安装能力
 
 1. 进入设置页面（聊天页面右上角齿轮图标）→ 分别切换到「Skills」/「MCP」标签
@@ -573,17 +602,17 @@ andy-harness/
 │   ├── harness/       # 核心代码
 │   │   ├── kernel/    # L4 内核（插件加载/事件总线/服务注册/钩子/契约）
 │   │   ├── engine/    # L3 Agent 引擎（循环/工具/钩子/断点续跑 checkpoint）
-│   │   ├── modules/   # L2 业务模块（23 个：会话/上下文/模型/沙箱/记忆/技能/MCP/权限/认证/渠道/调度/轨迹/制品/附件/待办/子代理/编排/打包安装/模板/工作流/评测/洞察/集成）
+│   │   ├── modules/   # L2 业务模块（27 个：会话/上下文/模型/沙箱/记忆/技能/MCP/权限/认证/渠道/调度/轨迹/制品/附件/待办/子代理/编排/打包安装/模板/工作流/评测/洞察/集成/逆向/证据/知识库/DevKit/录制回放）
 │   │   ├── api/       # L1 REST + WebSocket（rest / ws / middleware / deps / errors）
 │   │   ├── infra/     # L5 SQLite / 加密 / Repository / 安全原语
 │   │   ├── eval/      # 回归评测框架（python -m harness.eval）
 │   │   └── cli/       # 命令行入口
-│   ├── plugins/       # 37 个内置插件（自动扫描，含 provider / tool / service / channel）
+│   ├── plugins/       # 40 个内置插件（自动扫描，含 provider / tool / service / channel）
 │   ├── marketplace/   # 插件市场的可安装包（6 个）
 │   ├── skill_marketplace/  # 技能市场（11 个 SKILL.md 技能包）
 │   ├── mcp_marketplace/    # MCP 市场（10 个免鉴权公开服务配置）
-│   ├── skills/        # 内置技能（4 个）
-│   └── tests/         # pytest（69 个测试模块 / 742 个用例）
+│   ├── skills/        # 内置技能（6 个，含 vendored BrowserSkill v0.3.3 浏览器自动化）
+│   └── tests/         # pytest（99 个测试模块 / 1252 个用例）
 ├── frontend/          # Vue 3 前端（Vite + TypeScript + Pinia）
 │   └── src/
 │       ├── views/     # ChatView / SettingsView / HomeView / LoginView

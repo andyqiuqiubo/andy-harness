@@ -85,6 +85,9 @@ def _get_session_service(registry: ServiceRegistry) -> Any:
 
 def setup_session_routes(registry: ServiceRegistry) -> None:
     """注册会话路由（依赖注入 ServiceRegistry）。"""
+    # 模块级 router 会被重复装配（测试 reload harness.main / 多应用共存）复用：
+    # 先清理此前注册的闭包，避免旧应用（不同 ServiceRegistry）的路由优先匹配。
+    router.routes.clear()
 
     @router.get("", summary="列出会话")
     async def list_sessions(request: Request, include_archived: bool = False) -> list[dict[str, Any]]:

@@ -91,6 +91,27 @@ class TestParseFrontmatter:
         assert meta == {}
         assert body.startswith("---")
 
+    def test_block_scalar_pipe(self) -> None:
+        """`description: |` 多行块标量（官方 BrowserSkill SKILL.md 风格）。"""
+        text = "---\nname: x\ndescription: |\n  第一行。\n  第二行。\nversion: 0.3.3\n---\n正文"
+        meta, body = parse_frontmatter(text)
+        assert meta["description"] == "第一行。\n第二行。"
+        assert meta["version"] == "0.3.3"
+        assert body == "正文"
+
+    def test_block_scalar_folded(self) -> None:
+        """`description: >` 折叠块标量按空格拼接。"""
+        text = "---\nname: x\ndescription: >\n  a\n  b\n---\n正文"
+        meta, _ = parse_frontmatter(text)
+        assert meta["description"] == "a b"
+
+    def test_block_scalar_blank_between_keys(self) -> None:
+        """块标量吸收块内空行，后续顶层键不被吞掉。"""
+        text = "---\nname: x\ndescription: |\n  l1\n\n  l2\nlicense: MIT\n---\n正文"
+        meta, _ = parse_frontmatter(text)
+        assert meta["description"] == "l1\nl2"
+        assert meta["license"] == "MIT"
+
 
 # ── 扫描与查询 ──────────────────────────────────────
 
@@ -482,3 +503,112 @@ class TestSkillCatalogInjection:
         assert any("可用 Skills" in c for c in system_contents)
         # 正文（L2）不应出现在上下文中
         assert not any("A 的步骤" in c for c in system_contents)
+
+
+# ── 浏览器自动化路由引导（browser use → browser-skill 确定性命中）────────
+
+
+def _make_browser_skill(base: Path) -> Path:
+    """按官方 BrowserSkill v0.3.3 的块标量 frontmatter 形态造一个 browser-skill。"""
+    skill_dir = base / "browser-skill"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: browser-skill\n"
+        "description: |\n"
+        "  浏览器自动化（browser use）测试。\n"
+        "  Automate the user's logged-in Chromium browser.\n"
+        "version: 0.3.3\n"
+        "---\n\n正文含 bsk 流程与扩展商店链接。\n",
+        encoding="utf-8",
+    )
+    return skill_dir
+
+
+class TestBrowserHintInjection:
+    """_render_browser_hint：技能存在且启用才注入路由引导。"""
+
+    def test_empty_without_service(self) -> None:
+        from harness.engine.agent_loop import AgentLoop
+        from harness.kernel.hooks import HookManager
+
+        loop = AgentLoop(services=ServiceRegistry(), hooks=HookManager())
+        assert loop._render_browser_hint() == ""
+
+    def test_empty_without_skill(self, service: SkillServiceImpl) -> None:
+        from harness.engine.agent_loop import AgentLoop
+        from harness.kernel.hooks import HookManager
+
+        registry = ServiceRegistry()
+        registry.register(SkillService, service, owner="test")
+        loop = AgentLoop(services=registry, hooks=HookManager())
+        # 临时根里只有 alpha/beta，没有 browser-skill → 不注入
+        assert loop._render_browser_hint() == ""
+
+    def test_renders_when_enabled(self, tmp_path: Path) -> None:
+        from harness.engine.agent_loop import AgentLoop
+        from harness.kernel.hooks import HookManager
+
+        root = tmp_path / "skills"
+        root.mkdir()
+        _make_skill(root, "alpha", "alpha", "做 A")
+        _make_browser_skill(root)
+        svc = SkillServiceImpl(roots=[root], plugin_dirs=[], state_file=tmp_path / "s.json")
+        registry = ServiceRegistry()
+        registry.register(SkillService, svc, owner="test")
+        loop = AgentLoop(services=registry, hooks=HookManager())
+
+        hint = loop._render_browser_hint()
+        assert "browser-skill" in hint
+        assert "use_skill" in hint
+        assert "bsk" in hint
+        assert "computer_use" in hint  # 明确要求不要走桌面坐标点击
+        assert "0.3.3" in hint  # 版本匹配提醒
+        assert "daemon" in hint  # 需求：daemon 由 Agent 自动启动
+        assert "run_in_background" in hint  # 受管后台任务保活方式
+        assert "严禁让用户打开终端" in hint  # 零用户操作铁律
+        assert "--focus" in hint and "置顶可见" in hint  # 会话窗口默认置顶可见
+
+    def test_empty_when_disabled(self, tmp_path: Path) -> None:
+        from harness.engine.agent_loop import AgentLoop
+        from harness.kernel.hooks import HookManager
+
+        root = tmp_path / "skills"
+        root.mkdir()
+        _make_browser_skill(root)
+        svc = SkillServiceImpl(roots=[root], plugin_dirs=[], state_file=tmp_path / "s.json")
+        svc.set_enabled("browser-skill", False)
+        registry = ServiceRegistry()
+        registry.register(SkillService, svc, owner="test")
+        loop = AgentLoop(services=registry, hooks=HookManager())
+        assert loop._render_browser_hint() == ""
+
+
+class TestBundledBrowserSkill:
+    """仓库内置的 vendored browser-skill 本体完整性。"""
+
+    def test_builtin_skill_discoverable(self) -> None:
+        """默认扫描根（backend/skills/）能发现 browser-skill 且解析出多行描述。"""
+        svc = SkillServiceImpl(plugin_dirs=[], state_file=Path(tempfile.mkstemp(suffix=".json")[1]))
+        meta = svc.get_skill("browser-skill")
+        assert meta is not None
+        assert meta.version == "0.3.3"
+        assert "browser use" in meta.description
+        references = [r for r in meta.resources if r.startswith("references/")]
+        assert len(references) == 9
+
+    def test_body_contains_extension_store_urls(self) -> None:
+        """正文含 Chrome / Edge 官方扩展商店 URL 与版本匹配检查（需求 2）。"""
+        svc = SkillServiceImpl(plugin_dirs=[], state_file=Path(tempfile.mkstemp(suffix=".json")[1]))
+        body = svc.load_body("browser-skill")
+        assert "chromewebstore.google.com/detail/hhcmgoofomhgciiibhipgmgkgnoenaoi" in body
+        assert "microsoftedge.microsoft.com/addons/detail/browserskill/emacgiaaaiojkkpkddmmdfhmokgmnikg" in body
+        assert "bsk --version" in body
+        assert "0.3.3" in body
+
+    def test_body_defaults_to_focus(self) -> None:
+        """本项目默认把 Agent Window 置顶可见（session start 示例命令带 --focus）。"""
+        svc = SkillServiceImpl(plugin_dirs=[], state_file=Path(tempfile.mkstemp(suffix=".json")[1]))
+        body = svc.load_body("browser-skill")
+        assert "bsk session start --focus --json" in body
+        assert "置顶" in body or "屏幕最上层" in body

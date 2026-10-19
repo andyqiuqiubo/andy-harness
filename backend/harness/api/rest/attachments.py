@@ -61,6 +61,9 @@ async def _read_capped(upload: UploadFile, limit: int) -> bytes:
 
 def setup_attachment_routes(registry: ServiceRegistry) -> None:
     """注册附件路由（依赖注入 ServiceRegistry）。"""
+    # 模块级 router 会被重复装配（测试 reload harness.main / 多应用共存）复用：
+    # 先清理此前注册的闭包，避免旧应用（不同 ServiceRegistry）的路由优先匹配。
+    router.routes.clear()
 
     def _session_service() -> Any:
         from harness.modules.session_manager.service import SessionService

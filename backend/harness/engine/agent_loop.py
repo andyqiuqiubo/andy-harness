@@ -29,7 +29,10 @@ from harness.kernel.services import ServiceRegistry
 logger = logging.getLogger("harness.agent_loop")
 
 # 默认单轮最大工具迭代数
-DEFAULT_MAX_TOOL_ITERATIONS = 10
+# 10 不足以跑完 browser-skill 全链路（就绪检查→加载技能→session start→
+# navigate→observe→fill→press→验证→截图→session stop，含重试常需 15~20 轮），
+# 曾在搜索任务里拦腰打断收尾；对齐主流 agent harness 的循环预算取 25。
+DEFAULT_MAX_TOOL_ITERATIONS = 25
 
 # 模型调用重试配置
 DEFAULT_MAX_RETRIES = 3
@@ -553,6 +556,12 @@ class AgentLoop:
         if skill_catalog:
             prefix_messages.append({"role": "system", "content": skill_catalog})
 
+        # 注入浏览器自动化路由引导：网页/浏览器任务优先走 browser-skill，
+        # 不要用通用桌面坐标点击（computer_use）去操作网页（仅技能存在且启用时注入）
+        browser_hint = self._render_browser_hint()
+        if browser_hint:
+            prefix_messages.append({"role": "system", "content": browser_hint})
+
         # 注入外部 MCP 能力清单（仅在确有 MCP 工具时）
         mcp_catalog = self._render_mcp_catalog()
         if mcp_catalog:
@@ -697,6 +706,71 @@ class AgentLoop:
             return "\n".join(lines)
         except Exception as e:  # noqa: BLE001
             logger.debug("渲染 MCP 能力清单失败（已降级跳过）: %s", e)
+            return ""
+
+    def _render_browser_hint(self) -> str:
+        """渲染浏览器自动化（browser use）路由引导。
+
+        仅当 `browser-skill`（vendored BrowserSkill）已安装且启用时注入；
+        否则返回空串，行为与历史完全一致。目标是让涉及网页浏览 / 自动填表 /
+        点击翻页 / 抓取 / 截图 / 网站调试等需求**确定性命中本技能**，
+        而不是回退到通用桌面坐标点击（computer_use）或 web_fetch 硬凑。
+        daemon 就绪路径按 browser_daemon 插件是否激活分两套话术。
+        """
+        try:
+            from harness.modules.skill_manager.service import SkillService
+
+            if not self._services.has(SkillService):
+                return ""
+            service: SkillService = self._services.get(SkillService)
+            meta = service.get_skill("browser-skill")
+            if meta is None or not meta.enabled:
+                return ""
+            version = meta.version or "0.3.3"
+
+            # daemon 启动通道：后端托管工具可用时优先用它（确定性代码，绕开宿主沙箱）
+            daemon_ready: bool = False
+            try:
+                daemon_ready = any(
+                    str(item.get("name", "")) == "browser_daemon_status" for item in self._tool_registry.list_tools()
+                )
+            except Exception:  # noqa: BLE001
+                daemon_ready = False
+
+            if daemon_ready:
+                daemon_rule = (
+                    "守护进程（daemon）由后端托管：bsk session 前先调用 "
+                    "**browser_daemon_status** 工具（action=ensure）自动探测/拉起并复核就绪，"
+                    "按返回的 ready/next 字段决定下一步；**严禁**因 daemon 未启动而"
+                    "让用户打开终端手动执行命令（浏览器未开、扩展未连接时同样先重试本工具）。"
+                    "**会话窗口默认置顶可见**：`bsk session start` 必须带 `--focus`"
+                    "（Agent Window 直接显示在屏幕最上层，用户全程可见操作过程），"
+                    "仅当用户明确要求后台运行或批量并行时才用 --no-focus。"
+                )
+            else:
+                daemon_rule = (
+                    "**守护进程（daemon）未运行不是用户的操作项**：Agent 必须自己按技能正文"
+                    "「宿主自动启动」一节，用受管后台任务（run_in_background + "
+                    "Start-Process + Wait-Process 保活）把 `bsk daemon start --foreground` 拉起，"
+                    "严禁让用户打开终端窗口手动执行命令；只有浏览器扩展安装、"
+                    "chrome:// 页面与借标签页确认才需要用户动手。"
+                    "**会话窗口默认置顶可见**：`bsk session start` 必须带 `--focus`，"
+                    "让用户直接在屏幕最上层看到操作过程；仅用户明确要求后台时才 --no-focus。"
+                )
+            return (
+                "浏览器自动化（browser use）：用户提出任何涉及**网页浏览 / 打开网站 / "
+                "自动填表 / 点击 / 翻页 / 抓取网页数据 / 操作已登录站点 / 页面截图 / "
+                "回归测试网页 UI / 排查网站问题**的需求时，"
+                "**必须第一时间用 use_skill 加载 `browser-skill` 技能并按其流程执行**，"
+                "无需用户手动指定工具；不要改用 web_fetch 拼凑结果，"
+                "也不要调用 computer_use 用鼠标坐标去操作网页。"
+                f"该技能对应 BrowserSkill v{version}（bsk CLI + 浏览器扩展 + 本技能三者版本需一致）；"
+                "执行前按技能内说明确认 `bsk --version` 与 `bsk doctor` 就绪，"
+                "若 CLI 或浏览器扩展缺失 / 版本不匹配，把官方安装与扩展商店链接给用户"
+                "（Chrome / Edge 官方商店 URL 见技能正文），待其装好后再继续。" + daemon_rule
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("渲染浏览器自动化引导失败（已降级跳过）: %s", e)
             return ""
 
     def _render_kb_hint(self) -> str:

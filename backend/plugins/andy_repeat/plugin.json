@@ -1,0 +1,31 @@
+{
+  "id": "andy_repeat",
+  "name": "andy-repeat 操作录制与回放",
+  "version": "0.1.0",
+  "type": "tool",
+  "entry": "plugins.andy_repeat.main:AndyRepeatPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["desktop", "filesystem", "shell"],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "frame_tier": { "type": "string", "default": "standard", "title": "留证档位（minimal/standard/forensic）", "title_en": "Frame Tier" },
+      "countdown_s": { "type": "integer", "default": 3, "title": "录制倒计时秒数（0/3/5）", "title_en": "Countdown Seconds" },
+      "uia_enabled": { "type": "boolean", "default": true, "title": "采集界面语义（UIA）", "title_en": "Enable UIA Capture" },
+      "coord_gate": { "type": "boolean", "default": true, "title": "坐标兜底闸门（环境漂移时禁用盲点）", "title_en": "Coordinate Gate" },
+      "allow_password_replay": { "type": "boolean", "default": false, "title": "允许自动回放密码字段（强烈不建议）", "title_en": "Allow Password Replay" },
+      "retries": { "type": "integer", "default": 2, "title": "单步重试次数", "title_en": "Step Retries" },
+      "retry_backoff_ms": { "type": "integer", "default": 800, "title": "重试退避基数（ms）", "title_en": "Retry Backoff Base (ms)" },
+      "step_timeout_ms": { "type": "integer", "default": 12000, "title": "单步超时（ms）", "title_en": "Step Timeout (ms)" },
+      "run_timeout_min": { "type": "integer", "default": 30, "title": "运行超时（分钟）", "title_en": "Run Timeout (min)" },
+      "llm_semantic": { "type": "boolean", "default": false, "title": "编译后用大模型润色步骤命名（可选，失败自动跳过）", "title_en": "LLM Semantic Naming (optional)" },
+      "unattended_policy": { "type": "string", "default": "reject", "title": "无人值守遇人工参数（reject/todo）", "title_en": "Unattended Policy" },
+      "risk_words": { "type": "string", "default": "删除|移除|清空|提交|确认支付|支付|转账|发送|发布|卸载|格式化|覆盖|重置|注销|退出登录|关闭", "title": "危险词库（竖线分隔，命中即升危+强制人工）", "title_en": "Risk Wordlist (pipe-separated)" },
+      "mask_windows": { "type": "string", "default": "", "title": "屏蔽窗口（标题正则/进程名，逗号分隔）", "title_en": "Mask Windows (comma-separated)" },
+      "auto_pause_mask": { "type": "string", "default": "", "title": "自动暂停窗口（进入即停录，逗号分隔正则）", "title_en": "Auto-Pause Windows" },
+      "emergency_hotkey": { "type": "string", "default": "ctrl+alt+.", "title": "紧急停止热键", "title_en": "Emergency Hotkey" },
+      "bundle_max_mb": { "type": "integer", "default": 500, "title": "单录制包体积上限（MB）", "title_en": "Bundle Max Size (MB)" }
+    }
+  },
+  "description": "桌面操作录制与确定性回放（andy-repeat）：演示一遍即得可编辑工作流，回放零模型调用、断网可跑；六类定位策略链逐级降级；密码框前置屏蔽、坐标兜底受环境闸门控制；危险动作强制人工；工作流可一键封装为技能供对话调用。依赖 pynput/uiautomation/mss（缺失时优雅降级，不阻塞核心对话）。不承诺覆盖提权窗口（UIPI 限制）。"
+}

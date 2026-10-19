@@ -335,3 +335,26 @@ class TestWindowsProcessTreeKill:
                 break
             await asyncio.sleep(0.5)
         assert killed, f"孙进程 {grandchild_pid} 在超时后仍存活（进程树未彻底终止）"
+
+
+class TestWindowsShellQuoting:
+    """Windows cmd 引号回归：shell 代码里的 `"dify"` 必须剥引号（勿被 list2cmdline 二次转义）。"""
+
+    @pytest.mark.asyncio
+    async def test_quoted_argument_stripped(self, sandbox: SandboxServiceImpl) -> None:
+        """`--value "dify"` 经 argv 可见的应是 dify（4 字符），而非 "dify"（6 字符）。"""
+        code = 'python -c "import sys;print(sys.argv[1:])" --value "dify"'
+        result = await sandbox.execute(code=code, language="shell", session_id="test-quote-1")
+        assert result.blocked is False, result.blocked_reason
+        assert result.exit_code == 0, result.stderr
+        assert "'--value', 'dify'" in result.stdout
+        assert '\\"' not in result.stdout and "'\"dify\"'" not in result.stdout
+
+    @pytest.mark.asyncio
+    async def test_cmd_chaining_and_quoting(self, sandbox: SandboxServiceImpl) -> None:
+        """&& 串联 + 引号参数：模拟 bsk 式多命令一行，两条命令都应执行。"""
+        code = 'python -c "print(1)" & python -c "import sys;print(sys.argv[1])" "abc"'
+        result = await sandbox.execute(code=code, language="shell", session_id="test-quote-2")
+        assert result.blocked is False, result.blocked_reason
+        assert result.exit_code == 0, result.stderr
+        assert "abc" in result.stdout and '"abc"' not in result.stdout

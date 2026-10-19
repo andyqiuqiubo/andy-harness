@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "rebuild_templates"
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # 形态 -> 模板文件
 KIND_TEMPLATES: dict[str, str] = {

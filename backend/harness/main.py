@@ -25,6 +25,7 @@ from harness.api.rest.auth import setup_auth_routes
 from harness.api.rest.channels import router as channels_router
 from harness.api.rest.channels import setup_channel_routes
 from harness.api.rest.devkit import router as devkit_router
+from harness.api.rest.desktop_repeat import router as desktop_repeat_router
 from harness.api.rest.evals_lab import router as evals_lab_router
 from harness.api.rest.insights import router as insights_router
 from harness.api.rest.integrations import router as integrations_router
@@ -372,6 +373,7 @@ app.include_router(auth_router)
 app.include_router(integrations_router)
 app.include_router(knowledge_base_router)
 app.include_router(reverse_engineering_router)
+app.include_router(desktop_repeat_router)
 app.include_router(retrieval_router)
 app.include_router(kb_skill_router)
 

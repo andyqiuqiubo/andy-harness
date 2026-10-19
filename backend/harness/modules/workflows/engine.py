@@ -211,7 +211,89 @@ class GraphEngine:
             return self._run_template(data), None
         if ntype == "assign":
             return self._run_assign(data), None
+        if ntype == "gui":
+            return await self._run_gui(data), None
         raise WorkflowValidationError(f"未知节点类型: {ntype}")
+
+    # ── gui 节点（desktop_repeat 嵌入执行，§2.5：仅新增分派，不改既有节点） ──
+    _GUI_PARAM_RE = re.compile(r"\{\{\s*param\.([A-Za-z0-9_]+)\s*\}\}")
+
+    async def _run_gui(self, data: dict[str, Any]) -> dict[str, Any]:
+        if self._services is None:
+            raise WorkflowExecutionError("服务注册表不可用，无法执行 GUI 步骤")
+        from harness.modules.desktop_repeat.service import DesktopRepeatService
+
+        if not self._services.has(DesktopRepeatService):
+            raise WorkflowExecutionError(
+                "andy-repeat 插件未激活（GUI 步骤不可用；安装依赖并启用插件 pip install 'harness[repeat]'）")
+        svc = self._services.get(DesktopRepeatService)
+        # 两段式渲染（§6.6.4）：引擎先渲染 {{var}}/{{node.field}}，保留 {{param.x}}
+        # 占位符给 service 运行时替换（值只在内存传递，不进任何持久化定义）。
+        rendered = self._gui_render_keep_param(data)
+        resolved, flags = self._gui_param_view(rendered)
+        result = await svc.run_embedded_step(rendered, resolved, flags, dry=self._gui_dry())
+        if result.get("status") == "dry":
+            return {"status": "dry", "hit_index": result.get("hit_index", -1),
+                    "dry_verdict": result.get("message", "")}
+        if not result.get("ok"):
+            raise WorkflowExecutionError(
+                f"{result.get('code') or 'RP-7003'} GUI 步骤失败: {result.get('message')}")
+        return {"status": result.get("status", ""), "hit_index": result.get("hit_index", -1)}
+
+    def _gui_dry(self) -> bool:
+        """运行期干跑开关（inputs 里 __repeat_dry 为真时 GUI 节点只解析不注入）。"""
+        v = self._globals.get("__repeat_dry")
+        if isinstance(v, bool):
+            return v
+        return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+    def _gui_render_keep_param(self, v: Any) -> Any:
+        """递归渲染字符串里的 {{ref}}，但保留 {{param.x}}（交 service 运行时替换）。"""
+        if isinstance(v, str):
+            if "{{" not in v:
+                return v
+
+            def _sub(m: re.Match[str]) -> str:
+                ref = m.group(1).strip()
+                if ref.startswith("param."):
+                    return m.group(0)  # 保留占位
+                return self._to_str(self._safe_resolve(ref))
+
+            return _REF_RE.sub(_sub, v)
+        if isinstance(v, dict):
+            return {k: self._gui_render_keep_param(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [self._gui_render_keep_param(x) for x in v]
+        return v
+
+    def _gui_param_view(self, data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, bool]]:
+        """收集步骤内残留的 {{param.x}} 名并从引擎变量池取值（裸键，供 service 渲染）。"""
+        names: set[str] = set()
+
+        def _walk(v: Any) -> None:
+            if isinstance(v, str):
+                names.update(m.group(1) for m in self._GUI_PARAM_RE.finditer(v))
+            elif isinstance(v, dict):
+                for x in v.values():
+                    _walk(x)
+            elif isinstance(v, list):
+                for x in v:
+                    _walk(x)
+
+        _walk(data)
+        resolved: dict[str, Any] = {}
+        for name in names:
+            try:
+                resolved[name] = self.resolve(name)
+            except Exception:  # noqa: BLE001
+                resolved[name] = ""
+        flags: dict[str, bool] = {}
+        for node in getattr(self, "_nodes_registry", []) or []:
+            if node.get("type") == "start":
+                for p in (node.get("data", {}) or {}).get("params", []) or []:
+                    if p.get("sensitive") or str(p.get("type", "")).lower() in ("secret", "password"):
+                        flags[str(p.get("name", ""))] = True
+        return resolved, flags
 
     # ── 各节点实现 ──────────────────────────────────────
     def _run_start(self, data: dict[str, Any]) -> dict[str, Any]:

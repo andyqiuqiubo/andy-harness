@@ -64,6 +64,9 @@ class ServerAdd(BaseModel):
 
 def setup_mcp_routes(registry: ServiceRegistry) -> None:
     """注册 MCP 管理路由。"""
+    # 模块级 router 会被重复装配（测试 reload harness.main / 多应用共存）复用：
+    # 先清理此前注册的闭包，避免旧应用（不同 ServiceRegistry）的路由优先匹配。
+    router.routes.clear()
 
     @router.get("/servers", summary="列出已配置的 MCP server")
     async def list_servers() -> dict[str, Any]:

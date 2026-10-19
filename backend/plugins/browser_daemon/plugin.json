@@ -1,0 +1,21 @@
+{
+  "id": "browser_daemon",
+  "name": "Browser Daemon",
+  "version": "0.1.0",
+  "type": "service",
+  "entry": "plugins.browser_daemon.main:BrowserDaemonPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["storage", "shell"],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "daemon_log": {
+        "type": "string",
+        "default": "",
+        "title": "daemon 日志路径（留空为 <项目根>/logs/browser-daemon.log）",
+        "title_en": "Daemon log path (blank = <root>/logs/browser-daemon.log)"
+      }
+    }
+  },
+  "description": "BrowserSkill 本地守护进程（bsk daemon）的后端确定性托管：browser_daemon_status 工具由后端进程探测/按需拉起 daemon（detached 独立生命周期，日志落盘可归因），使 browser-skill 浏览器任务零用户操作就绪，绕开对话宿主沙箱对常驻进程的回收限制。"
+}
