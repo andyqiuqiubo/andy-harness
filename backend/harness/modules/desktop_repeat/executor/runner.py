@@ -997,7 +997,7 @@ class RepeatRunner:
             try:
                 decision = await asyncio.wait_for(asyncio.shield(fut), timeout=timeout) \
                     if timeout > 0 else await fut
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 timed_out = True
                 decision = "abort"
             except asyncio.CancelledError:
@@ -1164,7 +1164,7 @@ def _type_anchor_is_weak(step: Any) -> bool:
     """
     if getattr(step, "action", "") != "type":
         return False
-    uia = [l for l in getattr(step, "locators", []) if getattr(l, "kind", "") == "uia"]
+    uia = [loc for loc in getattr(step, "locators", []) if getattr(loc, "kind", "") == "uia"]
     if not uia:
         return True
     for spec in uia:

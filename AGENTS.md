@@ -47,6 +47,7 @@ H:/jsd-andyharness/
 ├── .pre-commit-config.yaml      # 提交前检查配置
 ├── backend/                     # Python 后端
 │   ├── pyproject.toml           # 依赖、ruff、mypy、pytest 配置
+│   ├── gateway.example.json     # LLM 网关通道模板（复制到 data/gateway.json 生效）
 │   ├── harness/                 # 后端源码包
 │   │   ├── main.py              # FastAPI 入口，只装配、无业务逻辑
 │   │   ├── cli/                 # CLI 入口（chat 等）
@@ -169,6 +170,7 @@ H:/jsd-andyharness/
 | `evals_lab/` | 模型/提示词 A/B 评测 |
 | `insights/` | 会话/消息/Token/工具调用洞察看板 |
 | `reverse_engineering/` | 工程强逆向七阶段流水线 |
+| `gateway/` | LLM 网关中心：`/v1` OpenAI 兼容、通道路由/熔断/故障转移、`agw-` Key 与租户、用量/审计/指标；适配器含 `openai-like` 与 `qoder-cosy`（COSY 签名 + 私有 base64 + 流式信封归一化，排队 10605→503 可重试） |
 | `evidence_v2/` | 哈希链防篡改证据包 |
 | `templates_hub/` | 模板分享中心 |
 | `devkit/` | 插件开发者工作台 |
@@ -216,6 +218,7 @@ H:/jsd-andyharness/
 | `/devkit` | `DevkitView` |
 | `/knowledge` | `KnowledgeBaseView` |
 | `/reverse` | `ReverseEngineeringView` |
+| `/gateway` | `GatewayView`（LLM 网关管理台：通道/Key/租户/用量/审计/配置版本） |
 | `/oauth/oortcloud/callback` | `OortcloudCallback` |
 
 ### 4. UI 插件机制

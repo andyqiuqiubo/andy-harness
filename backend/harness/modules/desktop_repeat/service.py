@@ -27,6 +27,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from harness.infra.safe_path import UnsafePathError, safe_join
+from harness.infra.subproc import build_env_allowlist
+
 from .bus import Reporter, repeat_progress_store
 from .config import RecordConfig, RepeatConfig
 from .errors import RepeatError
@@ -82,6 +85,23 @@ class DesktopRepeatService:
                 logger.info("repeat: %d 条遗留运行已标记为 interrupted（RP-7005）", stale)
         except Exception as e:  # noqa: BLE001
             logger.warning("repeat 遗留运行清理失败: %s", e)
+
+    # ── 路径守卫（P0-1）────────────────────────────────────────────
+    def _session_dir(self, sid: str) -> Path:
+        """把外部传入的 ``sid`` 解析为 sessions_root 内的会话目录。
+
+        体检 P0-1：旧实现直接 ``self._root / sid``，而 REST 的路径参数正则
+        ``[^/]+`` 允许 ``..``，于是 ``DELETE /sessions/..`` 会删掉
+        sessions_root 的**父目录**（任意目录删除）。这里统一走
+        :func:`harness.infra.safe_path.safe_join`：
+        标识符白名单 + resolve 后必须在根目录内。
+
+        :raises RepeatError: sid 非法（RP-6001，可恢复）
+        """
+        try:
+            return safe_join(self._root, sid)
+        except UnsafePathError as e:
+            raise RepeatError("RP-6001", f"非法会话 ID: {sid!r}（{e}）") from e
 
     # ── 依赖可用性 ───────────────────────────────────────────────
     def available(self) -> bool:
@@ -166,7 +186,7 @@ class DesktopRepeatService:
                               detail={"holder_pid": holder})
         self._lease = self._platforms()["lease"]
         sid = new_session_id()
-        sdir = self._root / sid
+        sdir = self._session_dir(sid)
         (sdir / "runtime").mkdir(parents=True, exist_ok=True)
         env = self._platforms()["env"].snapshot()
         # env 物理真值 + 桌面名等现场采集（主线程一次）
@@ -212,11 +232,18 @@ class DesktopRepeatService:
     def _spawn_recorder(self, sdir: Path) -> None:
         backend_dir = Path(__file__).resolve().parents[3]  # <repo>/backend
         logf = (sdir / "runtime" / "recorder.log").open("ab")  # noqa: SIM115
+        # 体检 P0-2：旧实现整体透传 ``dict(os.environ)``，把 API Key、数据库口令、
+        # 第三方 Token 全部带进录制器子进程（子进程崩溃/被注入时可直接读到）。
+        # 改为统一白名单：仅系统必需变量 + HARNESS_*/ANDY_* 项目变量，
+        # 且敏感凭据（HARNESS_KB_ASR_API_KEY 等）被显式剔除。
+        env = build_env_allowlist(
+            extra_allow=("HARNESS_REPEAT_RECORDER",),
+            extra_vars={"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
+        )
         kwargs: dict[str, Any] = {
             "stdout": logf, "stderr": logf, "stdin": subprocess.DEVNULL,
             "cwd": str(backend_dir),
-            "env": {**dict(__import__("os").environ),
-                    "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
+            "env": env,
         }
         if sys.platform == "win32":
             # CREATE_NO_WINDOW：不分配可见控制台窗口。
@@ -230,7 +257,7 @@ class DesktopRepeatService:
              "--bundle", str(sdir)], **kwargs)
 
     async def _heartbeat_watch(self, sid: str) -> None:
-        reader = BundleReader(self._root / sid)
+        reader = BundleReader(self._session_dir(sid))
         last_ok = time.time()
         try:
             while self._active_session == sid:
@@ -280,7 +307,7 @@ class DesktopRepeatService:
                             doc2["status"] = "failed"
                             doc2["error"] = {"code": "RP-7004",
                                              "message": f"录制器异常退出 code={code}，已保留已录部分"}
-                            (self._root / sid / "session.json").write_text(
+                            (self._session_dir(sid) / "session.json").write_text(
                                 json.dumps(doc2, ensure_ascii=False, indent=2), encoding="utf-8")
                             self._db_upsert_session(sid, doc2)
                             self._notify_user("error", "录制器异常退出",
@@ -312,7 +339,7 @@ class DesktopRepeatService:
         sid = self._active_session or self._discover_live_session()
         if not sid:
             raise RepeatError("RP-5004", "当前无活跃录制会话")
-        reader = BundleReader(self._root / sid)
+        reader = BundleReader(self._session_dir(sid))
         reader.send_control(cmd)
         # 等生效（≤2 轮询）
         rev_expected = int(reader.control().get("_rev", 0))
@@ -366,7 +393,7 @@ class DesktopRepeatService:
         sid = session_id or self._active_session or self._discover_live_session()
         if not sid:
             raise RepeatError("RP-5004", "当前无活跃录制会话")
-        reader = BundleReader(self._root / sid)
+        reader = BundleReader(self._session_dir(sid))
         if not reader.exists:
             raise RepeatError("RP-6001", f"录制会话不存在: {sid}")
         current = reader.status()
@@ -439,10 +466,11 @@ class DesktopRepeatService:
             self._lease = None
 
     def _read_session(self, sid: str) -> dict[str, Any]:
+        sdir = self._session_dir(sid)
         try:
-            return BundleReader(self._root / sid).session()
+            return BundleReader(sdir).session()
         except RepeatError:
-            p = self._root / sid / "session.json"
+            p = sdir / "session.json"
             if p.exists():
                 data = json.loads(p.read_text(encoding="utf-8"))
                 return data if isinstance(data, dict) else {}
@@ -459,21 +487,34 @@ class DesktopRepeatService:
     def delete_session(self, session_id: str) -> bool:
         if session_id == self._active_session:
             raise RepeatError("RP-5004", "该会话正在录制中，请先停止")
-        sdir = self._root / session_id
+        # 体检 P0-1：必须先过路径守卫——旧实现直接 ``self._root / session_id``
+        # 后 ``shutil.rmtree``，``sid=".."`` 会删掉 sessions_root 的父目录。
+        sdir = self._session_dir(session_id)
         existed = sdir.exists()
         cur = self._db.execute("DELETE FROM repeat_sessions WHERE id = ?", (session_id,))
         if existed:
+            import shutil
+
+            # 体检 P1-7：旧实现 ``ignore_errors=True`` + 裸 except，删除失败被
+            # 静默吞掉——REST 仍返回 {"ok": true}，但目录还在，用户反复重试
+            # 都"删不掉"却看不到任何错误。这里改为：删除失败 → 抛出可恢复错误，
+            # 让调用方看到真实原因（并保留 DB 侧已删状态的一致性说明）。
             try:
-                import shutil
-                shutil.rmtree(sdir, ignore_errors=True)
-            except Exception:  # noqa: BLE001
-                pass
+                shutil.rmtree(sdir)
+            except FileNotFoundError:
+                pass  # 目录已不存在（并发删除）：视为成功
+            except OSError as e:
+                raise RepeatError(
+                    "RP-6002",
+                    f"删除会话目录失败: {sdir.name}（{e.__class__.__name__}: {e}）",
+                    detail={"session_id": session_id},
+                ) from e
         return bool(cur.rowcount > 0 or existed)
 
     # ── 编译 ─────────────────────────────────────────────────────
     async def compile_session(self, session_id: str, *, use_llm: bool = False) -> CompileResult:
         sid = session_id
-        reader = BundleReader(self._root / sid)
+        reader = BundleReader(self._session_dir(sid))
         reader.verify()  # RP-6001
         doc = reader.session()
         if doc.get("status") != "ready":
@@ -534,11 +575,11 @@ class DesktopRepeatService:
             base_url=self.cfg.vision_base_url, timeout_s=self.cfg.vision_timeout_s,
             key_file=self.cfg.vision_api_key_file)
         summary = await analyze_session(
-            client, self._root / sid,
+            client, self._session_dir(sid),
             [s.to_dict() for s in result.steps],
             max_steps=self.cfg.vision_max_steps)
         try:
-            (self._root / sid / "vision.json").write_text(
+            (self._session_dir(sid) / "vision.json").write_text(
                 json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
         except Exception as e:  # noqa: BLE001
             logger.info("vision: vision.json 写入失败: %s", e)
@@ -549,7 +590,7 @@ class DesktopRepeatService:
                       "model": summary.get("model", "")}
             # bundle 的 session.json 是审查读取的事实来源（get_session 走这里），
             # DB 是列表索引——两处都写，与 stop/compile 的既有写法一致。
-            (self._root / sid / "session.json").write_text(
+            (self._session_dir(sid) / "session.json").write_text(
                 json.dumps({**doc, "vision": vision}, ensure_ascii=False),
                 encoding="utf-8")
             self._db_upsert_session(sid, {**doc, "vision": vision})
@@ -558,7 +599,7 @@ class DesktopRepeatService:
         return summary
 
     def vision_status(self, session_id: str) -> dict[str, Any]:
-        p = self._root / session_id / "vision.json"
+        p = self._session_dir(session_id) / "vision.json"
         if not p.is_file():
             return {"session_id": session_id, "available": False}
         try:
@@ -691,12 +732,21 @@ class DesktopRepeatService:
                 self._release_lease()
                 raise RepeatError("RP-6004", err)
         run_id = f"run-{uuid.uuid4().hex[:10]}"
-        doc = self._start_run_record(run_id, workflow_id, graph, resolved, flags, unattended)
-        self._repo.insert_run(run_id, workflow_id, doc, steps_total=len(steps))
+        # 体检 P1-9：旧实现从「acquire 租约」到「后台任务启动」之间的任何异常
+        # （_start_run_record / insert_run / _build_runner 抛错）都会让
+        # ``Global\andy_repeat_input`` 全局互斥锁**永久被占**——此后所有
+        # 录制与回放都被 RP-5004 拒绝，只能重启后端恢复。
+        # 这里用 try/except 包裹：异常时先释放租约再抛出。
+        try:
+            doc = self._start_run_record(run_id, workflow_id, graph, resolved, flags, unattended)
+            self._repo.insert_run(run_id, workflow_id, doc, steps_total=len(steps))
 
-        runner = self._build_runner(wf, resolved, flags, graph,
-                                    run_id=run_id, unattended=unattended,
-                                    allow_blind_coord=allow_blind_coord)
+            runner = self._build_runner(wf, resolved, flags, graph,
+                                        run_id=run_id, unattended=unattended,
+                                        allow_blind_coord=allow_blind_coord)
+        except Exception:
+            self._release_lease()
+            raise
         self._runners[run_id] = runner
         task = asyncio.create_task(self._run_and_persist(run_id, runner))
         self._run_tasks[run_id] = task
@@ -711,11 +761,19 @@ class DesktopRepeatService:
                       run_id: str = "", unattended: bool = False,
                       dry: bool = False, allow_blind_coord: bool = False) -> RepeatRunner:
         sid_bundle = str((graph.get("meta") or {}).get("bundle_session", "")) or None
-        bundle_dir = self._root / sid_bundle if sid_bundle else None
+        # 体检 P0-1：graph.meta.bundle_session 同样来自外部（工作流可编辑/导入），
+        # 未经守卫拼路径会形成第二个越界入口。非法 sid 直接降级为「无 bundle」。
+        bundle_dir: Path | None = None
         anchor_loader = None
         frame_loader = None
         if sid_bundle:
-            reader = BundleReader(self._root / sid_bundle)
+            try:
+                bundle_dir = self._session_dir(sid_bundle)
+            except RepeatError:
+                logger.warning("repeat: 非法 bundle_session 已忽略: %r", sid_bundle)
+                sid_bundle = None
+        if sid_bundle and bundle_dir is not None:
+            reader = BundleReader(bundle_dir)
 
             def anchor_loader(rel: str) -> bytes | None:
                 try:
@@ -880,7 +938,7 @@ class DesktopRepeatService:
         rec_error = ""
         if self._active_session:
             try:
-                reader = BundleReader(self._root / self._active_session)
+                reader = BundleReader(self._session_dir(self._active_session))
                 hb = reader.heartbeat()
                 rec_state = str(hb.get("state", "") or "")
                 rec_events = int(hb.get("events", 0) or 0)

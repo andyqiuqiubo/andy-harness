@@ -1,0 +1,14 @@
+{
+  "id": "provider_gateway",
+  "name": "Gateway Free Models Provider",
+  "version": "0.1.0",
+  "type": "provider",
+  "entry": "plugins.provider_gateway.main:GatewayProviderPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["network"],
+  "config_schema": {
+    "type": "object",
+    "properties": {}
+  },
+  "description": "将 LLM 网关的免费模型（Cline / OpenCode Zen / WorkBuddy）接入会话管线：进程内直连 GatewayService，模型可用性实时联动网关健康与清单探测，无需 API Key。"
+}

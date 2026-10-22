@@ -88,6 +88,11 @@ where pnpm >nul 2>&1
 if errorlevel 1 goto nopnpm
 if not exist "%~dp0desktop\node_modules" (
     echo Desktop dependencies missing -- installing Tauri CLI ...
+    rem Guard: machine-level pnpm/npm config may point to a missing drive (e.g. an
+    rem old F: store). Force store/cache into the repo-local .env dir (git-ignored)
+    rem so this install never depends on the global config again.
+    set "npm_config_store_dir=%~dp0.env\pnpm-store"
+    set "npm_config_cache_dir=%~dp0.env\pnpm-cache"
     pushd "%~dp0desktop"
     call pnpm install
     popd
@@ -182,6 +187,11 @@ exit /b 1
 echo ERROR: pnpm install failed inside desktop\.
 echo   Fix:  cd desktop ^&^& pnpm install
 echo   Then re-run start-desktop.bat
+echo.
+echo   If the error mentions ENOENT / mkdir '\?': the pnpm store or cache
+echo   points at a drive that no longer exists. Check with:  pnpm store path
+echo   and fix the machine-level config (%%LOCALAPPDATA%%\pnpm\config\rc
+echo   and %%USERPROFILE%%\.npmrc) to a drive that exists.
 echo.
 pause
 exit /b 1

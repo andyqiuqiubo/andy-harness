@@ -29,6 +29,8 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 
+from harness.infra.net_guard import assert_url_safe
+
 from .chunking import Asset
 from .parsers import FormatAdapter, ParseError, register_adapter
 
@@ -72,6 +74,12 @@ def _transcribe_via_openai(data: bytes, filename: str) -> str:
         url = f"{url}/audio/transcriptions"
     if not url.startswith(("http://", "https://")):
         url = "http://" + url
+    # 体检 P1-4：ASR 端点来自环境变量，但同样是「外部可控 URL」——
+    # 未过 net_guard 时可被指向内网/回环/云元数据（SSRF）。此处 fail-closed。
+    try:
+        assert_url_safe(url)
+    except ValueError as e:
+        raise ParseError(f"音频转写端点地址不安全: {e}") from e
     api_key = (os.environ.get("HARNESS_KB_ASR_API_KEY") or "").strip()
     model = (os.environ.get("HARNESS_KB_ASR_MODEL") or "").strip() or "whisper-1"
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}

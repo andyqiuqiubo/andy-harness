@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 
 from harness.infra.crypto import APIKeyEncryptor
+from harness.infra.net_guard import assert_url_safe
 
 logger = logging.getLogger("harness.kb.embedding")
 
@@ -95,6 +96,12 @@ class EmbeddingClient:
         import httpx
 
         url = f"{self.endpoint}{path}"
+        # 体检 P1-4：端点 URL 来自知识库模型配置（管理员可写），旧实现直接请求，
+        # 可被指向内网/回环/云元数据地址（SSRF）。接入统一 net_guard 护栏。
+        try:
+            assert_url_safe(url)
+        except ValueError as e:
+            raise EmbeddingError(f"嵌入端点地址不安全: {e}") from e
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(url, json=payload, headers=self._headers())
         if resp.status_code != 200:
@@ -154,6 +161,11 @@ class RerankClient:
         if not documents:
             return []
         url = f"{self.endpoint}/rerank"
+        # 体检 P1-4：同 EmbeddingClient，重排端点也必须过 net_guard。
+        try:
+            assert_url_safe(url)
+        except ValueError as e:
+            raise EmbeddingError(f"重排端点地址不安全: {e}") from e
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 url,

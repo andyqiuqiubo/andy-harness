@@ -91,6 +91,11 @@ def search_semantic(
     仅对有 embedding 的分段计算；无向量分段自动跳过；
     换模型后残留的**异维度**向量也跳过（旧向量在重建前仍可共存，
     但不能与新查询向量做点积，见方案 5.3「重建完成前旧索引仍可用」）。
+
+    体检 P1-9：旧实现逐行 ``np.dot``（Python 循环 + 每行一次
+    ``np.frombuffer``），万级分段时单次检索要秒级。这里改为
+    **一次性向量化**：拼接所有向量成 ``(N, D)`` 矩阵，一次矩阵乘
+    算完相似度，再取 top_k。
     """
     if query_vec is None:
         return []
@@ -100,24 +105,51 @@ def search_semantic(
         f"FROM kb_segments WHERE embedding IS NOT NULL AND {where}",
         params,
     )
-    scored: list[tuple[float, dict[str, Any]]] = []
+    if not rows:
+        return []
     q = query_vec.astype(np.float32)
+    q_norm = float(np.linalg.norm(q))
+    if q_norm == 0:
+        return []
+
+    # ── 1) 收集向量与维度 ────────────────────────────────────────
+    blobs: list[bytes] = []
+    kept: list[dict[str, Any]] = []
+    dim: int | None = None
     for r in rows:
         d = _decorate(dict(r))
         emb = d.pop("embedding", None)
         if not emb:
             continue
-        vec = np.frombuffer(emb, dtype=np.float32)
-        if len(vec) != len(q):
-            continue  # 维度不一致（换模型未重建），跳过而非报错
-        denom = float(np.linalg.norm(q) * np.linalg.norm(vec))
-        if denom == 0:
-            continue
-        sim = float(np.dot(q, vec) / denom)
-        d["score"] = sim
-        scored.append((sim, d))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [d for _sim, d in scored[:top_k]]
+        raw = bytes(emb)
+        if dim is None:
+            dim = len(raw) // 4  # float32
+        if dim <= 0 or len(raw) != dim * 4:
+            continue  # 维度异常（换模型未重建）：跳过
+        blobs.append(raw)
+        kept.append(d)
+    if not kept or dim is None or dim != len(q):
+        # 维度与查询向量不一致（换模型未重建）→ 无可比较向量
+        return []
+
+    # ── 2) 向量化：一次矩阵乘算完相似度 ─────────────────────────
+    matrix = np.frombuffer(b"".join(blobs), dtype=np.float32).reshape(len(blobs), dim)
+    norms = np.linalg.norm(matrix, axis=1)
+    valid = norms > 0
+    if not np.any(valid):
+        return []
+    sims = np.zeros(len(blobs), dtype=np.float32)
+    sims[valid] = (matrix[valid] @ q) / (norms[valid] * q_norm)
+
+    # ── 3) 取 top_k ────────────────────────────────────────────
+    k = min(top_k, len(kept))
+    order = np.argsort(-sims)[:k]
+    out: list[dict[str, Any]] = []
+    for idx in order:
+        item = kept[int(idx)]
+        item["score"] = float(sims[int(idx)])
+        out.append(item)
+    return out
 
 
 def rrf_fuse(

@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from harness.infra.subproc import build_env_allowlist
+
 # 重建（含 TCC 编译）通常数秒级；给足余量但必须有上限，避免挂死调用方。
 DEFAULT_TIMEOUT_S = 300
 
@@ -134,6 +136,9 @@ def run_rebuild(
             timeout=timeout_s,
             cwd=str(tool.parent),
             check=False,
+            # 体检 P1-6：旧实现未传 env=，子进程隐式继承完整 os.environ
+            # （API Key / 数据库口令全部泄露）。改为白名单。
+            env=build_env_allowlist(extra_allow=("PYTHONIOENCODING", "PYTHONUTF8")),
         )
     except subprocess.TimeoutExpired:
         return RebuildResult(ok=False, run_id=run_id, error=f"重建超时（>{timeout_s}s）")

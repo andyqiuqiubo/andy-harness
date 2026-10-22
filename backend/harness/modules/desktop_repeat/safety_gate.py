@@ -47,18 +47,30 @@ class SafetyGate:
     approval_provider: ApprovalProvider | None = None
     allow_password: bool = False
     # 写操作审批策略：
-    #   degraded  —— 仅"降级定位（图像/相对/坐标）"的写操作需要确认
+    #   degraded  —— 仅"降级定位（图像/相对/坐标）"的写操作需要确认（**默认**）
     #   first_write —— 旧行为：本轮首次写操作确认一次
     #   always    —— 每次写操作都确认
-    #   never     —— 写操作全部放行，危险动作也免中途询问（默认；见 config 注释）
-    approval_policy: str = "never"
+    #   never     —— 写操作全部放行，危险动作也免中途询问（危险：需显式配置）
+    # 体检 P1-1：旧默认 never —— 危险动作默认免审。改为 degraded（安全默认）。
+    approval_policy: str = "degraded"
     _session_granted: set[str] = field(default_factory=set)
     _audit_sink: list[dict[str, Any]] = field(default_factory=list)
     _audit_cb: Callable[[dict[str, Any]], None] | None = None
     _pending: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def risk_of(self, action: str, declared: str) -> str:
-        return RISK_OF_DEFAULT.get(action, declared or "write")
+        """动作 → 风险等级。
+
+        体检 P1-1 补充建议：未知动作的默认值由 ``write`` 改为 ``dangerous``——
+        未知动作意味着"我们不知道它会做什么"，按最保守档处理（每次确认），
+        避免一个没登记的动作名直接获得 write 级的放行待遇。
+        """
+        known = RISK_OF_DEFAULT.get(action)
+        if known is not None:
+            return known
+        if action in STEP_ACTIONS:
+            return declared or "dangerous"
+        return "dangerous"
 
     def check(self, *, run_id: str, sid: str, action: str, risk: str,
               app_hint: dict[str, Any], params: dict[str, Any],
@@ -144,6 +156,11 @@ class SafetyGate:
             self._pending[d.approval_token] = {"run_id": run_id, "sid": sid,
                                                "action": action, "risk": risk,
                                                "created": time.time()}
+        # 体检 P1-1：审批提供方（REST/对话）常只返回「待审」而不带错误码，
+        # runner 随后只能回落 RP-4003（危险档）。这里按真实 risk 补发，
+        # 保证前端/审计拿到的码与风险等级一致。
+        if d.pending_approval and not d.code:
+            d.code = "RP-4003" if risk == "dangerous" else "RP-4004"
         self._audit(run_id, sid, action, risk, d.verdict(), d.reason)
         return d
 

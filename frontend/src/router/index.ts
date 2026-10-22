@@ -11,6 +11,7 @@ import DevkitView from '../views/DevkitView.vue'
 import KnowledgeBaseView from '../views/KnowledgeBaseView.vue'
 import ReverseEngineeringView from '../views/ReverseEngineeringView.vue'
 import RepeatStudioView from '../views/RepeatStudioView.vue'
+import GatewayView from '../views/GatewayView.vue'
 import OortcloudCallback from '../views/OortcloudCallback.vue'
 
 const router = createRouter({
@@ -80,6 +81,11 @@ const router = createRouter({
       path: '/repeat',
       name: 'repeat',
       component: RepeatStudioView,
+    },
+    {
+      path: '/gateway',
+      name: 'gateway',
+      component: GatewayView,
     },
     {
       path: '/oauth/oortcloud/callback',

@@ -134,8 +134,15 @@ def _resolve_lark_cli_home() -> str:
         candidates.append(str(Path.home()))
     except Exception:  # noqa: BLE001
         pass
-    # 4) 常见兜底路径
-    candidates.append(r"C:\Users\Administrator")
+    # 4) 兜底：按环境变量拼 Windows 用户目录（不硬编码任何用户名）
+    profile = os.environ.get("USERPROFILE")
+    if not profile:
+        username = os.environ.get("USERNAME")
+        drive = os.environ.get("SystemDrive", "C:")
+        if username:
+            profile = os.path.join(drive + os.sep, "Users", username)
+    if profile:
+        candidates.append(profile)
     # 命中真正包含 .lark-cli/config.json 的目录
     for c in candidates:
         if c and os.path.isfile(os.path.join(c, ".lark-cli", "config.json")):
@@ -144,7 +151,7 @@ def _resolve_lark_cli_home() -> str:
     for c in candidates:
         if c:
             return c
-    return r"C:\Users\Administrator"
+    return os.environ.get("USERPROFILE") or os.path.expanduser("~")
 
 
 class FeishuIntegration(IntegrationProvider):

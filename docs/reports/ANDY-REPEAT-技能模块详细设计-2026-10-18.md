@@ -607,7 +607,7 @@ ElementFromPoint(x, y)                    # 物理坐标
   "created_at": "2026-10-18T20:45:12+08:00",
   "ended_at": "2026-10-18T20:47:03+08:00",
   "label": "ERP 每日订单导出",
-  "operator": {"host": "DESKTOP-8F2K", "user": "Administrator", "elevated": false},
+  "operator": {"host": "<HOSTNAME>", "user": "<USER>", "elevated": false},
   "env": {
     "os": "Windows 10 22H2 19045",
     "session_id": 1,

@@ -2,6 +2,7 @@
 import { ref, watch, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useProviderStore } from '../stores/providers'
+import { useGatewayModelsStore } from '../stores/gatewayModels'
 import { useTodoStore } from '../stores/todos'
 import { apiClient, wsConnectionStatus, ApiError } from '../api/client'
 import type { WSFrame } from '../api/types'
@@ -29,6 +30,7 @@ import { isUsableProvider, usableProviders } from '../utils/providerFilter'
 
 const chatStore = useChatStore()
 const providerStore = useProviderStore()
+const gatewayStore = useGatewayModelsStore()
 const settingsStore = useSettingsStore()
 const authStore = useAuthStore()
 const todoStore = useTodoStore()
@@ -51,6 +53,12 @@ const selectedModel = ref(
   readStoredModel(settingsStore.sessionSettings.model || 'deepseek-flash'),
 )
 const selectedProvider = ref(readStoredProvider())
+// 当前所选模型是否「明确不可用」（仅网关免费模型会被跟踪；其它模型恒放行）。
+// 供发送按钮 disabled 与两处发送兜底复用，避免重复表达式与类型退化。
+const selectedModelUnavailable = computed(() => {
+  const m = selectedModel.value
+  return Boolean(m) && !gatewayStore.modelAvailable(m)
+})
 const messagesContainer = ref<HTMLElement | null>(null)
 // 是否位于消息列表底部（用户上滑时停止自动滚动）
 const isAtBottom = ref(true)
@@ -369,6 +377,11 @@ function onWSMessage(data: unknown) {
   if (frame?.type === 'done') {
     refreshTodos()
   }
+  // 用网关免费厂商发送后收到 error：后端已把失败模型标冷却，立即重拉可用性，
+  // 让「用户撞上不可用 → 界面显示不可用」的延迟压到一次往返内。
+  if (frame?.type === 'error' && gatewayStore.providerToChannel[selectedProvider.value]) {
+    gatewayStore.refreshAfterFailure()
+  }
   chatStore.handleWSFrame(frame)
 }
 
@@ -458,6 +471,12 @@ function handleSend() {
   const hasFiles = chatStore.pendingAttachments.length > 0
   // 既无文本又无附件，或正在流式输出时，不发送
   if ((!hasText && !hasFiles) || chatStore.isStreaming) return
+  // 网关免费模型可用性兜底：即使界面状态短暂滞后，这里也拦住不可用模型，
+  // 并立即刷新让下拉框更新为「不可用」。
+  if (selectedModelUnavailable.value) {
+    gatewayStore.refreshAfterFailure()
+    return
+  }
   let text = inputText.value
   // 追问模式：把被追问的问答作为引用前缀一起发出（同一会话上下文已含原文）
   if (followUpQuote.value) {
@@ -663,6 +682,11 @@ function tryFlushPendingAutoSend() {
   }
   // 真实对话要求 WS 已连接（模拟模式不发 WS）
   if (!chatStore.mockMode && wsConnectionStatus.value !== 'connected') return
+  // 网关免费模型可用性兜底：同 handleSend，不自动发向不可用模型
+  if (selectedModelUnavailable.value) {
+    gatewayStore.refreshAfterFailure()
+    return
+  }
   // 防重：用户若已手动发过同一内容，直接清空待发
   const alreadySent = chatStore.messages.some((m) => m.role === 'user' && m.content === text)
   if (alreadySent) {
@@ -773,6 +797,7 @@ onMounted(() => {
   // 加载 providers
   providerStore.loadProviders()
   providerStore.loadModels()
+  gatewayStore.startPolling()
   // 初始化输入框高度，并监听窗口尺寸变化（放大模式需随视口重算）
   nextTick(autoResize)
   window.addEventListener('resize', autoResize)
@@ -784,6 +809,7 @@ onUnmounted(() => {
     unregisterWS = null
   }
   window.removeEventListener('resize', autoResize)
+  gatewayStore.stopPolling()
   apiClient.ws.disconnect()
 })
 </script>
@@ -817,7 +843,7 @@ onUnmounted(() => {
             <div class="select-wrapper">
               <select v-model="selectedProvider" class="provider-select">
                 <option v-for="p in usableProviderList" :key="p.id" :value="p.id">
-                  {{ p.name }}
+                  {{ p.name }}{{ gatewayStore.providerUnavailable(p.id) ? ' · ' + t('chat.gatewayAllUnavailable') : '' }}
                 </option>
               </select>
               <svg class="select-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none">
@@ -885,6 +911,9 @@ onUnmounted(() => {
               </router-link>
               <router-link to="/repeat" class="toolbox-item" @click="showToolbox = false">
                 <span>🔁</span><span>{{ t('nav.repeat') }}</span>
+              </router-link>
+              <router-link to="/gateway" class="toolbox-item" @click="showToolbox = false">
+                <span>🌐</span><span>{{ t('nav.gateway') }}</span>
               </router-link>
               <router-link to="/templates" class="toolbox-item" @click="showToolbox = false">
                 <span>📦</span><span>{{ t('nav.templates') }}</span>
@@ -1248,7 +1277,10 @@ onUnmounted(() => {
             class="btn-send"
             v-ripple
             @click="handleSend"
-            :disabled="(!inputText.trim() && chatStore.pendingAttachments.length === 0) || !chatStore.currentSessionId"
+            :disabled="
+              (!inputText.trim() && chatStore.pendingAttachments.length === 0) ||
+              !chatStore.currentSessionId || selectedModelUnavailable
+            "
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
               <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>

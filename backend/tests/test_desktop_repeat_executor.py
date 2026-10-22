@@ -993,22 +993,60 @@ class TestApprovalPolicy:
 
     @pytest.mark.asyncio
     async def test_interactive_run_with_uia_hits_never_suspends(self):
+        """默认策略（degraded）下，首级 UIA 命中不挂起。
+
+        体检 P1-1：默认策略由 never 改为 degraded（安全默认）。degraded 档对
+        「首级 UIA 命中（``hit_kind == "uia"`` 且 ``hit_index == 0`` 且未降级）」
+        的写操作直接放行，因此本用例断言依旧成立。
+
+        注意夹具用 ``coord=False``：``_correct_hit_with_recorded_coord`` 在录制
+        坐标与元素中心偏差过大时会把 UIA 命中改标注为 ``coord``（容器内精点），
+        那种情况本就属于「位置未经语义验证」，degraded 档**应当**要求审批。
+        若要测那条路径，见 :meth:`test_coord_corrected_hit_requires_approval`。
+        """
         from harness.modules.desktop_repeat.safety_gate import Decision, SafetyGate
 
         gate = SafetyGate(mode="interactive",
                           approval_provider=lambda p: Decision(False, "", True, ""))
-        g = _graph([_step("s01", "click"),
+        g = _graph([_step("s01", "click", coord=False),
                     _step("s02", "type", by="automation_id", value="txt",
-                          params={"value": "abc"})])
+                          coord=False, params={"value": "abc"})])
         r = _runner(g, gate=gate)
         r.cfg.pre_run_ready_s = 0
         rec = await asyncio.wait_for(r.run(), timeout=5)
         assert rec.status == "succeeded", (rec.status, rec.error_code)
         assert all(s.status == "done" for s in rec.steps)
 
+    @pytest.mark.asyncio
+    async def test_coord_corrected_hit_requires_approval(self):
+        """坐标纠偏命中（UIA 命中容器、按录制坐标精点）在 degraded 档需审批。
+
+        这是 P1-1 修复后的**预期行为变化**：点击位置未经界面语义验证，与纯盲坐
+        标同属降级场景，默认策略不再静默放行。旧默认（never）下本用例会直接跑完。
+        """
+        from harness.modules.desktop_repeat.safety_gate import Decision, SafetyGate
+
+        gate = SafetyGate(mode="interactive",
+                          approval_provider=lambda p: Decision(False, "", True, ""))
+        g = _graph([_step("s01", "click")])   # 夹具自带 coord(10,10)，与元素中心偏差大
+        r = _runner(g, gate=gate)
+        r.cfg.pre_run_ready_s = 0
+        task = asyncio.create_task(r.run())
+        await _wait_status(r, "suspended")
+        assert r.rec.steps[0].hit_kind == "coord", "应先被纠偏为 coord"
+        assert r.rec.steps[0].code == "RP-4004"
+        task.cancel()
+
 
     def test_default_policy_never_asks(self):
-        """默认策略 never：回放中途不弹任何确认（含高风险动作），审计留痕。"""
+        """默认策略（体检 P1-1 后为 degraded）下的行为契约。
+
+        - 降级定位（图像匹配）的写操作 → **要求确认**（不再静默放行）；
+        - 高风险（dangerous）动作 → **每次要求确认**；
+        - 显式配置 never 时才完全不询问。
+
+        旧实现的默认是 never（危险动作默认免审），已修复。
+        """
         from harness.modules.desktop_repeat.safety_gate import Decision, SafetyGate
 
         asked: list[dict] = []
@@ -1017,13 +1055,28 @@ class TestApprovalPolicy:
             asked.append(payload)
             return Decision(False, "", True, "")
 
+        # 默认档：降级写操作与危险动作都要确认
         gate = SafetyGate(mode="interactive", approval_provider=_provider)
+        d_write = gate.check(run_id="rn", sid="s01", action="click", risk="write",
+                             app_hint={}, params={}, scope_ok=True,
+                             hit_kind="image", hit_index=2, degraded=True)
+        assert d_write.pending_approval is True, "降级写操作应要求确认"
+        d_danger = gate.check(run_id="rn", sid="s01", action="click", risk="dangerous",
+                              app_hint={}, params={}, scope_ok=True,
+                              hit_kind="", hit_index=0)
+        assert d_danger.pending_approval is True, "高风险动作应要求确认"
+        assert len(asked) == 2
+
+        # 显式 never：完全不询问（无人值守场景仍可用）
+        asked.clear()
+        gate_never = SafetyGate(mode="interactive", approval_provider=_provider,
+                                approval_policy="never")
         for risk, kind in (("write", "image"), ("dangerous", "")):
-            d = gate.check(run_id="rn", sid="s01", action="click", risk=risk,
-                           app_hint={}, params={}, scope_ok=True,
-                           hit_kind=kind, hit_index=2, degraded=bool(kind))
+            d = gate_never.check(run_id="rn2", sid="s01", action="click", risk=risk,
+                                 app_hint={}, params={}, scope_ok=True,
+                                 hit_kind=kind, hit_index=2, degraded=bool(kind))
             assert d.allow is True, f"{risk} 仍然要求确认"
-        assert asked == [], "默认策略下不应调用审批提供方"
+        assert asked == [], "显式 never 策略下不应调用审批提供方"
 
 
 @pytest.mark.asyncio

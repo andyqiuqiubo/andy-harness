@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace, dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..models import RecEvent

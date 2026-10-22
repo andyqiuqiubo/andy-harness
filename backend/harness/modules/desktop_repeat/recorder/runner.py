@@ -295,7 +295,7 @@ class Recorder:
         # 检测会把 window_change 抢先发射到按键之前。指针类事件仍走 _win_context
         # （体检 P1-4：点击引发的窗口切换靠它补发）。
         if stub.type in ("key", "text_input") and self._last_fg is not None:
-            win = self._last_fg
+            win: WindowRef | None = self._last_fg
         else:
             win = self._win_context()
         if win is not None and self.privacy.mask_window(win):
@@ -903,10 +903,11 @@ def _rect_contains_point(rect: tuple[int, int, int, int] | None,
     """元素矩形是否包含该点（l,t,r,b 语义；矩形无效时视为通过）。"""
     if not rect:
         return True
-    l, t, r, b = (int(v) for v in rect)
-    if r <= l or b <= t:
+    left, top, right, bottom = (int(v) for v in rect)
+    if right <= left or bottom <= top:
         return True
-    return (l - pad) <= x <= (r + pad) and (t - pad) <= y <= (b + pad)
+    return ((left - pad) <= x <= (right + pad)
+            and (top - pad) <= y <= (bottom + pad))
 
 
 def main(argv: list[str] | None = None) -> int:

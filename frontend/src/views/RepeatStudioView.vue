@@ -13,7 +13,12 @@ type Session = { id: string; label: string; status: string; counters?: any; erro
 type StepView = { sid: string; index: number; action: string; label: string; hit_index: number; hit_kind: string; status: string; code?: string; message?: string }
 type RunState = { run_id: string; status: string; total_steps: number; steps: StepView[]; error_code?: string; error_message?: string; stats?: any }
 
-const available = ref(false)
+// 三态：null=首次体检未返回（不臆断"不可用"）；true/false=后端明确结论。
+// 旧实现初值 false：首屏渲染到首次轮询返回之间会闪"依赖未安装"角标，
+// 而运行时后端往往只是还没应答（真机：页面打开一会后才出现开始录制按钮）。
+const available = ref<boolean | null>(null)
+// 后端明确的不可用原因（plugin_inactive=插件未激活；缺省=桌面依赖/图形会话缺失）
+const unavailableReason = ref('')
 const activeSession = ref<string | null>(null)
 const recState = ref('')
 const sessions = ref<Session[]>([])
@@ -142,6 +147,7 @@ async function refreshStatus() {
     const wasRecording = recording.value
     const s = await apiClient.get<any>('/desktop-repeat/status')
     available.value = !!s.available
+    unavailableReason.value = s.available ? '' : String(s.reason || '')
     activeSession.value = s.active_session || null
     recState.value = s.recording_state || ''
     recEvents.value = Math.max(0, Number(s.recording_events || 0))
@@ -519,8 +525,8 @@ onUnmounted(() => {
           <p class="rp-sub">{{ t('repeat.subtitle') }}</p>
         </div>
         <div class="rp-topbar-actions">
-          <span v-if="!available" class="rp-badge is-warn">{{ t('repeat.unavailable') }}</span>
-          <template v-else-if="!recording">
+          <span v-if="available === false" class="rp-badge is-warn">{{ unavailableReason === 'plugin_inactive' ? t('repeat.unavailablePlugin') : t('repeat.unavailable') }}</span>
+          <template v-else-if="available === true && !recording">
             <input v-model="recLabel" class="rp-input" :disabled="busy"
                    :placeholder="t('repeat.labelPlaceholder')" @keyup.enter="startRec" />
             <button class="rp-btn is-primary" :disabled="busy" @click="startRec">

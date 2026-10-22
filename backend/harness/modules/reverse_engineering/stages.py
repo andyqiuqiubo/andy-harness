@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -24,6 +25,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+from harness.infra.subproc import build_env_allowlist
 from harness.modules.evidence_v2.service import EvidenceV2Service, sha256_bytes
 from harness.modules.reverse_engineering.models import (
     STAGE_EVIDENCE,
@@ -48,6 +50,8 @@ from harness.modules.reverse_engineering.pe_resources import (  # noqa: E402
 SRC_ROOT = Path(__file__).resolve().parents[4]  # 项目根（含 mcp_servers/rev_eng/backend；目录重组后 src/ 内容已上提）
 WS_ROOT = Path(__file__).resolve().parents[4]  # 目录重组后项目根即工作区根（.tools 所在目录）
 
+logger = logging.getLogger("harness.reverse.stages")
+
 REA_DIR = SRC_ROOT / "mcp_servers" / "rea"
 REA_ENTRY = REA_DIR / "scripts" / "rea.mjs"
 REA_MCP_MAIN = REA_DIR / "dist" / "main.js"
@@ -68,6 +72,10 @@ REA_TOOL_ALLOWLIST = [
     "xrefs",
     "inspect_pe_resources",
 ]
+
+# jar 解压上限（体检 P1-3：zip bomb / 路径穿越防护）
+MAX_JAR_ENTRIES = 20000
+MAX_JAR_UNCOMPRESSED_BYTES = 256 * 1024 * 1024  # 256 MB
 
 # PentAGI 替代分析器使用的启发式特征库
 SUSPICIOUS_APIS = {
@@ -1873,7 +1881,10 @@ class JavaDecompileStage(BaseStage):
             cmd = self._build_command(decompiler, Path(alt_jar), ctx.subject, out_dir)
             try:
                 proc = await asyncio.to_thread(
-                    subprocess.run, cmd, capture_output=True, text=True, timeout=180, check=False
+                    subprocess.run, cmd, capture_output=True, text=True, timeout=180, check=False,
+                    # 体检 P1-6：不传 env= 时子进程隐式继承完整 os.environ
+                    # （API Key / 数据库口令泄露）。改为白名单。
+                    env=build_env_allowlist(extra_allow=("JAVA_HOME",)),
                 )
             except Exception as exc:  # noqa: BLE001
                 result.logs.append(f"源码级反编译器调用异常：{exc}")
@@ -1961,6 +1972,8 @@ class JavaDecompileStage(BaseStage):
                 text=True,
                 timeout=120,
                 check=False,
+                # 体检 P1-6：显式 env 白名单，避免隐式继承完整 os.environ。
+                env=build_env_allowlist(extra_allow=("JAVA_HOME",)),
             )
         except Exception as exc:  # noqa: BLE001
             result.status = StageStatus.FAILED
@@ -2015,12 +2028,35 @@ class JavaDecompileStage(BaseStage):
 
     @staticmethod
     def _extract_jars(out_dir: Path) -> None:
-        """FernFlower 把反编译结果打包成 ``<name>.jar``，解压出其中的 ``.java`` 文件。"""
+        """FernFlower 把反编译结果打包成 ``<name>.jar``，解压出其中的 ``.java`` 文件。
+
+        体检 P1-3：旧实现直接 ``zf.extractall(out_dir)``——jar 完全由外部
+        样本/反编译器产出，恶意或畸形 jar 可做 zip bomb（解压体积膨胀千倍）
+        或路径穿越（``../`` 条目写到 out_dir 之外）。这里加三重防护：
+        条目数上限、解压后累计字节上限、条目路径必须落在 out_dir 内。
+        """
         for jar in list(out_dir.glob("*.jar")):
             try:
                 with zipfile.ZipFile(jar) as zf:
+                    infos = zf.infolist()
+                    if len(infos) > MAX_JAR_ENTRIES:
+                        raise ValueError(f"jar 条目数过多（{len(infos)} > {MAX_JAR_ENTRIES}）")
+                    total = 0
+                    for info in infos:
+                        total += int(info.file_size)
+                        if total > MAX_JAR_UNCOMPRESSED_BYTES:
+                            raise ValueError(
+                                f"jar 解压后体积超过上限（{MAX_JAR_UNCOMPRESSED_BYTES // 1024 // 1024}MB）"
+                            )
+                        # 路径穿越防护：条目名必须落在 out_dir 内
+                        name = info.filename.replace("\\", "/")
+                        if name.startswith("/") or ".." in Path(name).parts:
+                            raise ValueError(f"jar 条目路径非法: {name!r}")
                     zf.extractall(out_dir)
             except zipfile.BadZipFile:
+                continue
+            except ValueError as e:
+                logger.warning("FernFlower jar 解压被拒绝（%s）: %s", jar.name, e)
                 continue
 
     @staticmethod

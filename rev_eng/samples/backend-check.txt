@@ -1,9 +1,9 @@
 ﻿pid=21536 started=10/15/2026 00:30:17
   cmd=.venv\Scripts\python.exe  -m uvicorn harness.main:app --reload --host 127.0.0.1 --port 8000
 pid=13124 started=10/15/2026 00:30:17
-  cmd="C:\Users\Administrator\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\python.exe" -m uvicorn harness.main:app --reload --host 127.0.0.1 --port 8000
+  cmd="C:\Users\<user>\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\python.exe" -m uvicorn harness.main:app --reload --host 127.0.0.1 --port 8000
 pid=15920 started=10/15/2026 00:30:17
-  cmd="C:\Users\Administrator\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\python.exe" "-c" "from multiprocessing.spawn import spawn_main; spawn_main(pa
+  cmd="C:\Users\<user>\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\python.exe" "-c" "from multiprocessing.spawn import spawn_main; spawn_main(pa
 --- node (REA) processes ---
 pid=19304 started=10/15/2026 00:30:21
   cmd=node H:/jsd-andyharness/src/mcp_servers/rea/scripts/rea.mjs mcp

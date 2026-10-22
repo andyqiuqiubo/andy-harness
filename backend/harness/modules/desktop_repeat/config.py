@@ -89,13 +89,15 @@ class RepeatConfig:
     # 需要严格无人值守的场景可显式打开。
     human_takeover_detect: bool = False
     # 写操作审批策略（见 safety_gate.SafetyGate）：
-    #   degraded   只对"图像/相对/坐标"等降级定位的写操作要求确认
+    #   degraded   只对"图像/相对/坐标"等降级定位的写操作要求确认（**默认**）
     #   first_write 本轮首次写操作确认一次（旧默认，打断多）
     #   always     每次写操作都确认
-    #   never      写操作与高风险动作都不再中途询问（默认；审计仍记录）
-    # 注：默认取 never（2026-10-19 16:40 决议：回放默认不做人工审批，
-    # 靠 Ctrl+Alt+. 紧急停止 + 页面「中止」兜底；需确认的场景显式改配置）。
-    approval_policy: str = "never"
+    #   never      写操作与高风险动作都不再中途询问（危险：默认关闭审批）
+    # 体检 P1-1：旧默认是 never —— 危险动作（删除/支付/发送）默认免审，
+    # 叠加"回放 → 操作用户桌面"的链路，风险不可接受。改为 degraded：
+    # 界面语义明确（UIA 首级命中）的写操作直接放行，降级定位/高风险动作需确认。
+    # 需要完全免审的无人值守场景显式配置 approval_policy=never。
+    approval_policy: str = "degraded"
     app_hang_timeout_ms: int = 5000
     retries: int = 2
     retry_backoff_ms: int = 800
@@ -175,8 +177,10 @@ class RepeatConfig:
                                            c.human_takeover_detect)
         pol = str(pick("repeat.approval_policy", "HARNESS_REPEAT_APPROVAL_POLICY")
                   or c.approval_policy).strip().lower()
+        # 体检 P1-1：非法值一律回落到安全默认（degraded），**不能**回落到 never
+        # ——否则一个拼写错误就会静默关闭全部审批。
         c.approval_policy = pol if pol in ("degraded", "first_write", "always", "never") \
-            else "never"
+            else "degraded"
         c.retries = max(0, min(5, _as_int(pick("repeat.retries"), c.retries)))
         c.retry_backoff_ms = max(100, _as_int(pick("repeat.retry_backoff_ms"), c.retry_backoff_ms))
         c.max_retries_per_run = max(c.retries, _as_int(pick("repeat.max_retries_per_run"), c.max_retries_per_run))

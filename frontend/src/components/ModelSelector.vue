@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useProviderStore } from '../stores/providers'
+import { useGatewayModelsStore } from '../stores/gatewayModels'
 import { modelsForProvider } from '../utils/modelCatalog'
+import { useLanguage } from '../composables/useLanguage'
 
 const providerStore = useProviderStore()
+const gatewayStore = useGatewayModelsStore()
+const { t } = useLanguage()
 
 const props = defineProps<{
   modelValue?: string
@@ -11,23 +15,39 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 
-/** 所选 provider 在下拉里应展示的模型选项（目录过滤 + 显示名）。 */
+/**
+ * 所选 provider 在下拉里应展示的模型选项（目录过滤 + 显示名 + 可用性）。
+ *
+ * 网关免费厂商（gw-*）的每个模型附带实时可用性：不可用时追加「不可用」并
+ * 置 `disabled`（浏览器原生禁止选中）。可用性来自 gatewayModels store，与后端
+ * 唯一事实源同步——这里只做展示，不自行推断状态。
+ */
 const options = computed(() => {
   if (!props.provider) return []
   const p = providerStore.providers.find((x) => x.id === props.provider)
-  return modelsForProvider(props.provider, p?.models || [])
+  const base = modelsForProvider(props.provider, p?.models || [])
+  const isGateway = gatewayStore.providerToChannel[props.provider] !== undefined
+  if (!isGateway) return base.map((o) => ({ ...o, available: true }))
+  return base.map((o) => ({ ...o, available: gatewayStore.modelAvailable(o.id) }))
 })
 
 function onChange(e: Event) {
-  emit('update:modelValue', (e.target as HTMLSelectElement).value)
+  const value = (e.target as HTMLSelectElement).value
+  emit('update:modelValue', value)
 }
 </script>
 
 <template>
   <div class="model-selector-wrapper">
     <select :value="modelValue" @change="onChange" class="model-selector">
-      <option v-for="opt in options" :key="opt.id" :value="opt.id">
-        {{ opt.label }}
+      <option
+        v-for="opt in options"
+        :key="opt.id"
+        :value="opt.id"
+        :disabled="!opt.available"
+        :class="{ 'option-unavailable': !opt.available }"
+      >
+        {{ opt.available ? opt.label : `${opt.label} · ${t('chat.modelUnavailable')}` }}
       </option>
     </select>
     <span class="selector-arrow">
@@ -95,5 +115,11 @@ function onChange(e: Event) {
 .model-selector :deep(option:checked) {
   font-weight: 600;
   color: var(--color-primary);
+}
+
+.model-selector :deep(option:disabled),
+.model-selector :deep(.option-unavailable) {
+  color: var(--color-text-tertiary);
+  font-style: italic;
 }
 </style>

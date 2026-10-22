@@ -14,10 +14,13 @@ import base64
 import logging
 import os
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+from harness.infra.net_guard import assert_url_safe
 
 logger = logging.getLogger("harness.modules.desktop_repeat.vision")
 
@@ -78,7 +81,7 @@ class BailianVisionClient:
     def available(self) -> bool:
         return bool(self.api_key)
 
-    async def analyze_images(self, images: list[str | Path], prompt: str,
+    async def analyze_images(self, images: Sequence[str | Path], prompt: str,
                              system: str | None = None) -> dict[str, Any] | None:
         """images: 本地路径或已编码 Data URL；返回 {"text", "usage"} 或 None。"""
         if not self.available:
@@ -104,6 +107,13 @@ class BailianVisionClient:
         url = f"{self.base_url}/chat/completions"
         headers = {"Authorization": f"Bearer {self.api_key}",
                    "Content-Type": "application/json"}
+        # 体检 P1-4：base_url 来自配置（管理员可写），未过 net_guard 时可被指向
+        # 内网/回环/云元数据（SSRF）。此处 fail-closed，失败即放弃本次分析。
+        try:
+            assert_url_safe(url)
+        except ValueError as e:
+            logger.info("vision: 端点地址不安全，已放弃本次分析（%s）", e)
+            return None
         last_err = ""
         for attempt in (1, 2):  # 旁路语义：最多两次，失败即放弃
             try:

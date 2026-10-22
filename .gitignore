@@ -145,6 +145,33 @@ id_rsa.pub
 key.txt
 docs/key.txt
 **/key.txt
+# 明文密钥常见命名变体
+*key.txt
+*.secret
+*secret*.txt
+token*.txt
+*token.txt
+
+# 个人账号、密码等敏感信息数据文件
+# 说明：限定 .txt/.json/.csv 扩展名，避免误伤同名源码（如 credentials.py、Secrets.ts）
+*password*.txt
+*password*.json
+*password*.csv
+*passwd*.txt
+*passwd*.json
+*credential*.txt
+*credential*.json
+*credential*.csv
+*secrets*.json
+*apikey*.txt
+*apikey*.json
+*api_key*.txt
+*api_key*.json
+# 中文命名的个人账号/密码/密钥文件
+*账号*
+*密码*
+*密钥*
+*口令*
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 7. 数据库与本地数据文件
@@ -285,10 +312,12 @@ workspace/
 .zcodeignore
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 14. MCP 配置（可能含鉴权 header，不入库；示例见 mcp.example.json）
+# 14. MCP / 网关配置（可能含鉴权 header 或租户凭据，不入库；示例见 mcp.example.json、backend/gateway.example.json）
 # ─────────────────────────────────────────────────────────────────────────────
 mcp.json
 backend/mcp.json
+gateway.json
+backend/gateway.json
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 15. REA vendored MCP server（mcp_servers/rea）构建产物
@@ -331,6 +360,8 @@ ENHANCEMENTS.md
 02-development-plan.md
 docs/*.md
 !docs/andy-harness-v1.0.0用户使用手册.md
+!docs/andy-gateway-设计方案.md
+!docs/andy-gateway-本机免费模型接入-v1.1.md
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 20. 版本控制元数据（非 Git）

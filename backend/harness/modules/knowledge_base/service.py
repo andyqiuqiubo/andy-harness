@@ -389,8 +389,18 @@ class KnowledgeBaseService:
 
         texts = [s["clean_fulltext"] or s["content"] for s in segs]
         vectors = await client.embed(texts)
+        # 体检 P1-3：旧实现 ``zip(segs, vectors, strict=False)`` —— 端点少返回
+        # 一条向量时，多余分段被**静默丢弃**（无向量 → 语义检索查不到），
+        # 多返回时多余向量被丢弃。两种都是"看起来成功、实际索引残缺"。
+        # 这里改为显式校验数量一致，不一致直接报错（让用户重试而不是拿到残缺索引）。
+        if len(vectors) != len(segs):
+            raise KBServiceError(
+                f"嵌入端点返回向量数与分段数不一致（分段 {len(segs)}，返回 {len(vectors)}），"
+                "索引未完成，请检查嵌入端点后重试",
+                "KB_VECTOR_COUNT_MISMATCH",
+            )
         dims = client.dimensions or (len(vectors[0]) if vectors else 0)
-        for seg, vec in zip(segs, vectors, strict=False):
+        for seg, vec in zip(segs, vectors, strict=True):
             if dims and len(vec) != dims:
                 raise KBServiceError(
                     f"向量维度不一致（声明 {dims}，实际 {len(vec)}），请核对模型配置", "KB_DIM_MISMATCH"

@@ -18,7 +18,7 @@
 - **pipeline**：andy-harness:reverse-engineering/1.0
 - **stages**：[{"stage": "rea_static", "engine": "none", "target_engine": "rea+ghidra", "status": "skipped"}, {"stage": "java_decompile", "engine": "javap", "target_engine": "javap", "status": "ok"}, {"stage": "frida_dynamic", "engine": "none", "target_engine": "frida", "status": "skipped"}, {"stage": "firecracker_sandbox", "engine": "none", "target_engine": "firecracker", "status": "skipped"}, {"stage": "pentagi_analysis", "engine": "none", "target_engine": "pentagi", "status": "skipped"}, {"stage": "rebuild_exe", "engine": "none", "target_engine": "tcc-rebuild", "status": "skipped"}]
 - **notes**：
-- **environment**：{"os": "Windows-10-10.0.18363-SP0", "machine": "AMD64", "python": "3.13.14", "hostname": "WIN-K2IQI01IJ7A"}
+- **environment**：{"os": "Windows-10-10.0.18363-SP0", "machine": "AMD64", "python": "3.13.14", "hostname": "<HOST>"}
 
 ## 证据链
 

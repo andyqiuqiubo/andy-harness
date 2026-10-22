@@ -85,7 +85,7 @@ def _focus_hwnd() -> int:
         tid = _user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
         if not tid:
             return 0
-        info = _GUITHREADINFO()  # type: ignore[misc]
+        info = _GUITHREADINFO()
         info.cbSize = ctypes.sizeof(info)
         if _user32.GetGUIThreadInfo(tid, ctypes.byref(info)) and info.hwndFocus:
             return int(info.hwndFocus)

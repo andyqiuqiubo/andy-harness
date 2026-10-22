@@ -24,7 +24,7 @@ except Exception:  # noqa: BLE001
         import numpy as np
     except Exception:  # noqa: BLE001
         np = None  # type: ignore[assignment]
-    cv2 = None  # type: ignore[assignment]
+    cv2 = None
     _CV = False
 
 

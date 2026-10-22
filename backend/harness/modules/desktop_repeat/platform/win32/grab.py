@@ -18,7 +18,7 @@ try:
     import mss as _mss
     _MSS_OK = True
 except Exception:  # noqa: BLE001
-    _mss = None  # type: ignore[assignment]
+    _mss = None
     _MSS_OK = False
 
 try:

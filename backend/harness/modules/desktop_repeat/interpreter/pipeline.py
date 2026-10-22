@@ -224,7 +224,7 @@ def _is_shell_noise(step: StepDef) -> bool:
     """
     if step.action not in ("click", "double_click", "right_click"):
         return False
-    uia = [l for l in step.locators if getattr(l, "kind", "") == "uia"]
+    uia = [loc for loc in step.locators if getattr(loc, "kind", "") == "uia"]
     if not uia:
         return False
     for spec in uia:

@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "defaults": {
+    "strategy": "weighted",
+    "max_failovers": 2,
+    "request_budget_seconds": 240,
+    "read_timeout_seconds": 120,
+    "health_cooldown_seconds": 30,
+    "usage_retention_days": 90,
+    "probe_interval_seconds": 300
+  },
+  "tenants": [
+    {
+      "id": "default",
+      "name": "本地默认租户",
+      "allowed_models": [
+        "*"
+      ],
+      "allowed_channels": [
+        "*"
+      ]
+    }
+  ],
+  "channels": [
+    {
+      "id": "cline",
+      "name": "Cline (free)",
+      "enabled": true,
+      "adapter": "openai-like",
+      "base_url": "https://api.cline.bot/api/v1",
+      "chat_path": "/chat/completions",
+      "auth": "cline-cli",
+      "stream_only": false,
+      "unwrap": "data",
+      "weight": 1,
+      "strategy": "weighted",
+      "models": [
+        "cline-free/minimax-m3.1-flash",
+        "reflection/beam-free",
+        "cline-free/nemotron-3.5-super-vl",
+        "nvidia/nemotron-3.5-lightning-free",
+        "poolside/laguna-s-2.1-free",
+        "cline-free/solar-mini4"
+      ],
+      "probe_url": "https://api.cline.bot/api/v1/ai/cline/recommended-models"
+    },
+    {
+      "id": "workbuddy",
+      "name": "WorkBuddy (free)",
+      "enabled": true,
+      "adapter": "openai-like",
+      "base_url": "https://copilot.tencent.com/v2",
+      "chat_path": "/chat/completions",
+      "auth": "workbuddy-oauth",
+      "stream_only": true,
+      "weight": 1,
+      "strategy": "weighted",
+      "models": [
+        "hy3",
+        "step-5-preview"
+      ],
+      "probe_url": "https://copilot.tencent.com/v3/config"
+    },
+    {
+      "id": "zen",
+      "name": "OpenCode Zen Free",
+      "enabled": true,
+      "adapter": "openai-like",
+      "base_url": "https://opencode.ai/inference/v1",
+      "chat_path": "/chat/completions",
+      "auth": "public",
+      "stream_only": true,
+      "requires_tools": true,
+      "weight": 1,
+      "strategy": "weighted",
+      "models": [
+        "big-pickle",
+        "beam-free",
+        "flint-40b-free",
+        "mimo-v2.6-flash-free",
+        "nemotron-3.5-super-vl-free",
+        "nemotron-3.5-lightning-free",
+        "jev-1.13-free",
+        "deepseek-v4.1-flash-free",
+        "glm-5.3-flash-free",
+        "minimax-m3.1-flash-free"
+      ],
+      "probe_url": "https://opencode.ai/inference/v1/models"
+    },
+    {
+      "id": "qoder-cn",
+      "name": "Qoder CN (COSY)",
+      "enabled": true,
+      "adapter": "qoder-cosy",
+      "base_url": "https://gateway.qoder.com.cn",
+      "auth": "qoder-device",
+      "stream_only": true,
+      "weight": 1,
+      "strategy": "weighted",
+      "models": [
+        "qfmodel",
+        "dfmodel"
+      ],
+      "probe_url": "https://gateway.qoder.com.cn/algo/api/v2/model/list?Encode=1",
+      "chat_path": "/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1"
+    }
+  ],
+  "group_aliases": {
+    "free/auto": [
+      "cline/cline-free/minimax-m3.1-flash",
+      "workbuddy/hy3",
+      "zen/big-pickle"
+    ]
+  }
+}

@@ -104,6 +104,16 @@ def parse_image(
 
 # ── DOCX（标准库 zipfile + XML 正则还原段落 / 表格 / 图片）─────────────
 
+#: DOCX 解压上限（体检 P1-2：zip bomb 防护）。
+#: 上传入口已有 20 MB 原始文件上限，但压缩比可达 1000:1（zip bomb），
+#: 20 MB 的 docx 可解压出 GB 级内容 → 内存/磁盘耗尽。
+#: 这里对**解压后的累计字节数**与**条目数**双限流。
+MAX_DOCX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024   # 256 MB
+MAX_DOCX_ENTRIES = 20000                          # 条目数上限
+
+#: PDF 单个 zlib 流解压上限（体检 P1-2：同构的解压炸弹防护）
+MAX_PDF_STREAM_BYTES = 64 * 1024 * 1024           # 64 MB
+
 _DOCX_P_RE = re.compile(r"<w:p\b[^>]*>.*?</w:p>", re.DOTALL)
 _DOCX_T_RE = re.compile(r"<w:t(?:\s[^>]*)?>(.*?)</w:t>", re.DOTALL)
 _DOCX_TAB_RE = re.compile(r"<w:tab\b[^>]*/?>")
@@ -132,6 +142,17 @@ def parse_docx(data: bytes, assets_dir: str, doc_id: str) -> tuple[str, list[Ass
         raise ParseError(f"DOCX 无法打开（非有效 zip）: {e}") from e
     with zf:
         names = zf.namelist()
+        # 体检 P1-2：zip bomb 防护——条目数与解压后累计字节双限流。
+        if len(names) > MAX_DOCX_ENTRIES:
+            raise ParseError(f"DOCX 条目数过多（{len(names)} > {MAX_DOCX_ENTRIES}），疑似压缩炸弹")
+        declared_total = 0
+        for info in zf.infolist():
+            declared_total += int(info.file_size)
+            if declared_total > MAX_DOCX_UNCOMPRESSED_BYTES:
+                raise ParseError(
+                    f"DOCX 解压后体积超过上限（{MAX_DOCX_UNCOMPRESSED_BYTES // 1024 // 1024}MB），"
+                    "疑似压缩炸弹"
+                )
         # 1) 图片关系表：rId -> media 路径
         rel_targets: dict[str, str] = {}
         for rel_name in [n for n in names if n.startswith("word/_rels/") and n.endswith(".rels")]:
@@ -265,7 +286,12 @@ def parse_pdf(data: bytes, assets_dir: str, doc_id: str) -> tuple[str, list[Asse
     for m in _PDF_STREAM_RE.finditer(data):
         raw = m.group(1)
         try:
-            decoded = zlib.decompress(raw)
+            # 体检 P1-2：单流解压上限（zlib bomb 防护）。zlib 的
+            # decompressobj 支持 max_length，超限即停止且不抛异常。
+            dec = zlib.decompressobj()
+            decoded = dec.decompress(raw, MAX_PDF_STREAM_BYTES)
+            if dec.unconsumed_tail:
+                raise ValueError("流超出上限")
         except Exception:  # noqa: BLE001
             continue  # 非 zlib 流（图片/字体二进制等）跳过
         # 文本操作符

@@ -25,7 +25,7 @@ try:
     import uiautomation as auto
     _UIA_OK = True
 except Exception:  # noqa: BLE001
-    auto = None  # type: ignore[assignment]
+    auto = None
     _UIA_OK = False
 
 _PATTERN_NAMES = (
@@ -414,12 +414,16 @@ class WinUiInspector(UiInspector):
             try:
                 from uiautomation.uiautomation import _AutomationClient
                 client = _AutomationClient.instance()
-                self._native_cache = (client.IUIAutomation, client.UIAutomationCore)
+                ctx: tuple[Any, Any] = (client.IUIAutomation, client.UIAutomationCore)
+                self._native_cache = ctx
             except Exception as e:  # noqa: BLE001
                 logger.debug("UIA 原生通道不可用（将用 Python 遍历兜底）: %s", e)
                 self._native_cache = False
                 return None
-        return self._native_cache
+        cached = self._native_cache
+        if not isinstance(cached, tuple):
+            return None
+        return cached
 
     def _native_find(self, root: Any, *, name: str = "", ctype: str = "",
                      aid: str = "", cls: str = "", index: int = 1

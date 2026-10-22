@@ -26,6 +26,7 @@
 ## 功能特性
 
 - **多模型接入**：DeepSeek（含思维链）、Qwen、Doubao，支持自定义 OpenAI 兼容模型
+- **andy-gateway LLM 网关中心**：把本机已登录的 Cline / WorkBuddy / OpenCode Zen Free / Qoder CN 等免费模型统一成 **OpenAI 兼容 `/v1`**，供自有 Agent 与任意 OpenAI 客户端调用（Qoder CN 为私有 COSY 协议，经 `qoder-cosy` 适配器归一：COSY 签名 + 私有 base64 body + 流式信封归一化；排队 10605 → 503 可重试、不冷却账号）。支持 `weighted`/`round_robin`/`least_inflight`/`least_latency`/`sticky` 路由、熔断与故障转移（`free/auto` 别名）、`agw-` API Key + 租户白名单 + RPM/TPM + 轮换吊销、主动健康探测、SSE 保活、请求总预算、用量/审计/Prometheus 指标、配置版本化 + 2 秒热更新 + 一键回滚；会话页工具箱进入「LLM 网关」管理台（通道/Key/租户/用量/审计/配置版本六个分区）。会话页可直接选这 **4 个免费厂商**（Cline / OpenCode / WorkBuddy / Qoder CN）及其具体模型：系统定期探测各模型可用性（真实流量冷却 + 免费目录核对，均不消耗额度），不可用的模型在下拉里实时标注并禁用选择，恢复后自动更新，检测/后端/界面三方状态一致。通道目录见 `backend/gateway.example.json`，方案与实测见 [docs/andy-gateway-设计方案.md](docs/andy-gateway-设计方案.md) 与 [docs/andy-gateway-本机免费模型接入-v1.1.md](docs/andy-gateway-本机免费模型接入-v1.1.md)
 - **Jev 结构化决策**：集成 TypeSafe AI Jev 模型，支持 Choice（选择型）/ Score（评分型）/ Noul（是非型）三种原语，AI 可自动调用进行结构化判断（Jev 仅有插件 Key 配置入口，决策由模型自动触发，无独立调用界面）
 - **Skills 技能系统**：对齐 Agent Skills 开放标准（SKILL.md），三级渐进式披露——目录常驻、命中才加载正文、脚本/参考文档按需读取，装很多也不撑爆上下文；设置页可查看与启停
 - **技能市场**：内置技能市场，一键安装社区 / 官方 SKILL.md 技能包（含说明弹窗），卸载后可随时重装；与插件市场共用前端面板
@@ -143,6 +144,28 @@ DEEPSEEK_API_KEY=sk-your-api-key-here
 ```
 
 > 也可以启动后在设置页面配置：http://localhost:5173/settings → 模型 → 编辑 DeepSeek → 填入 API Key
+
+### 使用 andy-gateway（可选，免费模型统一接入）
+
+后端起在 8000 时，网关数据面为 `http://127.0.0.1:8000/v1`：
+
+1. 首次启动会在 `backend/data/gateway.bootstrap-key` 生成引导 Key（也可 `set GATEWAY_BOOTSTRAP_KEY=agw-...` 自定）；
+2. 设置 → 模型 → 新建自定义 Provider：`base_url=http://127.0.0.1:8000/v1`，API Key 填引导 Key；
+3. 模型名形如 `cline/cline-free/minimax-m3.1-flash`、`workbuddy/hy3`、`zen/big-pickle`，或故障转移别名 `free/auto`；
+4. 通道与模型在 `backend/data/gateway.json`（模板 `backend/gateway.example.json`），保存后约 2 秒热更新；`/api/gateway/*` 提供 Key / 租户 / 用量 / 审计 / 指标管理面。
+
+> 免费额度与客户端身份门禁的合规边界见 [接入说明 §10](docs/andy-gateway-本机免费模型接入-v1.1.md)。
+
+> **⚠️ 免费通道的前置条件（重要）**：这四个通道复用**使用者本机已登录的客户端登录态**，仓库不携带任何凭据，也不能代替他人登录。每位使用者需在自己的机器上自行准备；缺失登录态的通道只会在调用时返回明确错误，不影响其它通道与整体运行。
+>
+> | 通道 | 需要预先准备 | 登录态文件（运行时读取，位于仓库外） |
+> |---|---|---|
+> | Cline | 安装并登录 **Cline CLI** | `~/.cline/data/settings/providers.json` |
+> | OpenCode Zen Free | **无需登录**（公开匿名通道，`Bearer public`） | — |
+> | WorkBuddy | 通过 **Magpie** 登录 WorkBuddy 国内版 | `~/.config/magpie/plugin-auth.json` → `workbuddy` |
+> | Qoder CN | 通过 **Magpie** 登录 Qoder CN（需 device token + machineId） | `~/.config/magpie/plugin-auth.json` → `qoder-cn` |
+>
+> 不想配置以上登录态时，可直接使用官方 API Key（DeepSeek / Qwen / Doubao）或本地 Ollama，功能不受影响。
 
 ### 启动开发服务器
 

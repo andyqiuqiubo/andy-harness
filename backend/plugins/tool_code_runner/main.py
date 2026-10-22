@@ -45,7 +45,7 @@ class CodeRunnerTool:
         return (
             "执行 Python 或 Shell 代码。参数: code (代码内容), language (python/shell)\n"
             "【环境常识·直接照做可省多轮探测】本机为 Windows，当前用户目录固定为"
-            " C:\\\\Users\\\\<用户名>（如 C:\\\\Users\\\\Administrator），桌面 ="
+            " C:\\\\Users\\\\<用户名>，桌面 ="
             " C:\\\\Users\\\\<用户名>\\\\Desktop。沙箱内 os.path.expanduser('~') 与"
             " Path.home() 可能返回 '/'（不可信），**不要用它们探测用户目录**，"
             "直接使用上述绝对路径即可。"

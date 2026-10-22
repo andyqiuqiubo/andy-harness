@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "note": "本机免费模型通道目录。模型名对外暴露为 <channel>/<model>；free/auto 为跨通道故障转移别名。",
+  "channels": [
+    {
+      "id": "cline",
+      "name": "Cline (free)",
+      "enabled": true,
+      "adapter": "openai-like",
+      "base_url": "https://api.cline.bot/api/v1",
+      "chat_path": "/chat/completions",
+      "auth": "cline-cli",
+      "stream_only": false,
+      "unwrap": "data",
+      "weight": 1,
+      "models": [
+        "cline-free/minimax-m3.1-flash",
+        "reflection/beam-free",
+        "cline-free/nemotron-3.5-super-vl",
+        "nvidia/nemotron-3.5-lightning-free",
+        "poolside/laguna-s-2.1-free",
+        "cline-free/solar-mini4"
+      ]
+    },
+    {
+      "id": "workbuddy",
+      "name": "WorkBuddy (free)",
+      "enabled": true,
+      "adapter": "openai-like",
+      "base_url": "https://copilot.tencent.com/v2",
+      "chat_path": "/chat/completions",
+      "auth": "workbuddy-oauth",
+      "stream_only": true,
+      "unwrap": null,
+      "weight": 1,
+      "models": [
+        "hy3",
+        "step-5-preview"
+      ]
+    },
+    {
+      "id": "zen",
+      "name": "OpenCode Zen Free",
+      "enabled": true,
+      "adapter": "openai-like",
+      "base_url": "https://opencode.ai/inference/v1",
+      "chat_path": "/chat/completions",
+      "auth": "public",
+      "stream_only": true,
+      "unwrap": null,
+      "requires_tools": true,
+      "weight": 1,
+      "models": [
+        "big-pickle",
+        "beam-free",
+        "flint-40b-free",
+        "mimo-v2.6-flash-free",
+        "nemotron-3.5-super-vl-free",
+        "nemotron-3.5-lightning-free",
+        "jev-1.13-free",
+        "deepseek-v4.1-flash-free",
+        "glm-5.3-flash-free",
+        "minimax-m3.1-flash-free"
+      ]
+    },
+    {
+      "id": "qoder-cn",
+      "name": "Qoder CN (not wired)",
+      "enabled": false,
+      "adapter": "qoder-cosy",
+      "base_url": "https://gateway.qoder.com.cn",
+      "auth": "qoder-device",
+      "weight": 1,
+      "models": [
+        "qfmodel",
+        "dfmodel"
+      ],
+      "note": "COSY 信封（AES+RSA+MD5）签名，需专用适配器；本轮未接入"
+    }
+  ],
+  "group_aliases": {
+    "free/auto": [
+      "cline/cline-free/minimax-m3.1-flash",
+      "workbuddy/hy3",
+      "zen/big-pickle"
+    ]
+  }
+}

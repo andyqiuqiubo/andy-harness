@@ -24,8 +24,8 @@ from harness.api.rest.auth import router as auth_router
 from harness.api.rest.auth import setup_auth_routes
 from harness.api.rest.channels import router as channels_router
 from harness.api.rest.channels import setup_channel_routes
-from harness.api.rest.devkit import router as devkit_router
 from harness.api.rest.desktop_repeat import router as desktop_repeat_router
+from harness.api.rest.devkit import router as devkit_router
 from harness.api.rest.evals_lab import router as evals_lab_router
 from harness.api.rest.insights import router as insights_router
 from harness.api.rest.integrations import router as integrations_router
@@ -75,6 +75,10 @@ from harness.kernel.eventbus import EventBus
 from harness.kernel.hooks import HookManager
 from harness.kernel.loader import PluginLoader
 from harness.kernel.services import ServiceRegistry
+from harness.modules.gateway.api.admin import router as gateway_router
+from harness.modules.gateway.api.admin import setup_gateway_routes
+from harness.modules.gateway.api.openai_compat import router as gateway_v1_router
+from harness.modules.gateway.api.openai_compat import setup_gateway_v1_routes
 
 logger = logging.getLogger("harness.main")
 
@@ -246,6 +250,23 @@ async def _init_components() -> None:
     # 从数据库加载自定义 provider
     pr.load_from_db(db)
 
+    # LLM 网关中心（/v1 数据面 + /api/gateway 管理面）
+    from harness.modules.gateway.service import GatewayService
+
+    gateway = GatewayService(
+        db=db,
+        services=_services,
+        # 测试进程/临时库不落引导 Key 文件，避免污染真实 data 目录
+        key_file=None
+        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("HARNESS_DB_PATH")
+        else Path(__file__).resolve().parent.parent / "data" / "gateway.bootstrap-key",
+    )
+    _services.register(GatewayService, gateway, owner="gateway")
+    try:
+        await gateway.start()
+    except Exception as e:  # noqa: BLE001 —— 网关配置损坏不得拖垮核心对话
+        logger.warning("gateway 启动失败（核心能力继续可用）: %s", e)
+
     logger.info("核心组件已初始化")
 
 
@@ -278,6 +299,13 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
                 await _loader.deactivate(plugin_info["id"])
             except Exception as e:
                 logger.warning("停用插件 %s 失败: %s", plugin_info["id"], e)
+    try:
+        from harness.modules.gateway.service import GatewayService
+
+        gw = _services.get(GatewayService)
+        await gw.stop()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("停止 gateway 失败: %s", e)
     try:
         db = _services.get(Database)
         db.close()
@@ -332,6 +360,8 @@ register_error_handlers(app)
 # 注册 REST 路由
 setup_session_routes(_services)
 setup_provider_routes(_services)
+setup_gateway_v1_routes(_services)
+setup_gateway_routes(_services)
 setup_model_routes(_services)
 setup_plugin_routes(_services)
 setup_settings_routes()
@@ -350,6 +380,8 @@ setup_knowledge_base_routes(_services)
 
 app.include_router(sessions_router)
 app.include_router(providers_router)
+app.include_router(gateway_v1_router)
+app.include_router(gateway_router)
 app.include_router(models_router)
 app.include_router(plugins_router)
 app.include_router(settings_router)

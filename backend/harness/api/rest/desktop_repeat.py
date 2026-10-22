@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from harness.api.deps import require_admin
 from harness.api.errors import APIError
+from harness.infra.safe_path import is_safe_identifier
 from harness.modules.desktop_repeat.config import RecordConfig
 from harness.modules.desktop_repeat.errors import RepeatError
 from harness.modules.desktop_repeat.service import DesktopRepeatService
@@ -88,6 +89,18 @@ def _svc() -> DesktopRepeatService:
 
 def _translate(e: RepeatError) -> APIError:
     return APIError(e.code, e.message, 400 if e.recoverable else 422, detail=e.detail)
+
+
+def _check_sid(sid: str) -> str:
+    """REST 层会话 ID 白名单（体检 P0-1 纵深防御）。
+
+    FastAPI 路径参数正则是 ``[^/]+``，``..`` / ``%2e%2e`` 都能通过；服务层
+    已有 ``_session_dir()`` 守卫，这里在 HTTP 边界先拦一道，避免非法标识符
+    走到文件系统层，也避免错误信息泄漏文件系统结构。
+    """
+    if not is_safe_identifier(sid):
+        raise APIError("INVALID_SESSION_ID", f"非法会话 ID: {sid!r}", 400)
+    return sid
 
 
 def _require_admin_sse(request: Request) -> dict[str, Any] | None:
@@ -173,6 +186,7 @@ async def stop_current(req: StopRequest, _a: Any = Depends(require_admin)) -> di
 @router.post("/sessions/{sid}/stop", summary="停止指定会话")
 async def stop_recording(sid: str, req: StopRequest,
                          _a: Any = Depends(require_admin)) -> dict[str, Any]:
+    _check_sid(sid)
     try:
         return await _svc().stop_recording(sid, discard=req.discard)
     except RepeatError as e:
@@ -188,6 +202,7 @@ async def list_sessions(limit: int = Query(50, ge=1, le=200),
 
 @router.get("/sessions/{sid}", summary="会话详情")
 async def get_session(sid: str, _a: Any = Depends(require_admin)) -> dict[str, Any]:
+    _check_sid(sid)
     try:
         return _svc().get_session(sid)
     except RepeatError as e:
@@ -196,6 +211,7 @@ async def get_session(sid: str, _a: Any = Depends(require_admin)) -> dict[str, A
 
 @router.delete("/sessions/{sid}", summary="删除会话")
 async def delete_session(sid: str, _a: Any = Depends(require_admin)) -> dict[str, Any]:
+    _check_sid(sid)
     try:
         ok = _svc().delete_session(sid)
     except RepeatError as e:
@@ -208,6 +224,7 @@ async def delete_session(sid: str, _a: Any = Depends(require_admin)) -> dict[str
 @router.post("/sessions/{sid}/compile", summary="编译为步骤")
 async def compile(sid: str, req: CompileRequest,
                   _a: Any = Depends(require_admin)) -> dict[str, Any]:
+    _check_sid(sid)
     svc = _svc()
     try:
         result = await svc.compile_session(sid, use_llm=req.use_llm)
@@ -225,12 +242,14 @@ async def compile(sid: str, req: CompileRequest,
 async def vision_status(sid: str,
                         _a: Any = Depends(require_admin)) -> dict[str, Any]:
     """读取 bundle/vision.json（未分析过时 available=False）。"""
+    _check_sid(sid)
     return _svc().vision_status(sid)
 
 
 @router.post("/sessions/{sid}/vision", summary="触发视觉核对（旁路，异步）")
 async def vision_run(sid: str,
                      _a: Any = Depends(require_admin)) -> dict[str, Any]:
+    _check_sid(sid)
     svc = _svc()
     try:
         doc = svc.get_session(sid)
