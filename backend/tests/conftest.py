@@ -2,38 +2,37 @@
 
 集成测试（如 test_api_rest.py）直接 import harness.main 并启动完整应用，
 默认会读写真实的 data/harness.db，把测试会话写入开发数据。
-此配置在测试会话开始时把 HARNESS_DB_PATH 指向临时目录，
-让所有测试使用独立的临时数据库，避免污染真实数据。
+
+**必须在模块顶层设置**（而不是放 fixture 里）：`infra/database.Database` 是
+进程级单例，`__new__` 返回全局 `_DB_SINGLETON`，`__init__` 只在首次构造时读
+`HARNESS_DB_PATH`。pytest 的收集阶段会 import 测试模块（`test_health.py`
+顶层就 `import harness.main`），此时若 env 未设置，单例会锁定真实
+`data/harness.db`——等 session fixture 再设 env 已经无效，测试会话
+（「附件测试」/ m0-m4 之类）就会写进用户真实数据库。
+conftest 模块顶层在收集之前执行，是唯一可靠的时机。
 """
 
 import json
+import os
+import tempfile
 
-import pytest
-
-
-@pytest.fixture(scope="session", autouse=True)
-def isolated_test_db(tmp_path_factory: pytest.TempPathFactory) -> None:
-    """隔离测试期间使用的数据库 / 工件目录 / MCP 配置。"""
-    import os
-
-    os.environ["HARNESS_DB_PATH"] = str(tmp_path_factory.mktemp("test-db") / "test.db")
-    # 权限状态文件同样隔离：否则用户运行时在 data/permission.json 里设置的
-    # 覆盖（如 code_runner=auto）会压过默认策略，确认链路测试收不到
-    # confirm_request 帧。
-    os.environ["HARNESS_PERMISSION_STATE_FILE"] = str(tmp_path_factory.mktemp("test-permissions") / "permission.json")
-    # 大工具输出落盘目录也隔离，避免测试把工件写进项目的 workspace/artifacts
-    os.environ["HARNESS_ARTIFACTS_DIR"] = str(tmp_path_factory.mktemp("test-artifacts") / "artifacts")
-    # 会话附件落盘目录也隔离（否则附件测试会把文件写进真实的 data/attachments）
-    os.environ["HARNESS_ATTACHMENTS_DIR"] = str(tmp_path_factory.mktemp("test-attachments") / "attachments")
-    # 附件存储目录同样隔离：否则附件测试会把上传文件写进真实的
-    # data/attachments/，污染项目运行时数据（数据库已隔离但文件没有）。
-    os.environ["HARNESS_ATTACHMENTS_DIR"] = str(tmp_path_factory.mktemp("test-attachments") / "attachments")
-    # MCP 配置指向空的临时配置：否则测试会去读项目里的 mcp.json，
-    # 每次启动应用都尝试连接真实远端 server（慢且依赖网络）。
-    mcp_dir = tmp_path_factory.mktemp("test-mcp")
-    mcp_cfg = mcp_dir / "mcp.json"
-    mcp_cfg.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
-    os.environ["MCP_CONFIG_PATH"] = str(mcp_cfg)
-    # 知识库原文件 / 资产落盘目录同样隔离：否则上传测试会把文件写进真实的
-    # data/knowledge/（数据库已隔离但文件没有）。
-    os.environ["HARNESS_KNOWLEDGE_DIR"] = str(tmp_path_factory.mktemp("test-knowledge") / "knowledge")
+# ── 顶层隔离（早于任何测试模块 import harness.main）────────────────
+_TEST_ROOT = tempfile.mkdtemp(prefix="harness-test-")
+os.environ["HARNESS_DB_PATH"] = os.path.join(_TEST_ROOT, "test.db")
+# 权限状态文件同样隔离：否则用户运行时在 data/permission.json 里设置的
+# 覆盖（如 code_runner=auto）会压过默认策略，确认链路测试收不到
+# confirm_request 帧。
+os.environ["HARNESS_PERMISSION_STATE_FILE"] = os.path.join(
+    _TEST_ROOT, "permission.json"
+)
+# 大工具输出落盘目录、会话附件、知识库原文件都隔离，避免写进项目
+# workspace/artifacts、data/attachments、data/knowledge。
+os.environ["HARNESS_ARTIFACTS_DIR"] = os.path.join(_TEST_ROOT, "artifacts")
+os.environ["HARNESS_ATTACHMENTS_DIR"] = os.path.join(_TEST_ROOT, "attachments")
+os.environ["HARNESS_KNOWLEDGE_DIR"] = os.path.join(_TEST_ROOT, "knowledge")
+# MCP 配置指向空的临时配置：否则测试会去读项目里的 mcp.json，
+# 每次启动应用都尝试连接真实远端 server（慢且依赖网络）。
+_mcp_cfg = os.path.join(_TEST_ROOT, "mcp.json")
+with open(_mcp_cfg, "w", encoding="utf-8") as _f:
+    json.dump({"mcpServers": {}}, _f)
+os.environ["MCP_CONFIG_PATH"] = _mcp_cfg

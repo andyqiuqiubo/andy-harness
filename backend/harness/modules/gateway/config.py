@@ -51,6 +51,10 @@ class ChannelConfig(BaseModel):
     auth: str = "public"
     probe_url: str | None = None
     probe_interval_seconds: int | None = None
+    # probe_url 是不是可靠的"可调用模型目录"。WorkBuddy 的 /v3/config 是配置端点、
+    # 不含全部可调用模型（step-5-preview 可用却不在列），置 false 跳过清单判定，
+    # 避免把能用的模型误标下架而置灰。
+    catalog_probe: bool = True
     stream_only: bool = False
     unwrap: str | None = None
     requires_tools: bool = False

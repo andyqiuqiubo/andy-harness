@@ -580,6 +580,17 @@ def test_classify_text_rules_beat_status() -> None:
     v = classify_failure(400, b'{"error":{"message":"temperature must be <= 2"}}')
     assert v.scope == SCOPE_REQUEST
     assert v.cooldown_ms == 0
+
+    # OpenCode Zen 2026-10-23 收紧：免费档只允许自家客户端调用（HTTP 403 +
+    # FreeTierError）——归 account scope 并给出专属错误码，避免用户对着
+    # "没有可用通道"猜谜。
+    v_tier = classify_failure(
+        403,
+        b'{"type":"error","error":{"type":"FreeTierError","message":"OpenCode\'s'
+        b' free tier can only be used from within OpenCode."}}',
+    )
+    assert v_tier.code == "UPSTREAM_FREE_TIER_LOCKED"
+    assert v_tier.scope == SCOPE_ACCOUNT
     assert v.retryable is False
 
     # provider 自己建的 payload 坏了仍冷却账号（唯一 improper 4xx）
@@ -1801,4 +1812,609 @@ async def test_gateway_qoder_stream_error_terminates(
         assert "SHOULD_NOT_APPEAR" not in joined  # 错误后立即终止
     finally:
         await svc.stop()
+
+
+def _simple_cfg(tmp_path: Path) -> Path:
+    cfg = tmp_path / "gateway.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "channels": [
+                    {
+                        "id": "workbuddy",
+                        "base_url": "https://workbuddy.local/v2",
+                        "auth": "bearer",
+                        "models": ["hy3"],
+                        "credentials": [{"id": "c", "source": "env:MOCK_KEY"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return cfg
+
+
+@pytest.mark.asyncio
+async def test_gateway_provider_empty_stream_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """回归：网关流零内容时 provider 必须报错，不能静默返回空回复。
+
+    现象：朋友新装机器、Cline 未登录/上游返回非 SSE 错误体时，页面只出现
+    空白回复（"提问后没有任何回复"）——根因就是零块被当成成功。"""
+    from plugins.provider_gateway.main import GatewayProvider
+
+    monkeypatch.setenv("MOCK_KEY", "sk-test")
+    cfg = _simple_cfg(tmp_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=b"data: [DONE]\n"
+        )
+
+    from harness.kernel.services import ServiceRegistry as _Reg
+
+    svc = GatewayService(
+        FakeDB(),
+        services=_Reg(),
+        config_path=cfg,
+        transport=httpx.MockTransport(handler),
+        bootstrap_key="agw-test",
+        watch_config=False,
+    )
+    await svc.start()
+    try:
+        svc.services.register(GatewayService, svc, owner="test")
+        provider = GatewayProvider(
+            models=["workbuddy/hy3"],
+            extra_params={"_gateway_services": svc.services, "_gateway_channel": "workbuddy"},
+        )
+        with pytest.raises(Exception) as excinfo:
+            async for _blk in provider.chat(
+                [{"role": "user", "content": "hi"}], "workbuddy/hy3", stream=True
+            ):
+                pass
+        assert "未返回任何内容" in str(excinfo.value)
+    finally:
+        await svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_gateway_stream_non_sse_error_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """回归：HTTP 200 + 非 SSE 错误体（{"error":...}）须转成 error 块并终止。
+
+    这类响应若原样透传，provider 只认 `data: ` 会零块输出 → 页面无反馈。"""
+    monkeypatch.setenv("MOCK_KEY", "sk-test")
+    cfg = _simple_cfg(tmp_path)
+    body = b'{"error": {"message": "upstream boom", "code": "BOOM"}}'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "application/json"}, content=body
+        )
+
+    from harness.kernel.services import ServiceRegistry as _Reg
+
+    svc = GatewayService(
+        FakeDB(),
+        services=_Reg(),
+        config_path=cfg,
+        transport=httpx.MockTransport(handler),
+        bootstrap_key="agw-test",
+        watch_config=False,
+    )
+    await svc.start()
+    try:
+        res = await svc.chat(
+            {
+                "model": "workbuddy/hy3",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            },
+            svc.internal_context(),
+        )
+        assert res.iterator is not None
+        lines: list[str] = []
+        async for raw in res.iterator:
+            lines.extend(raw.decode("utf-8", "replace").splitlines())
+        joined = "\n".join(lines)
+        assert '"error"' in joined
+        assert "upstream boom" in joined
+    finally:
+        await svc.stop()
+
+
+def test_credential_resolver_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """凭据就绪判定：只查存在性，不刷新 token、不发请求。"""
+    from harness.modules.gateway.config import ChannelConfig, CredentialRef
+    from harness.modules.gateway.credentials import ClineTokenManager, CredentialResolver
+
+    resolver = CredentialResolver()
+
+    ch_public = ChannelConfig(id="zen", base_url="https://x", auth="public", models=["m"])
+    assert resolver.present(ch_public) is True
+
+    ch_env = ChannelConfig(
+        id="e",
+        base_url="https://x",
+        auth="bearer",
+        models=["m"],
+        credentials=[CredentialRef(id="c", source="env:GW_TEST_KEY_PRESENT")],
+    )
+    monkeypatch.delenv("GW_TEST_KEY_PRESENT", raising=False)
+    assert resolver.present(ch_env) is False
+    monkeypatch.setenv("GW_TEST_KEY_PRESENT", "sk-x")
+    assert resolver.present(ch_env) is True
+
+    ch_cline = ChannelConfig(id="cline", base_url="https://x", auth="cline-cli", models=["m"])
+    monkeypatch.setattr(ClineTokenManager, "path", tmp_path / "missing.json")
+    assert resolver.present(ch_cline) is False
+    good = tmp_path / "cline.json"
+    good.write_text(
+        json.dumps({"providers": {"cline": {"settings": {"auth": {"accessToken": "a"}}}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ClineTokenManager, "path", good)
+    assert resolver.present(ch_cline) is True
+
+
+@pytest.mark.asyncio
+async def test_provider_gateway_skips_unready_channels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """凭据未就绪的通道不注册 provider（避免「选得到、发出去、只收到报错」）。"""
+    from harness.modules.gateway.credentials import ClineTokenManager
+
+    cfg = tmp_path / "gateway.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "channels": [
+                    {
+                        "id": "zen",
+                        "base_url": "https://zen.local",
+                        "auth": "public",
+                        "models": ["big-pickle"],
+                    },
+                    {
+                        "id": "cline",
+                        "base_url": "https://cline.local",
+                        "auth": "cline-cli",
+                        "models": ["cline-free/x"],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ClineTokenManager, "path", tmp_path / "no-cline.json")
+
+    from harness.kernel.services import ServiceRegistry as _Reg
+
+    svc = GatewayService(
+        FakeDB(), services=_Reg(), config_path=cfg, bootstrap_key="agw-test", watch_config=False
+    )
+    await svc.start()
+    try:
+        from plugins.provider_gateway.main import GatewayProviderPlugin
+
+        assert GatewayProviderPlugin._models_of(svc, "zen") == ["zen/big-pickle"]
+        assert GatewayProviderPlugin._models_of(svc, "cline") == []
+    finally:
+        await svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_config_hot_reload_resyncs_provider_models(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """回归：配置热更新后 provider 注册表必须同步（曾因只在启动时注册，
+    下拉里留着已删除的模型，用户点它们得到无意义的报错）。"""
+    from harness.kernel.services import ServiceRegistry as _Reg
+    from harness.modules.model_manager.provider_registry import ProviderRegistry
+    from plugins.provider_gateway.main import GatewayProviderPlugin
+
+    cfg_path = tmp_path / "gateway.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "channels": [
+                    {
+                        "id": "zen",
+                        "base_url": "https://zen.local",
+                        "auth": "public",
+                        "models": ["big-pickle", "stale-model"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    services = _Reg()
+    svc = GatewayService(
+        FakeDB(), services=services, config_path=cfg_path, bootstrap_key="agw-test",
+        watch_config=False,
+    )
+    await svc.start()
+    try:
+        services.register(GatewayService, svc, owner="test")
+        registry = ProviderRegistry()
+        services.register(ProviderRegistry, registry, owner="test")
+        plugin = GatewayProviderPlugin()
+        plugin._provider_registry = registry
+        ctx_fake = _FakeCtx(services)
+        # 与 activate() 相同的生产接线
+        svc.login.on_credential_saved = lambda _c: plugin._sync_channels(ctx_fake, svc)
+        svc.on_config_applied = lambda: plugin._sync_channels(ctx_fake, svc)
+        plugin._sync_channels(ctx_fake, svc)
+        assert "zen/stale-model" in registry.list_providers()[0]["models"]
+
+        # 模拟热更新：删掉 stale-model 再应用配置
+        cfg_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "channels": [
+                        {
+                            "id": "zen",
+                            "base_url": "https://zen.local",
+                            "auth": "public",
+                            "models": ["big-pickle"],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        svc.apply_config(json.loads(cfg_path.read_text(encoding="utf-8")), actor="test")
+        models = registry.list_providers()[0]["models"]
+        assert models == ["zen/big-pickle"]
+        # 通道整体禁用后 provider 必须注销（不是留着报错入口）
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg["channels"][0]["enabled"] = False
+        svc.apply_config(cfg, actor="test")
+        assert registry.list_providers() == []
+    finally:
+        await svc.stop()
+
+
+class _FakeCtx:
+    """最小 PluginContext 替身（只带 provider 同步用到的 services/logger）。"""
+
+    class _Logger:
+        def info(self, *_a: Any, **_k: Any) -> None: ...
+        def warning(self, *_a: Any, **_k: Any) -> None: ...
+
+    def __init__(self, services: Any) -> None:
+        self.services = services
+        self.logger = self._Logger()
+
+
+def test_gateway_example_config_official_mainline() -> None:
+    """示例配置：官方免费额度通道默认启用；客户端通道默认关闭；zen 因上游收紧也默认关。"""
+    from harness.modules.gateway.config import ConfigService
+
+    example = Path(__file__).resolve().parents[1] / "gateway.example.json"
+    snap = ConfigService(example).load()
+    for cid in ("qwen-bailian", "doubao-ark"):
+        assert snap.channels[cid].enabled is True
+    # zen 2026-10-23 起上游把免费档收归 OpenCode 客户端内部（第三方调用一律
+    # 403 FreeTierError），故默认禁用、界面不再显示；保留通道定义便于政策回摆时启用。
+    for cid in ("cline", "workbuddy", "qoder-cn", "zen"):
+        assert snap.channels[cid].enabled is False
+    assert snap.channels["qwen-bailian"].credentials[0].source == "env:DASHSCOPE_API_KEY"
+    assert snap.channels["doubao-ark"].credentials[0].source == "env:ARK_API_KEY"
+    assert snap.aliases["free/auto"][0] == "qwen-bailian/qwen-plus"
+
+
+def test_dead_models_removed_and_catalog_probe_gated() -> None:
+    """真机确认不可达的模型已移除；WorkBuddy 目录端点不可靠、跳过清单判定。
+
+    - cline/poolside/laguna-s-2.1-free：Vercel 路由流式 100% 失败（会话页全走流式）
+    - zen/flint-40b-free：上游持续 503「Endpoint is unavailable」
+    两者都不该再出现在示例配置里（界面不再显示）。workbuddy 的 /v3/config 不是
+    模型目录，catalog_probe 必须为 False，否则可用的 step-5-preview 会被误置灰。
+    """
+    from harness.modules.gateway.config import ConfigService
+
+    example = Path(__file__).resolve().parents[1] / "gateway.example.json"
+    snap = ConfigService(example).load()
+    assert "poolside/laguna-s-2.1-free" not in snap.channels["cline"].models
+    assert "flint-40b-free" not in snap.channels["zen"].models
+    assert snap.channels["workbuddy"].catalog_probe is False
+    # 别名成员必须是仍存在的模型，否则 free/auto 会稳定报 GW_NO_CAPACITY
+    for member in snap.aliases["free/auto"]:
+        head, _, rest = member.partition("/")
+        assert rest in snap.channels[head].models, f"free/auto 引用了已移除模型: {member}"
+
+
+@pytest.mark.asyncio
+async def test_stream_error_only_cools_that_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """回归：某模型流式报错只冷却它自己，同通道其它模型仍可路由。
+
+    这正是用户报的现象——laguna/flint 流式失败曾把整条通道连坐，导致
+    big-pickle 等健康模型也报「没有可用通道」。"""
+    monkeypatch.setenv("MOCK_KEY", "sk-test")
+    cfg = tmp_path / "gateway.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "channels": [
+                    {
+                        "id": "mock",
+                        "base_url": "https://mock.local/v1",
+                        "auth": "bearer",
+                        "models": ["bad", "good"],
+                        "credentials": [{"id": "c", "source": "env:MOCK_KEY"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        if body["model"] == "bad":
+            # 流内错误信封（HTTP 200，与真实 laguna 一致）
+            sse = 'data: {"error":{"code":"stream_init_failed","message":"bad"}}\n'
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, content=sse.encode()
+            )
+        sse = (
+            'data: {"choices":[{"delta":{"content":"ok"}}]}\n'
+            "data: [DONE]\n"
+        )
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=sse.encode()
+        )
+
+    from harness.kernel.services import ServiceRegistry as _Reg
+
+    svc = GatewayService(
+        FakeDB(),
+        services=_Reg(),
+        config_path=cfg,
+        transport=httpx.MockTransport(handler),
+        bootstrap_key="agw-test",
+        watch_config=False,
+    )
+    await svc.start()
+    try:
+        ctx = svc.internal_context()
+        # 触发 bad 的流式错误（消费掉迭代器让 finally 落地冷却）
+        res = await svc.chat(
+            {"model": "mock/bad", "messages": [{"role": "user", "content": "x"}], "stream": True},
+            ctx,
+        )
+        assert res.iterator is not None
+        async for _ in res.iterator:
+            pass
+        # bad 应被冷却（模型级），但 good 必须仍然可用（通道未被连坐）
+        assert svc.model_available("mock", "bad") is False
+        assert svc.model_available("mock", "good") is True
+        # good 能正常路由
+        res2 = await svc.chat(
+            {"model": "mock/good", "messages": [{"role": "user", "content": "x"}], "stream": True},
+            ctx,
+        )
+        assert res2.iterator is not None
+    finally:
+        await svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_client_abort_does_not_cooldown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """回归：客户端中断流式（status=499）不冷却——否则用户点「停止生成」
+    会把整条通道健康模型连坐成「没有可用通道」（真机 step-5 被误杀）。"""
+    monkeypatch.setenv("MOCK_KEY", "sk-test")
+    cfg = tmp_path / "gateway.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "channels": [
+                    {
+                        "id": "mock",
+                        "base_url": "https://mock.local/v1",
+                        "auth": "bearer",
+                        "models": ["m1"],
+                        "credentials": [{"id": "c", "source": "env:MOCK_KEY"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sse = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n'
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=sse.encode()
+        )
+
+    from harness.kernel.services import ServiceRegistry as _Reg
+
+    svc = GatewayService(
+        FakeDB(),
+        services=_Reg(),
+        config_path=cfg,
+        transport=httpx.MockTransport(handler),
+        bootstrap_key="agw-test",
+        watch_config=False,
+    )
+    await svc.start()
+    try:
+        ctx = svc.internal_context()
+        res = await svc.chat(
+            {"model": "mock/m1", "messages": [{"role": "user", "content": "x"}], "stream": True},
+            ctx,
+        )
+        assert res.iterator is not None
+        it = res.iterator.__aiter__()
+        await it.__anext__()  # 读到第一块
+        # 模拟客户端中断：关闭生成器会抛 GeneratorExit，走 _stream 的 499 分支
+        await it.aclose()
+        # 中断不应把模型冷却
+        assert svc.model_available("mock", "m1") is True
+    finally:
+        await svc.stop()
+
+
+# ---------------------------------------------------------------------------
+# 自建登录（免装 Magpie）：凭据库 + Qoder CN 设备授权 + 解析器优先级
+# ---------------------------------------------------------------------------
+
+
+def test_credential_store_roundtrip_and_ciphertext() -> None:
+    """凭据库：加解密往返一致，且表里只存密文。"""
+    from harness.modules.gateway.credential_store import GatewayCredentialStore
+
+    store = GatewayCredentialStore(FakeDB())
+    store.ensure_schema()
+    assert store.load("qoder-cn") is None
+    store.save(
+        "qoder-cn",
+        {"access": "dt-secret", "machine_id": "m1", "uid": "u1", "email": "u@example.com"},
+    )
+    loaded = store.load("qoder-cn")
+    assert loaded is not None
+    assert loaded["access"] == "dt-secret"
+    blob = store.db.query_one(
+        "SELECT payload_enc FROM gw_credentials WHERE channel_id = ?", ("qoder-cn",)
+    )
+    assert blob is not None
+    assert "dt-secret" not in str(blob["payload_enc"])
+    assert "u@example.com" not in str(blob["payload_enc"])
+    assert store.channels() == ["qoder-cn"]
+    store.delete("qoder-cn")
+    assert store.load("qoder-cn") is None
+
+
+def test_credential_store_decrypt_failure_is_silent() -> None:
+    """machine key 变更导致解密失败 → 按未登录处理，不抛异常、不泄漏明文。"""
+    from harness.infra.crypto import APIKeyEncryptor
+    from harness.modules.gateway.credential_store import GatewayCredentialStore
+
+    db = FakeDB()
+    writer = GatewayCredentialStore(db, encryptor=APIKeyEncryptor(machine_id="machine-A"))
+    writer.ensure_schema()
+    writer.save("qoder-cn", {"access": "dt-x"})
+    reader = GatewayCredentialStore(db, encryptor=APIKeyEncryptor(machine_id="machine-B"))
+    assert reader.load("qoder-cn") is None
+
+
+@pytest.mark.asyncio
+async def test_qoder_device_login_flow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Qoder CN 自建登录：授权 URL → 轮询 deviceToken → jobToken 4xx 回落 → userinfo → 加密落库。"""
+    import asyncio
+
+    from harness.modules.gateway import login as login_mod
+    from harness.modules.gateway.credential_store import GatewayCredentialStore
+    from harness.modules.gateway.login import DeviceLoginManager, QoderCNDeviceLogin
+
+    monkeypatch.setattr(login_mod, "POLL_INTERVAL_SECONDS", 0.01)
+    polls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/deviceToken/poll"):
+            polls["n"] += 1
+            if polls["n"] < 2:
+                return httpx.Response(404, json={"message": "pending"})
+            return httpx.Response(
+                200,
+                json={
+                    "token": "dt-abc",
+                    "refresh_token": "rt-abc",
+                    "expires_at": "2027-01-01T00:00:00Z",
+                    "user_id": "u-42",
+                },
+            )
+        if path.endswith("/me/jobToken"):
+            # Qoder CN：CLI 本身不申请 job token，4xx 即回落用 device token
+            return httpx.Response(400, json={"message": "unsupported for CN"})
+        if path.endswith("/userinfo"):
+            assert request.headers.get("Authorization") == "Bearer dt-abc"
+            return httpx.Response(
+                200, json={"id": "u-42", "name": "Qoder 用户", "email": "u@example.com"}
+            )
+        raise AssertionError(f"unexpected upstream path: {path}")
+
+    store = GatewayCredentialStore(FakeDB())
+    store.ensure_schema()
+    manager = DeviceLoginManager(
+        store, [QoderCNDeviceLogin()], transport=httpx.MockTransport(handler)
+    )
+    session = manager.start("qoder-cn")
+    assert "qoder.cn/device/selectAccounts" in session.login_url
+    assert "challenge_method=S256" in session.login_url
+    assert "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb" in session.login_url
+
+    for _ in range(300):
+        if manager.status(session.session_id)["state"] != "pending":
+            break
+        await asyncio.sleep(0.02)
+    state = manager.status(session.session_id)
+    assert state["state"] == "ok", state
+
+    saved = store.load("qoder-cn")
+    assert saved is not None
+    assert saved["access"] == "dt-abc"  # jobToken 4xx → device token 即对话 token
+    assert saved["machine_id"] == session.params["machine_id"]
+    assert saved["uid"] == "u-42"
+    assert saved["email"] == "u@example.com"
+    channels = {c["channel_id"]: c for c in manager.channels()}
+    assert channels["qoder-cn"]["has_stored_credential"] is True
+    assert channels["qoder-cn"]["account"] == "u@example.com"
+    await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_resolver_prefers_stored_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """解析器：自存凭据优先；无自存时回落 Magpie 文件；两者皆无判未就绪。"""
+    from harness.modules.gateway.config import ChannelConfig
+    from harness.modules.gateway.credential_store import GatewayCredentialStore
+    from harness.modules.gateway.credentials import CredentialResolver, QoderDeviceTokenManager
+
+    store = GatewayCredentialStore(FakeDB())
+    store.ensure_schema()
+    store.save("qoder-cn", {"access": "dt-stored", "machine_id": "m-stored", "uid": "u-stored"})
+
+    magpie = tmp_path / "plugin-auth.json"
+    magpie.write_text(
+        json.dumps(
+            {"qoder-cn": {"access": "dt-magpie", "machineId": "m-magpie", "uid": "u-magpie"}}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(QoderDeviceTokenManager, "path", magpie)
+
+    channel = ChannelConfig(
+        id="qoder-cn", base_url="https://x", auth="qoder-device", models=["qfmodel"]
+    )
+    resolver = CredentialResolver(store=store)
+    assert resolver.present(channel) is True
+    creds = resolver.resolve(channel)
+    assert creds[0].secret == "dt-stored"
+    assert creds[0].meta["machine_id"] == "m-stored"
+
+    store.delete("qoder-cn")
+    creds = resolver.resolve(channel)
+    assert creds[0].secret == "dt-magpie"  # 兜底仍可用
+    assert creds[0].meta["machine_id"] == "m-magpie"
+
+    magpie.unlink()
+    assert resolver.present(channel) is False
 

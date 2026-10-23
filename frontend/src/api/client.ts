@@ -138,6 +138,34 @@ export async function fetchAttachmentBlobUrl(
   }
 }
 
+/**
+ * 附件图片字节 → data URI（Base64）。
+ *
+ * 用于图生视频：智谱 CogVideoX 的 `image_url` 接受 URL 或 Base64，但本地后端
+ * 的附件下载地址智谱服务端访问不到（内网/localhost），必须转 Base64 随请求提交。
+ * 与 `fetchAttachmentBlobUrl` 同样走带鉴权 fetch；分块拼接避免大图时
+ * `String.fromCharCode.apply` 超出参数上限。智谱限制 Base64 解码后 ≤5MB，
+ * 大小校验由调用方负责。
+ */
+export async function fetchAttachmentDataUri(
+  sessionId: string,
+  attachmentId: string,
+  mime: string,
+): Promise<string> {
+  const res = await fetch(
+    `${apiBase()}/sessions/${sessionId}/attachments/${attachmentId}`,
+    withAuthHeaders(),
+  )
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const buf = new Uint8Array(await res.arrayBuffer())
+  let binary = ''
+  const CHUNK = 0x8000
+  for (let i = 0; i < buf.length; i += CHUNK) {
+    binary += String.fromCharCode(...buf.subarray(i, i + CHUNK))
+  }
+  return `data:${mime || 'image/png'};base64,${btoa(binary)}`
+}
+
 class APIClientImpl {
   async get<T>(url: string): Promise<T> {
     return request<T>(url)

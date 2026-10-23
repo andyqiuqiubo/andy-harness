@@ -12,7 +12,10 @@ from typing import Any
 
 # 免费通道 id → 会话 provider id（provider_gateway 插件据此把三家注册为可选厂商）。
 #: 键为网关 ChannelConfig.id，值为 ProviderRegistry 里的 provider_id。
+#: 官方 API 通道（Key 即用）排在前，客户端登录态通道（可选增强）排在后。
 CHANNEL_PROVIDER_IDS: dict[str, str] = {
+    "qwen-bailian": "gw-qwen",
+    "doubao-ark": "gw-doubao",
     "cline": "gw-cline",
     "zen": "gw-opencode",
     "workbuddy": "gw-workbuddy",
@@ -22,13 +25,20 @@ CHANNEL_PROVIDER_IDS: dict[str, str] = {
 #: provider_id → channel（反查）。
 PROVIDER_ID_CHANNEL: dict[str, str] = {v: k for k, v in CHANNEL_PROVIDER_IDS.items()}
 
-#: 会话选择器里展示的厂商名（provider_id → 展示名）。
+#: 会话选择器里展示的厂商名（channel → 展示名）。
 CHANNEL_PROVIDER_LABELS: dict[str, str] = {
+    "qwen-bailian": "Qwen 百炼",
+    "doubao-ark": "豆包方舟",
     "cline": "Cline",
     "zen": "OpenCode",
     "workbuddy": "WorkBuddy",
     "qoder-cn": "Qoder CN",
 }
+
+#: 客户端登录态类通道（会话选择器里带「（免费）」后缀）；官方 API 通道不带该后缀。
+CHANNEL_PROVIDER_FREE_CHANNELS: frozenset[str] = frozenset(
+    {"cline", "zen", "workbuddy", "qoder-cn"}
+)
 
 
 @dataclass(slots=True)

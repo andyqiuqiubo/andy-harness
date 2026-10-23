@@ -189,8 +189,11 @@ const currentMenuSession = computed(
 
 async function handleNewSession() {
   await chatStore.loadSessions()
+  // 「空会话」= 既没有对话消息，也没有媒体生成任务。
+  // 生成类模型不写 messages，只看 message_count 会把有产物（图/视频）的
+  // 会话误判为空会话，导致「+新建」跳回旧会话并提示「已有新会话」。
   const emptySession = chatStore.sessions.find(
-    (s) => !s.archived && s.message_count === 0,
+    (s) => !s.archived && s.message_count === 0 && (s.media_count ?? 0) === 0,
   )
   if (emptySession) {
     await chatStore.selectSession(emptySession.id)

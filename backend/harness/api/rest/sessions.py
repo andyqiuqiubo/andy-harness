@@ -9,6 +9,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from harness.api.errors import APIError
+from harness.infra.database import Database
 from harness.kernel.services import ServiceRegistry
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -94,10 +95,17 @@ def setup_session_routes(registry: ServiceRegistry) -> None:
         service = _get_session_service(registry)
         user_id = _current_user_id(request)
         sessions = service.list_sessions(include_archived=include_archived, user_id=user_id)
+        db = Database()
         result = []
         for s in sessions:
             d = s.to_dict()
             d["message_count"] = service.count_messages(s.id)
+            # 生成类模型（文生图/图生视频）只写 media_tasks、不写 messages，
+            # 前端「是否已有空会话」的判定必须同时看媒体任务数，否则有产物的
+            # 会话会被误判为空会话（点「+新建」反而跳回它并提示「已有新会话」）。
+            row = db.query_one(
+                "SELECT COUNT(*) AS n FROM media_tasks WHERE session_id = ?", (s.id,))
+            d["media_count"] = int(row["n"]) if row else 0
             result.append(d)
         return result
 

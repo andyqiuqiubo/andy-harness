@@ -28,6 +28,26 @@ export const MODEL_CATALOG: Record<string, CatalogModel[]> = {
     { id: 'doubao-pro-32k', label: 'DOUBAO-PRO-32K' },
     { id: 'doubao-lite-4k', label: 'DOUBAO-LITE-4K' },
   ],
+  // 智谱：文本走 chat，图像/视频模型走 /api/media 生成接口（均为官方免费模型）
+  zhipu: [
+    { id: 'glm-4.7-flash', label: 'GLM-4.7-FLASH' },
+    { id: 'cogview-3-flash', label: 'COGVIEW-3-FLASH · 文生图' },
+    { id: 'cogvideox-flash', label: 'COGVIDEOX-FLASH · 文生/图生视频' },
+  ],
+}
+
+/**
+ * 生成类模型（图像/视频）：这些模型**不能对话**，选中后走媒体生成流程。
+ *
+ * 判定集中在此，避免 ChatView 直接硬编码模型名。
+ */
+export const MEDIA_MODELS: Record<string, 'image' | 'video'> = {
+  'cogview-3-flash': 'image',
+  'cogvideox-flash': 'video',
+}
+
+export function mediaKindOf(model: string): 'image' | 'video' | null {
+  return MEDIA_MODELS[model] ?? null
 }
 
 /**

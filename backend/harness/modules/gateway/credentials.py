@@ -1,9 +1,11 @@
 """gateway 凭据解析 —— 只读本机已有登录态，明文不落日志。
 
 支持的 source：
+- ``store:qoder-cn``    → 网关自存凭据（管理台「登录」授权，免装 Magpie）；无则回落
+- ``local:qoder-cn``    → Magpie ``plugin-auth.json`` 中的 Qoder CN device token（兜底）
+- ``store:workbuddy``   → 网关自存凭据；无则回落
+- ``local:workbuddy``   → Magpie ``plugin-auth.json`` 中的 WorkBuddy 登录态（兜底）
 - ``local:cline``      → Cline CLI 登录态（过期自动刷新并原子写回）
-- ``local:workbuddy``  → Magpie ``plugin-auth.json`` 中的 WorkBuddy 登录态
-- ``local:qoder-cn``   → Magpie ``plugin-auth.json`` 中的 Qoder CN device token
 - ``public``           → OpenCode Zen 的共享 public 凭据
 - ``env:VAR``          → 环境变量中的 Bearer token
 """
@@ -24,6 +26,7 @@ import httpx
 
 from harness.modules.gateway.config import ChannelConfig, CredentialRef
 from harness.modules.gateway.contracts import Credential, GatewayError
+from harness.modules.gateway.credential_store import GatewayCredentialStore
 
 HOME = Path(os.environ.get("USERPROFILE", str(Path.home())))
 
@@ -77,6 +80,14 @@ class ClineTokenManager:
     def __init__(self) -> None:
         self._cache: dict[str, Any] | None = None
         self._lock = threading.Lock()
+
+    def present(self) -> bool:
+        """登录态是否就绪（只查文件与结构，不刷新 token、不发请求）。"""
+        try:
+            auth = _node(_load_json(self.path), self.path, "providers", "cline", "settings", "auth")
+        except GatewayError:
+            return False
+        return bool(auth.get("accessToken") or auth.get("refreshToken"))
 
     def token(self) -> str:
         if self._cache and _parse_expiry(self._cache.get("expiresAt")) - time.time() > 300:
@@ -145,17 +156,51 @@ class ClineTokenManager:
 
 
 class WorkBuddyTokenManager:
-    """WorkBuddy 国内版登录态（Magpie plugin-auth.json，只读）。"""
+    """WorkBuddy 国内版登录态：优先网关自存凭据（自建登录），Magpie 文件兜底。"""
 
     path = HOME / ".config" / "magpie" / "plugin-auth.json"
 
+    def __init__(self, store: GatewayCredentialStore | None = None) -> None:
+        self._store = store
+
+    def _from_store(self) -> Credential | None:
+        if self._store is None:
+            return None
+        data = self._store.load("workbuddy")
+        if not data:
+            return None
+        access = str(data.get("access") or "")
+        if not access:
+            return None
+        return Credential(
+            id="workbuddy",
+            secret=access,
+            meta={
+                "uid": str(data.get("uid", "")),
+                "domain": str(data.get("domain", "www.workbuddy.cn")),
+            },
+        )
+
+    def present(self) -> bool:
+        """登录态是否就绪（只查自存库与文件，不刷新、不发请求）。"""
+        if self._from_store() is not None:
+            return True
+        try:
+            node = _load_json(self.path).get("workbuddy") or {}
+        except GatewayError:
+            return False
+        return isinstance(node, dict) and bool(node.get("access"))
+
     def credential(self) -> Credential:
+        stored = self._from_store()
+        if stored is not None:
+            return stored
         node = _load_json(self.path).get("workbuddy") or {}
         if not isinstance(node, dict):
             raise GatewayError("CRED_INVALID", "Magpie 登录态结构异常（workbuddy 不是对象）", 502)
         access = str(node.get("access") or "")
         if not access:
-            raise GatewayError("CRED_INVALID", "未找到 WorkBuddy 登录态，请先在 WorkBuddy 中登录", 502)
+            raise GatewayError("CRED_INVALID", "未找到 WorkBuddy 登录态，请先在网关管理台登录", 502)
         return Credential(
             id="workbuddy",
             secret=access,
@@ -164,7 +209,7 @@ class WorkBuddyTokenManager:
 
 
 class QoderDeviceTokenManager:
-    """Qoder CN 登录态（Magpie plugin-auth.json → `qoder-cn`，只读）。
+    """Qoder CN 登录态：优先网关自存凭据（自建登录），Magpie 文件兜底。
 
     Qoder CN 的 CLI 不申请 job token，**device token 本身就是签名用的 token**
     （magpie 插件的 `deviceChat: true` 分支），所以这里直接取 access/deviceToken。
@@ -173,13 +218,54 @@ class QoderDeviceTokenManager:
 
     path = HOME / ".config" / "magpie" / "plugin-auth.json"
 
+    def __init__(self, store: GatewayCredentialStore | None = None) -> None:
+        self._store = store
+
+    def _from_store(self) -> Credential | None:
+        if self._store is None:
+            return None
+        data = self._store.load("qoder-cn")
+        if not data:
+            return None
+        access = str(data.get("access") or data.get("deviceToken") or "")
+        machine_id = str(data.get("machine_id") or "")
+        if not access or not machine_id:
+            return None
+        return Credential(
+            id="qoder-cn",
+            secret=access,
+            meta={
+                "uid": str(data.get("uid") or ""),
+                "name": str(data.get("name") or ""),
+                "email": str(data.get("email") or ""),
+                "machine_id": machine_id,
+            },
+        )
+
+    def present(self) -> bool:
+        """登录态是否就绪（自存库或 Magpie 文件任一处有完整凭据即可）。"""
+        if self._from_store() is not None:
+            return True
+        try:
+            node = _load_json(self.path).get("qoder-cn") or {}
+        except GatewayError:
+            return False
+        if not isinstance(node, dict):
+            return False
+        return bool(node.get("access") or node.get("deviceToken")) and bool(node.get("machineId"))
+
     def credential(self) -> Credential:
+        stored = self._from_store()
+        if stored is not None:
+            return stored
         node = _load_json(self.path).get("qoder-cn") or {}
         if not isinstance(node, dict):
-            raise GatewayError("CRED_INVALID", "Magpie 登录态结构异常（qoder-cn 不是对象）", 502)
+            raise GatewayError("CRED_INVALID", "登录态结构异常（qoder-cn 不是对象）", 502)
         access = str(node.get("access") or node.get("deviceToken") or "")
         if not access:
-            raise GatewayError("CRED_INVALID", "未找到 Qoder CN 登录态，请先在 Magpie 中登录 Qoder CN", 502)
+            raise GatewayError(
+                "CRED_INVALID", "未找到 Qoder CN 登录态，请在网关管理台点「登录」完成授权", 502
+            )
         machine_id = str(node.get("machineId") or "")
         if not machine_id:
             raise GatewayError("CRED_INVALID", "Qoder CN 登录态缺少 machineId，请重新登录", 502)
@@ -264,10 +350,11 @@ class CredentialResolver:
         cline: ClineTokenManager | None = None,
         workbuddy: WorkBuddyTokenManager | None = None,
         qoder: QoderDeviceTokenManager | None = None,
+        store: GatewayCredentialStore | None = None,
     ) -> None:
         self.cline = cline or ClineTokenManager()
-        self.workbuddy = workbuddy or WorkBuddyTokenManager()
-        self.qoder = qoder or QoderDeviceTokenManager()
+        self.workbuddy = workbuddy or WorkBuddyTokenManager(store=store)
+        self.qoder = qoder or QoderDeviceTokenManager(store=store)
         self._swrr: dict[str, int] = {}
         self._lock = threading.Lock()
 
@@ -301,10 +388,40 @@ class CredentialResolver:
         if channel.auth == "cline-cli":
             return [CredentialRef(id="default", source="local:cline")]
         if channel.auth == "workbuddy-oauth":
-            return [CredentialRef(id="default", source="local:workbuddy")]
+            return [CredentialRef(id="default", source="store:workbuddy")]
         if channel.auth == "qoder-device":
-            return [CredentialRef(id="default", source="local:qoder-cn")]
+            return [CredentialRef(id="default", source="store:qoder-cn")]
         return [CredentialRef(id="default", source="public")]
+
+    def present(self, channel: ChannelConfig) -> bool:
+        """凭据是否就绪（只查存在性，不刷新 token、不发请求）。
+
+        用途：provider 注册门控。未登录 / 未配置 Key 的通道不注册成会话
+        Provider，避免用户「选得到、发出去、只收到报错」的割裂体验；
+        配好 Key / 登录后重启即自动出现。
+        """
+        refs = channel.credentials or self._default_refs(channel)
+        for ref in refs:
+            try:
+                if self._present_one(ref):
+                    return True
+            except Exception:  # noqa: BLE001 —— 探测异常一律按「未就绪」
+                continue
+        return False
+
+    def _present_one(self, ref: CredentialRef) -> bool:
+        source = ref.source
+        if source == "public":
+            return True
+        if source.startswith("env:"):
+            return bool(os.environ.get(source[4:]))
+        if source in ("local:cline",):
+            return self.cline.present()
+        if source in ("store:workbuddy", "local:workbuddy"):
+            return self.workbuddy.present()
+        if source in ("store:qoder-cn", "local:qoder-cn"):
+            return self.qoder.present()
+        return False
 
     def _resolve_one(self, channel: ChannelConfig, ref: CredentialRef) -> Credential:
         source = ref.source
@@ -318,11 +435,11 @@ class CredentialResolver:
             return Credential(id=ref.id, secret="public")
         if source == "local:cline":
             return Credential(id=ref.id, secret=self.cline.token())
-        if source == "local:workbuddy":
+        if source in ("store:workbuddy", "local:workbuddy"):
             cred = self.workbuddy.credential()
             cred.id = ref.id
             return cred
-        if source == "local:qoder-cn":
+        if source in ("store:qoder-cn", "local:qoder-cn"):
             cred = self.qoder.credential()
             cred.id = ref.id
             return cred

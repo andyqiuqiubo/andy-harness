@@ -202,3 +202,78 @@ describe('WS 重连状态机（防重连风暴）', () => {
     apiClient.ws.disconnect()
   })
 })
+
+describe('fetchAttachmentDataUri（图生视频 Base64 通道）', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    clearToken()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    clearToken()
+  })
+
+  it('把附件字节转成带 mime 的 data URI', async () => {
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3])
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit): Promise<Response> =>
+        ({
+          ok: true,
+          status: 200,
+          arrayBuffer: async () => bytes.buffer,
+        }) as Response,
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { fetchAttachmentDataUri } = await import('./client')
+    const uri = await fetchAttachmentDataUri('sess1', 'att1', 'image/jpeg')
+
+    expect(uri.startsWith('data:image/jpeg;base64,')).toBe(true)
+    // 与 btoa 手工编码结果逐字节一致
+    const expected = btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join(''))
+    expect(uri).toBe(`data:image/jpeg;base64,${expected}`)
+    expect(fetchMock.mock.calls[0]?.[0]).toContain('/sessions/sess1/attachments/att1')
+  })
+
+  it('mime 缺失时回退 image/png', async () => {
+    const bytes = new Uint8Array([1, 2, 3])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async (): Promise<Response> =>
+          ({ ok: true, status: 200, arrayBuffer: async () => bytes.buffer }) as Response,
+      ),
+    )
+    const { fetchAttachmentDataUri } = await import('./client')
+    const uri = await fetchAttachmentDataUri('s', 'a', '')
+    expect(uri.startsWith('data:image/png;base64,')).toBe(true)
+  })
+
+  it('分块拼接可正确编码超 32KB 的图片（不触 apply 爆栈）', async () => {
+    const bytes = new Uint8Array(40_000)
+    for (let i = 0; i < bytes.length; i++) bytes[i] = i % 256
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async (): Promise<Response> =>
+          ({ ok: true, status: 200, arrayBuffer: async () => bytes.buffer }) as Response,
+      ),
+    )
+    const { fetchAttachmentDataUri } = await import('./client')
+    const uri = await fetchAttachmentDataUri('s', 'a', 'image/png')
+    const expected = btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join(''))
+    expect(uri).toBe(`data:image/png;base64,${expected}`)
+  })
+
+  it('下载失败（非 2xx）抛出错误', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async (): Promise<Response> => ({ ok: false, status: 404 }) as Response,
+      ),
+    )
+    const { fetchAttachmentDataUri } = await import('./client')
+    await expect(fetchAttachmentDataUri('s', 'missing', 'image/png')).rejects.toThrow('HTTP 404')
+  })
+})

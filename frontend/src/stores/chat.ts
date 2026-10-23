@@ -753,10 +753,18 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** 移除一条待发送附件（仅前端移除，后端已落盘，后续会话删除会一并清理）。 */
-  function removePendingAttachment(id: string) {
-    pendingAttachments.value = pendingAttachments.value.filter((a) => a.id !== id)
-  }
+    /** 移除一条待发送附件（仅前端移除，后端已落盘，后续会话删除会一并清理）。 */
+    function removePendingAttachment(id: string) {
+      pendingAttachments.value = pendingAttachments.value.filter((a) => a.id !== id)
+    }
+
+    /**
+     * 清空待发送附件（附件已被消费时调用，如生成类模型发送后）。
+     * 与对话路径一致：发送即从输入框消失，避免「已发送但附件还在」的困惑。
+     */
+    function clearPendingAttachments() {
+      pendingAttachments.value = []
+    }
 
   function stopStreaming() {
     _clearWatchdog()
@@ -946,5 +954,6 @@ export const useChatStore = defineStore('chat', () => {
     stopStreaming,
     uploadPending,
     removePendingAttachment,
+    clearPendingAttachments,
   }
 })

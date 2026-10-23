@@ -37,7 +37,9 @@ from harness.modules.gateway.contracts import (
     GatewayError,
     ProviderAdapter,
 )
+from harness.modules.gateway.credential_store import GatewayCredentialStore
 from harness.modules.gateway.credentials import CredentialResolver
+from harness.modules.gateway.login import DeviceLoginManager, QoderCNDeviceLogin
 from harness.modules.gateway.router import HealthTracker, Router
 from harness.modules.gateway.store import GatewayStore, SqlDB, UsageWriter, now_iso
 from harness.modules.gateway.stream_rewrite import ToolCallRewriter
@@ -80,7 +82,14 @@ class GatewayService:
         self.adapters = AdapterRegistry()
         self.health = HealthTracker()
         self.router = Router(self.health)
-        self.credentials = CredentialResolver()
+        # 自有凭据库（自建登录，免装 Magpie）→ 凭据解析器优先用它，Magpie 文件兜底
+        self.credential_store = GatewayCredentialStore(db)
+        self.credentials = CredentialResolver(store=self.credential_store)
+        self.login = DeviceLoginManager(
+            self.credential_store,
+            [QoderCNDeviceLogin()],
+            transport=transport,
+        )
         self.usage = UsageWriter(self.store)
         self._snapshot: ConfigSnapshot | None = None
         self._client: httpx.AsyncClient | None = None
@@ -97,6 +106,9 @@ class GatewayService:
         # 清单探测结论：(channel_id, model) -> 是否仍在上游免费目录中。
         # 缺席 = True 未知（保留可见）；明确不在目录里才置 False。见 catalog_probe。
         self._catalog_present: dict[tuple[str, str], bool] = {}
+        #: 配置生效后的回调（provider 插件用它重同步注册表：模型增删/通道开关
+        #: 即时反映到会话下拉，不必重启；热更新曾因缺这一步显示已删模型）
+        self.on_config_applied: Any = None
         self.started = False
 
     # ---- 生命周期 ------------------------------------------------------ #
@@ -104,6 +116,7 @@ class GatewayService:
         if self.started:
             return
         self.store.ensure_schema()
+        self.credential_store.ensure_schema()
         self.adapters.register(OpenAILikeAdapter())
         self.adapters.register(QoderCosyAdapter())
         snapshot = self.config.load()
@@ -139,6 +152,7 @@ class GatewayService:
         self._watcher = None
         self._prober = None
         await self.usage.stop()
+        await self.login.stop()
         if self._span_tasks:
             await asyncio.wait(set(self._span_tasks), timeout=2)
         if self._client is not None:
@@ -279,6 +293,12 @@ class GatewayService:
                 self.auth.create_tenant(seed.id, seed.name, seed.allowed_models, seed.allowed_channels)
             except Exception:  # noqa: BLE001 —— 已存在则忽略
                 pass
+        callback = self.on_config_applied
+        if callback is not None:
+            try:
+                callback()
+            except Exception:  # noqa: BLE001 —— 回调失败不影响配置生效
+                logger.exception("配置生效回调（provider 重同步）执行失败")
         return version
 
     def _validate_adapters(self, snapshot: ConfigSnapshot) -> None:
@@ -361,7 +381,10 @@ class GatewayService:
         # 清单探测（GET 目录端点，不发起生成、不消耗额度）：核对模型
         # 是否仍在免费目录中。仅在成功拿到目录时更新判定；抓取失败保留
         # 上次结论（见 catalog_probe 的非对称原则）。
-        if adapter is not None and credentials:
+        # channel.catalog_probe=False 时跳过：某些通道的 probe_url 是配置端点
+        # 而非模型目录（WorkBuddy /v3/config 不含 step-5-preview，但后者可用），
+        # 拿它当目录会把能用的模型误判下架 → 界面置灰。
+        if adapter is not None and credentials and getattr(channel, "catalog_probe", True):
             await self._refresh_catalog(channel, adapter, credentials[0])
 
     async def _refresh_catalog(self, channel: Any, adapter: Any, credential: Credential) -> None:
@@ -407,7 +430,10 @@ class GatewayService:
         ch = self.snapshot.channels.get(channel_id)
         if ch is not None:
             upstream = ch.model_map.get(bare, bare)
-        if self._catalog_present.get((channel_id, bare)) is False:
+        # catalog_probe=False 的通道（目录端点不可靠，如 WorkBuddy /v3/config）
+        # 连读取端也跳过清单判定——同时清掉历史遗留的假阴性，避免热更新后仍置灰。
+        catalog_trusted = ch is None or getattr(ch, "catalog_probe", True)
+        if catalog_trusted and self._catalog_present.get((channel_id, bare)) is False:
             return False
         return self.health.available(channel_id, upstream)
 
@@ -429,11 +455,14 @@ class GatewayService:
                 result["channels"][channel_id] = {"models": [], "enabled": False}
                 continue
             models: dict[str, Any] = {}
+            catalog_trusted = getattr(ch, "catalog_probe", True)
             for model in ch.models:
                 models[model] = {
                     "id": f"{channel_id}/{model}",
                     "available": self.model_available(channel_id, model),
-                    "in_catalog": self._catalog_present.get((channel_id, model), True) is not False,
+                    "in_catalog": (not catalog_trusted) or self._catalog_present.get(
+                        (channel_id, model), True
+                    ) is not False,
                     "cooldown_remaining": self.health.cooldown_remaining(
                         channel_id, ch.model_map.get(model, model)
                     ),
@@ -589,6 +618,7 @@ class GatewayService:
                     attempt,
                     suppress,
                     adapter=adapter,
+                    upstream_model=candidate.upstream_model,
                 )
                 return ChatResult(stream=True, iterator=iterator)
 
@@ -605,7 +635,13 @@ class GatewayService:
             except TimeoutError:
                 await response.aclose()
                 self._release(channel.id)
-                self.health.mark_failure(channel.id, snapshot.defaults.health_cooldown_seconds)
+                # 单模型读取超时只冷却该模型：zen/cline 这类聚合通道里一个慢
+                # 模型超时不该把 big-pickle 等健康模型连坐成"没有可用通道"。
+                self.health.mark_failure(
+                    channel.id,
+                    snapshot.defaults.health_cooldown_seconds,
+                    model=candidate.upstream_model,
+                )
                 last_error = GatewayError(
                     "UPSTREAM_TIMEOUT",
                     f"上游读取超时（>{snapshot.defaults.read_timeout_seconds}s）",
@@ -631,7 +667,12 @@ class GatewayService:
                 except Exception:  # noqa: BLE001
                     pass
                 self._release(channel.id)
-                self.health.mark_failure(channel.id, snapshot.defaults.health_cooldown_seconds)
+                # 流中断同理：故障多在模型侧（上游断流），冷却该模型即可
+                self.health.mark_failure(
+                    channel.id,
+                    snapshot.defaults.health_cooldown_seconds,
+                    model=candidate.upstream_model,
+                )
                 last_error = GatewayError(
                     "UPSTREAM_ERROR",
                     f"上游流中断: {type(e).__name__}",
@@ -755,6 +796,7 @@ class GatewayService:
         attempt: int,
         suppress_tools: frozenset[str] = frozenset(),
         adapter: ProviderAdapter | None = None,
+        upstream_model: str = "",
     ) -> AsyncIterator[bytes]:
         """透传上游 SSE；首字节等待期发 keepalive，客户端断开立即关闭上游。
 
@@ -831,6 +873,29 @@ class GatewayService:
                             if fatal:
                                 return
                         else:
+                            # 上游可能以 HTTP 200 + 非 SSE JSON 报错（如 {"error": ...}）。
+                            # 直接透传会被 provider 当作无效行丢弃 → 零块 → 页面无反馈。
+                            stripped = norm.strip()
+                            if stripped.startswith("{"):
+                                try:
+                                    obj = json.loads(stripped)
+                                except json.JSONDecodeError:
+                                    obj = None
+                                if isinstance(obj, dict) and obj.get("error"):
+                                    err_obj = obj.get("error")
+                                    payload = {
+                                        "error": err_obj
+                                        if isinstance(err_obj, dict)
+                                        else {"message": str(err_obj)}
+                                    }
+                                    yield (
+                                        f"data: {json.dumps(payload, ensure_ascii=False)}\n"
+                                    ).encode()
+                                    status = 502
+                                    error_code = str(
+                                        payload["error"].get("code") or "UPSTREAM_ERROR_BODY"
+                                    )
+                                    return
                             yield (norm + "\n").encode("utf-8")
                 else:
                     ticker = None
@@ -853,10 +918,17 @@ class GatewayService:
             self._release(channel_id)
             elapsed = int((time.perf_counter() - started) * 1000)
             if status == 200:
-                self.health.mark_success(channel_id, latency_ms=elapsed)
+                self.health.mark_success(channel_id, upstream_model, elapsed)
+            elif status == 499:
+                # 客户端主动停止 / 提前断开：不是模型或通道的错。
+                # 若在此冷却，用户点「停止生成」会把同通道健康模型连坐成
+                # GW_NO_CAPACITY（真机踩过：step-5 正常回答被标不可用）。
+                pass
             else:
-                # 流式中断同样要降健康度，否则持续故障也不会熔断
-                self.health.mark_failure(channel_id, 60)
+                # 流式出错只冷却**这个模型**（不是整条通道）：一条通道里某个
+                # 模型坏了，不该牵连其它模型的路由——否则 flint 的 503 会让
+                # 同 zen 通道的 big-pickle 一起"没有可用通道"。
+                self.health.mark_failure(channel_id, 60, model=upstream_model)
             self._record(
                 ctx,
                 channel_id,

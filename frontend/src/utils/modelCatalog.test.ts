@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { modelsForProvider, MODEL_CATALOG } from './modelCatalog'
+import { modelsForProvider, mediaKindOf, MODEL_CATALOG } from './modelCatalog'
 
 describe('modelsForProvider', () => {
   it('deepseek：只显示目录内两个模型，显示名为产品口径', () => {
@@ -39,6 +39,21 @@ describe('modelsForProvider', () => {
 
   it('无可用模型时返回空数组', () => {
     expect(modelsForProvider('deepseek', [])).toEqual([])
+  })
+
+  it('zhipu：会话页可选 CogVideoX-Flash 与 CogView-3-Flash（智谱免费生成模型）', () => {
+    const opts = modelsForProvider('zhipu', [
+      'glm-4.7-flash',
+      'cogview-3-flash',
+      'cogvideox-flash',
+    ])
+    expect(opts.map((o) => o.id)).toEqual(['glm-4.7-flash', 'cogview-3-flash', 'cogvideox-flash'])
+  })
+
+  it('生成类模型判定：图像/视频走 /api/media，文本走对话', () => {
+    expect(mediaKindOf('cogvideox-flash')).toBe('video')
+    expect(mediaKindOf('cogview-3-flash')).toBe('image')
+    expect(mediaKindOf('glm-4.7-flash')).toBeNull()
   })
 
   it('目录内 id 与显示名一一对应且无重复', () => {

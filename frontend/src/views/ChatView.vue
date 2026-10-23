@@ -4,7 +4,7 @@ import { useChatStore } from '../stores/chat'
 import { useProviderStore } from '../stores/providers'
 import { useGatewayModelsStore } from '../stores/gatewayModels'
 import { useTodoStore } from '../stores/todos'
-import { apiClient, wsConnectionStatus, ApiError } from '../api/client'
+import { apiClient, wsConnectionStatus, ApiError, fetchAttachmentDataUri } from '../api/client'
 import type { WSFrame } from '../api/types'
 import { useLanguage } from '../composables/useLanguage'
 import { useSettingsStore } from '../stores/settings'
@@ -15,7 +15,7 @@ import AttachmentImage from '../components/AttachmentImage.vue'
 import ModelSelector from '../components/ModelSelector.vue'
 import MarkdownRenderer from '../components/MarkdownRenderer.vue'
 import ProcessTrace from '../components/ProcessTrace.vue'
-import type { Message, ProcessStep } from '../api/types'
+import type { Message, ProcessStep, Attachment } from '../api/types'
 import { pickOnboardingTarget } from '../utils/onboarding'
 import {
   pickInitialProvider,
@@ -27,6 +27,10 @@ import {
 } from '../utils/chatSelection'
 import { startOortcloudLogin } from '../composables/useOortcloud'
 import { isUsableProvider, usableProviders } from '../utils/providerFilter'
+import { parseServerTime } from '../utils/datetime'
+import { mediaKindOf } from '../utils/modelCatalog'
+import { createGeneration, mediaContentUrl, listMediaTasks, getMediaTask, stopMediaTask } from '../api/media'
+import type { MediaTask } from '../api/media'
 
 const chatStore = useChatStore()
 const providerStore = useProviderStore()
@@ -62,6 +66,404 @@ const selectedModelUnavailable = computed(() => {
 const messagesContainer = ref<HTMLElement | null>(null)
 // 是否位于消息列表底部（用户上滑时停止自动滚动）
 const isAtBottom = ref(true)
+
+// ── 图像 / 视频生成（智谱 CogView-3-Flash / CogVideoX-Flash）────────────
+// 生成类模型不能对话：选中后发送走 /api/media 异步生成流程。
+// 数据模型：一次生成 = 一条「轮次」（提问气泡 + 该次产物/状态），按时间顺序
+// 排列。此前提问是单值 ref、产物是数组累积，导致「最新提示词配历史图片」错位。
+/** 智谱 CogVideoX image_url 的 Base64 解码后大小上限（与后端 MAX_IMAGE_BYTES 一致）。 */
+const MAX_MEDIA_IMAGE_BYTES = 5 * 1024 * 1024
+/** 本次发送仍在提交中（createGeneration 未返回）——仅用于禁用重复发送。 */
+const mediaGenerating = ref(false)
+/** 提交层异常（网络 / 后端 5xx / 附件读取失败）。 */
+const mediaError = ref('')
+/** 附件消费提示（非错误：如「生图模式不使用附件」）。 */
+const mediaNotice = ref('')
+
+/** 一次生成轮次：提问与产物的绑定单元。 */
+interface MediaTurn {
+  /** 真实任务 id；提交阶段临时为 `pending-<ts>`，收到响应后替换。 */
+  taskId: string
+  prompt: string
+  attachments?: Attachment[]
+  kind: 'image' | 'video'
+  model: string
+  /** CANCELLED = 用户点「停止生成」（本地断开轮询；智谱无取消 API） */
+  status: 'SUBMITTING' | 'PROCESSING' | 'SUCCESS' | 'FAIL' | 'CANCELLED'
+  /** 已等待秒数（1s 本地递增，轮询时以服务端值为准）。 */
+  waitedSec?: number
+  /** 距最大等待截止的剩余秒数。 */
+  remainingSec?: number
+  error?: string
+  hasFile?: boolean
+  createdAt: string
+}
+
+/** 当前会话的生成轮次（按时间正序）。切会话 / 刷新时整体重建。 */
+const mediaTurns = ref<MediaTurn[]>([])
+/** 正在轮询的轮次 id（同一时刻最多一个活跃轮次）。 */
+const activeTurnId = ref<string | null>(null)
+
+// 最大等待时间设置（默认 1 小时）：超时由后端判 FAIL 并停止轮询智谱。
+const MEDIA_MAX_WAIT_KEY = 'andyharness.mediaMaxWaitSec'
+const MEDIA_MAX_WAIT_OPTIONS = [
+  { value: 1800, label: '30 分钟' },
+  { value: 3600, label: '1 小时' },
+  { value: 7200, label: '2 小时' },
+  // 0 = 不限等待：一直等智谱给出终态（除非上游主动断开），不触发超时熔断
+  { value: 0, label: '不限（等智谱）' },
+]
+const mediaMaxWaitSec = ref(3600)
+try {
+  const stored = Number(window.localStorage.getItem(MEDIA_MAX_WAIT_KEY))
+  if (Number.isFinite(stored) && stored >= 0) mediaMaxWaitSec.value = stored
+} catch {
+  // localStorage 不可用（隐私模式等）时用默认值
+}
+
+function setMediaMaxWait(value: number) {
+  // 0 合法（不限等待）
+  if (!Number.isFinite(value) || value < 0) return
+  mediaMaxWaitSec.value = value
+  try {
+    window.localStorage.setItem(MEDIA_MAX_WAIT_KEY, String(value))
+  } catch {
+    // 忽略持久化失败
+  }
+}
+
+function onMaxWaitChange(e: Event) {
+  setMediaMaxWait(Number((e.target as HTMLSelectElement).value))
+}
+
+/** 轮次是否仍在推进（提交中 / 排队生成中）。 */
+function turnIsActive(t: MediaTurn): boolean {
+  return t.status === 'SUBMITTING' || t.status === 'PROCESSING'
+}
+
+/** 状态文案：区分「提交给智谱」与「已在智谱排队」。 */
+function mediaStatusLabel(status: string): string {
+  if (status === 'SUBMITTING') return '正在向智谱提交请求…'
+  if (status === 'PROCESSING') return '已在智谱排队 / 生成中…'
+  if (status === 'SUCCESS') return '已完成'
+  if (status === 'CANCELLED') return '已停止'
+  return '生成失败'
+}
+
+/** 上游错误 → 可读文案（兼容 JSON 信封与 Python repr 两种形态）。 */
+function mediaErrorText(raw: string): string {
+  const text = (raw || '').trim()
+  if (!text) return '未知错误'
+  try {
+    const parsed = JSON.parse(text)
+    const inner = parsed?.error ?? parsed
+    const msg = inner?.message || inner?.msg
+    if (msg) return inner?.code ? `${msg}（${inner.code}）` : String(msg)
+  } catch {
+    // 非 JSON：继续用文本提取
+  }
+  const msg = text.match(/['"]message['"]\s*:\s*['"]([^'"]+)['"]/)
+  const code = text.match(/['"]code['"]\s*:\s*['"]?([A-Za-z0-9_]+)/)
+  if (msg) return code ? `${msg[1]}（${code[1]}）` : msg[1]
+  return text.length > 200 ? `${text.slice(0, 200)}…` : text
+}
+
+/** 秒 → 「12 分 03 秒」/「1 小时 02 分」。 */
+function fmtDuration(sec: number): string {
+  const s = Math.max(0, Math.floor(sec))
+  if (s < 60) return `${s} 秒`
+  const m = Math.floor(s / 60)
+  const rs = s % 60
+  if (m < 60) return `${m} 分 ${String(rs).padStart(2, '0')} 秒`
+  return `${Math.floor(m / 60)} 小时 ${String(m % 60).padStart(2, '0')} 分`
+}
+
+/** 产物下载文件名：视频 .mp4，图片按 mime 给 .jpg/.png。 */
+function mediaDownloadName(t: MediaTurn): string {
+  const ext = t.kind === 'video' ? 'mp4' : 'jpg'
+  return `andy-harness_${t.taskId.slice(0, 8)}.${ext}`
+}
+
+/** 轮次 → 提问气泡消息（复用 MessageItem，样式与对话一致）。 */
+function mediaTurnMessage(t: MediaTurn): Message {
+  return {
+    id: `media-prompt-${t.taskId}`,
+    session_id: chatStore.currentSessionId || '',
+    role: 'user',
+    content: t.prompt,
+    attachments: t.attachments,
+    tokens: 0,
+    created_at: t.createdAt,
+  }
+}
+
+/** SQLite 的 created_at 是 UTC（"YYYY-MM-DD HH:MM:SS"）→ 本地 ISO，避免时区偏移。 */
+function utcToLocalIso(s: string): string {
+  if (!s) return new Date().toISOString()
+  const d = new Date(s.includes('T') ? s : `${s.replace(' ', 'T')}Z`)
+  return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString()
+}
+
+/** 恢复参考图：params.attachments（元信息）→ Attachment[]（供缩略图渲染）。 */
+function restoreAttachments(t: MediaTask): Attachment[] | undefined {
+  const raw = (t.params?.attachments as
+    | { id: string; filename: string; mime: string }[]
+    | undefined) || []
+  if (!raw.length) return undefined
+  return raw.map((a) => ({
+    id: a.id,
+    kind: 'image' as const,
+    filename: a.filename,
+    mime: a.mime || 'image/png',
+    size: 0,
+  }))
+}
+
+/** 任务 → 轮次（历史恢复）。 */
+function turnFromTask(t: MediaTask): MediaTurn {
+  return {
+    taskId: t.id,
+    prompt: t.prompt || '（仅图片，无提示词）',
+    attachments: restoreAttachments(t),
+    kind: t.kind,
+    model: t.model,
+    status: (t.status as MediaTurn['status']) || 'FAIL',
+    waitedSec: t.waited_seconds,
+    remainingSec: t.remaining_seconds,
+    error: t.error,
+    hasFile: t.has_file,
+    createdAt: utcToLocalIso(t.created_at),
+  }
+}
+
+function findTurn(taskId: string): MediaTurn | undefined {
+  return mediaTurns.value.find((t) => t.taskId === taskId)
+}
+
+// 轮询（5s 同步后端/上游）+ 计时（1s 本地递增，避免每秒发请求）
+let mediaPollTimer: number | null = null
+let mediaTickTimer: number | null = null
+
+function stopMediaTimers() {
+  if (mediaPollTimer !== null) {
+    window.clearInterval(mediaPollTimer)
+    mediaPollTimer = null
+  }
+  if (mediaTickTimer !== null) {
+    window.clearInterval(mediaTickTimer)
+    mediaTickTimer = null
+  }
+  activeTurnId.value = null
+}
+
+/** 提交阶段计时：临时轮次也要有可见进度（1305 退避期不停在 0s）。 */
+let submitTimer: number | null = null
+
+function stopSubmitTimer() {
+  if (submitTimer !== null) {
+    window.clearInterval(submitTimer)
+    submitTimer = null
+  }
+}
+
+function startSubmitTimer(turn: MediaTurn) {
+  stopSubmitTimer()
+  submitTimer = window.setInterval(() => {
+    if (!turnIsActive(turn)) return
+    turn.waitedSec = (turn.waitedSec ?? 0) + 1
+    turn.remainingSec = Math.max(0, (turn.remainingSec ?? 0) - 1)
+  }, 1000)
+}
+
+async function pollTurn(taskId: string) {
+  try {
+    // poll=true：后端顺带向上游查询一次（超时判定也在后端入口完成）
+    const t = await getMediaTask(taskId, true)
+    const turn = findTurn(taskId)
+    if (!turn) return
+    // 用户已停止（CANCELLED）后迟到的轮询结果不得覆盖本地终态——
+    // 否则界面会从「已停止」弹回「生成中」，而计时器已停、永远转圈
+    if (!turnIsActive(turn)) return
+    turn.status = (t.status as MediaTurn['status']) || 'FAIL'
+    turn.waitedSec = t.waited_seconds ?? turn.waitedSec
+    turn.remainingSec = t.remaining_seconds ?? turn.remainingSec
+    turn.error = t.error
+    turn.hasFile = t.has_file
+    turn.model = t.model
+    if (!turnIsActive(turn)) {
+      stopMediaTimers()
+      if (turn.status === 'SUCCESS') nextTick(scrollToBottom)
+    }
+  } catch {
+    // 网络抖动不改变界面状态，下个周期继续
+  }
+}
+
+function startMediaTimers(taskId: string) {
+  stopMediaTimers()
+  activeTurnId.value = taskId
+  mediaPollTimer = window.setInterval(() => void pollTurn(taskId), 5000)
+  mediaTickTimer = window.setInterval(() => {
+    const turn = findTurn(taskId)
+    if (!turn || !turnIsActive(turn)) return
+    turn.waitedSec = (turn.waitedSec ?? 0) + 1
+    turn.remainingSec = Math.max(0, (turn.remainingSec ?? 0) - 1)
+  }, 1000)
+}
+
+/**
+ * 从后端恢复某会话的全部生成轮次（含成功产物、失败原因、进行中状态）。
+ * 每次生成一条提问 + 自己的产物，按时间顺序排列，刷新 / 切会话后不再错位。
+ */
+async function loadSessionMedia(sessionId: string) {
+  if (!sessionId) return
+  stopMediaTimers()
+  stopSubmitTimer()
+  try {
+    const tasks = await listMediaTasks(sessionId) // created_at DESC
+    mediaTurns.value = [...tasks].reverse().map(turnFromTask) // 转时间正序
+    const latest = tasks[0]
+    if (latest && (latest.status === 'SUBMITTING' || latest.status === 'PROCESSING')) {
+      startMediaTimers(latest.id)
+    }
+  } catch {
+    // 恢复失败不打断主流程（多为后端未启动 / 网络抖动）
+  }
+}
+
+/** 当前所选模型是否为生成类模型（图像/视频）。 */
+const selectedMediaKind = computed(() => mediaKindOf(selectedModel.value || ''))
+
+async function generateMedia(prompt: string) {
+  const kind = selectedMediaKind.value
+  if (!kind) return
+  mediaGenerating.value = true
+  mediaError.value = ''
+  mediaNotice.value = ''
+  inputText.value = ''
+  stopMediaTimers()
+  stopSubmitTimer()
+
+  // 附件即发即消费：进入生成流程即从输入框清除（与对话路径一致）
+  const pending = [...chatStore.pendingAttachments]
+  chatStore.clearPendingAttachments()
+
+  // 立即插入本轮提问（提交阶段就可见，含实时等待秒数）
+  const turn: MediaTurn = {
+    taskId: `pending-${Date.now()}`,
+    prompt: prompt || '（仅图片，无提示词）',
+    attachments: pending.length ? pending : undefined,
+    kind,
+    model: selectedModel.value || (kind === 'video' ? 'cogvideox-flash' : 'cogview-3-flash'),
+    status: 'SUBMITTING',
+    waitedSec: 0,
+    remainingSec: mediaMaxWaitSec.value,
+    createdAt: new Date().toISOString(),
+  }
+  mediaTurns.value.push(turn)
+  startSubmitTimer(turn)
+  nextTick(scrollToBottom)
+
+  // 图生视频：把第一张图片附件转 data URI 传给智谱 image_url。
+  // 智谱服务端访问不到本地附件下载地址（内网/localhost），必须走 Base64；
+  // flash 仅支持单图（首尾帧是 cogvideox-3 的能力），多余附件忽略并提示。
+  let image = ''
+  const imageAtts = pending.filter((a) => a.kind === 'image')
+  try {
+    if (kind === 'video' && imageAtts.length > 0) {
+      const att = imageAtts[0]
+      if (att.size > MAX_MEDIA_IMAGE_BYTES) {
+        throw new Error(`图片 ${att.filename} 超过 5MB（智谱 image_url 上限），请压缩后重试`)
+      }
+      image = await fetchAttachmentDataUri(
+        chatStore.currentSessionId || '',
+        att.id,
+        att.mime,
+      )
+      if (imageAtts.length > 1) {
+        mediaNotice.value = `图生视频仅使用第一张图片（${att.filename}），其余 ${imageAtts.length - 1} 张已忽略`
+      }
+    } else if (pending.length > 0 && kind === 'image') {
+      mediaNotice.value = `生图模式不使用附件，已忽略 ${pending.length} 个附件`
+    }
+
+    const created = await createGeneration({
+      kind,
+      model: selectedModel.value || (kind === 'video' ? 'cogvideox-flash' : 'cogview-3-flash'),
+      prompt,
+      image: image || undefined,
+      session_id: chatStore.currentSessionId || '',
+      provider_id: selectedProvider.value || 'zhipu',
+      // 1305 高峰期快速失败：4 次退避约 200s 内给明确结论（10 次最坏 1100s）
+      attempts: 4,
+      max_wait_seconds: mediaMaxWaitSec.value,
+      // 参考图元信息落库：刷新后据此恢复问答区缩略图
+      attachments: imageAtts.slice(0, 1).map((a) => ({
+        id: a.id,
+        filename: a.filename,
+        mime: a.mime,
+      })),
+    })
+    // 提交期间用户可能已点「停止生成」：此时后端任务虽已创建，但本地轮次
+    // 已是 CANCELLED——同步取消后端任务（停止其继续轮询智谱），不重启轮询。
+    const stoppedDuringSubmit = turn.status === 'CANCELLED'
+    // 临时轮次升级为真实任务（id 变化 → 后续轮询按新 id 匹配）
+    turn.taskId = created.id
+    if (stoppedDuringSubmit) {
+      void stopMediaTask(created.id).catch(() => {})
+      nextTick(scrollToBottom)
+      return
+    }
+    turn.status = (created.status as MediaTurn['status']) || 'FAIL'
+    turn.waitedSec = created.waited_seconds ?? turn.waitedSec
+    turn.remainingSec = created.remaining_seconds ?? turn.remainingSec
+    turn.error = created.error
+    turn.hasFile = created.has_file
+    turn.model = created.model
+    stopSubmitTimer()
+    if (turnIsActive(turn)) startMediaTimers(created.id)
+    nextTick(scrollToBottom)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    turn.status = 'FAIL'
+    turn.error = msg
+    mediaError.value = msg
+    stopSubmitTimer()
+  } finally {
+    mediaGenerating.value = false
+  }
+}
+
+/**
+ * 停止进行中的生成轮次（图 / 视频）。
+ *
+ * 语义：本地立即中止等待（停表 + 停轮询），并通知后端把任务置 CANCELLED
+ * ——后端随即停止向智谱查询。智谱异步任务无取消 API，上游可能仍在排队，
+ * 但其产物不会被本端下载落盘。
+ */
+async function stopMediaTurn(turn: MediaTurn) {
+  if (!turnIsActive(turn)) return
+  // 临时轮次（提交尚未返回、没有真实 taskId）：仅本地中止；
+  // createGeneration 返回后会检测到 CANCELLED 并同步取消后端任务。
+  if (turn.taskId.startsWith('pending-')) {
+    turn.status = 'CANCELLED'
+    turn.error = '用户已停止生成'
+  } else {
+    try {
+      const t = await stopMediaTask(turn.taskId)
+      turn.status = (t.status as MediaTurn['status']) || 'CANCELLED'
+      turn.error = t.error || '用户已停止生成'
+    } catch {
+      // 后端取消失败（网络抖动 / 任务不存在）：本地也必须中止，
+      // 否则界面会永远停在「生成中」
+      turn.status = 'CANCELLED'
+      turn.error = '用户已停止生成'
+    }
+  }
+  stopMediaTimers()
+  stopSubmitTimer()
+  nextTick(scrollToBottom)
+}
 
 // ── 输入框自适应高度（3→7 行；超 7 行可放大到整页） ──────────
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
@@ -218,6 +620,59 @@ const turns = computed<{ turns: Turn[]; standalone: Message[] }>(() => {
   }
 
   return { turns: turnsList, standalone }
+})
+
+/**
+ * 合并时间流：文字问答轮次与生成轮次按同一时间轴交织渲染。
+ *
+ * 此前媒体轮次整块排在消息流之后：等待视频期间发起的文字问答会显示在
+ * 「生成视频问答对」的上面，时序倒置。
+ *
+ * 时区归一化（勿删）：消息的 created_at 来自 SQLite ``datetime('now')``——
+ * **UTC 且无时区后缀**（形如 ``2026-10-23 13:55:12``），直接 Date.parse
+ * 会被 JS 按本地时区（UTC+8）解释，比媒体轮次的 UTC 时刻慢 8 小时，混合
+ * 会话里文字问答会整体压到生成轮次上方（刷新后必现）。统一走
+ * parseServerTime：无时区按 UTC 解析、带 Z/偏移的原样解析，后端消息与
+ * 前端乐观消息（toISOString）归一到同一时刻轴。created_at 缺失时继承上
+ * 一条（消息本就按时间升序加载），保持原序；同刻的 tie-break 用插入顺序
+ * （Array.sort 稳定）。
+ */
+type StreamItem =
+  | { kind: 'turn'; key: string; ts: number; turn: Turn }
+  | { kind: 'sys'; key: string; ts: number; message: Message }
+  | { kind: 'stopped'; key: string; ts: number; message: Message }
+  | { kind: 'media'; key: string; ts: number; turn: MediaTurn }
+
+const chatStream = computed<StreamItem[]>(() => {
+  // 组内单调：时间戳缺失（理论上不会发生，防御式处理）时继承本组上一条，
+  // 组内保持原序；**跨组**一律用真实时间戳比较——carry 若全局共享，
+  // 排在后面的媒体组会被消息组的最新时间抬走，正好丢掉本要修的交织。
+  const stampOf = (s: string | undefined, fallback: number): number => {
+    const d = s ? parseServerTime(s) : null
+    const n = d ? d.getTime() : NaN
+    return Number.isNaN(n) ? fallback : n
+  }
+  const items: StreamItem[] = []
+  let lastTs = 0
+  for (const t of turns.value.turns) {
+    lastTs = Math.max(lastTs, stampOf(t.userMessage.created_at, lastTs))
+    items.push({ kind: 'turn', key: `turn-${t.id}`, ts: lastTs, turn: t })
+  }
+  lastTs = 0
+  for (const m of turns.value.standalone) {
+    lastTs = Math.max(lastTs, stampOf(m.created_at, lastTs))
+    items.push({ kind: 'sys', key: `sys-${m.id}`, ts: lastTs, message: m })
+  }
+  const stopped = chatStore.stoppedPlaceholder
+  if (stopped && stopped.session_id === chatStore.currentSessionId) {
+    items.push({ kind: 'stopped', key: `stopped-${stopped.id}`, ts: stampOf(stopped.created_at, Date.now()), message: stopped })
+  }
+  lastTs = 0
+  for (const mt of mediaTurns.value) {
+    lastTs = Math.max(lastTs, stampOf(mt.createdAt, lastTs))
+    items.push({ kind: 'media', key: `media-${mt.taskId}`, ts: lastTs, turn: mt })
+  }
+  return items.sort((a, b) => a.ts - b.ts)
 })
 
 /** 每轮当前选中版本下标（缺省指向最新版）。 */
@@ -416,6 +871,8 @@ watch(
   (id) => {
     if (id) todoStore.loadTodos(id)
     else todoStore.reset()
+    // 切换 / 进入会话时恢复该会话的历史生成产物（图片 / 视频卡片）
+    if (id) void loadSessionMedia(id)
   },
   { immediate: true }
 )
@@ -469,12 +926,18 @@ function handleScrollDown() {
 function handleSend() {
   const hasText = inputText.value.trim().length > 0
   const hasFiles = chatStore.pendingAttachments.length > 0
-  // 既无文本又无附件，或正在流式输出时，不发送
-  if ((!hasText && !hasFiles) || chatStore.isStreaming) return
+  // 既无文本又无附件，或正在流式输出 / 媒体生成中时，不发送
+  // （生成中再发送会落入对话路径，把附件当普通消息发走）
+  if ((!hasText && !hasFiles) || chatStore.isStreaming || mediaGenerating.value) return
   // 网关免费模型可用性兜底：即使界面状态短暂滞后，这里也拦住不可用模型，
   // 并立即刷新让下拉框更新为「不可用」。
   if (selectedModelUnavailable.value) {
     gatewayStore.refreshAfterFailure()
+    return
+  }
+  // 生成类模型（图像/视频）不走对话：直接进媒体生成流程
+  if (selectedMediaKind.value && mediaGenerating.value === false) {
+    void generateMedia(inputText.value.trim())
     return
   }
   let text = inputText.value
@@ -811,6 +1274,9 @@ onUnmounted(() => {
   window.removeEventListener('resize', autoResize)
   gatewayStore.stopPolling()
   apiClient.ws.disconnect()
+  // 媒体任务的轮询 / 计时器同理，离开页面必须停，避免后台空转
+  stopMediaTimers()
+  stopSubmitTimer()
 })
 </script>
 
@@ -1020,76 +1486,159 @@ onUnmounted(() => {
             </button>
           </div>
 
-          <!-- 历史消息：按提问分组为多版本问答对。每个提问只展示一次，
-               其下可有多个答案版本，用 ‹ i/N › 在版本间切换（旧版本保留不删除）。 -->
-          <template v-for="turn in turns.turns" :key="`turn-${turn.id}`">
-            <!-- 提问气泡（用户消息） -->
-            <MessageItem
-              :message="turn.userMessage"
-              @delete-turn="handleDeleteTurn"
-              @follow-up="handleFollowUp"
-              @fork="handleForkAt"
-            />
-
-            <template v-if="turn.versions.length">
-              <!-- 版本导航：仅当存在多个答案版本时显示 -->
-              <div v-if="turn.versions.length > 1" class="version-nav">
-                <button
-                  class="icon-btn"
-                  :disabled="versionIndex(turn) === 0"
-                  :title="t('chat.versionPrev')"
-                  @click="prevVersion(turn)"
-                >
-                  &lt;
-                </button>
-                <span class="version-label">
-                  {{ t('chat.versionLabel').replace('{0}', String(versionIndex(turn) + 1)).replace('{1}', String(turn.versions.length)) }}
-                </span>
-                <button
-                  class="icon-btn"
-                  :disabled="versionIndex(turn) === turn.versions.length - 1"
-                  :title="t('chat.versionNext')"
-                  @click="nextVersion(turn)"
-                >
-                  &gt;
-                </button>
-              </div>
-
-              <!-- 重新生成中提示 -->
-              <div v-if="chatStore.regeneratingParentId === turn.id" class="version-regenerating">
-                {{ t('chat.regenerating') }}
-              </div>
-
-              <!-- 当前版本的执行过程（思维链 / 工具调用） -->
-              <div
-                v-if="turn.versions[versionIndex(turn)]?.steps?.length"
-                class="history-process-row"
-              >
-                <ProcessTrace :steps="turn.versions[versionIndex(turn)].steps" />
-              </div>
-
-              <!-- 当前版本的回答 -->
+          <!-- 统一时间流：文字问答轮次 / 系统消息 / 停止占位 / 生成轮次按
+               created_at 交织渲染（chatStream）。此前生成轮次整块排在消息流
+               之后，等待视频生成期间发起的文字问答会显示在生成问答对的上面，
+               时序倒置。提问只展示一次，其下可有多个答案版本，用 ‹ i/N › 切换。 -->
+          <template v-for="item in chatStream" :key="item.key">
+            <!-- 文字问答轮次 -->
+            <template v-if="item.kind === 'turn'">
               <MessageItem
-                :message="turn.versions[versionIndex(turn)].answer"
-                @retry="handleRetry"
+                :message="item.turn.userMessage"
+                @delete-turn="handleDeleteTurn"
                 @follow-up="handleFollowUp"
                 @fork="handleForkAt"
               />
+
+              <template v-if="item.turn.versions.length">
+                <!-- 版本导航：仅当存在多个答案版本时显示 -->
+                <div v-if="item.turn.versions.length > 1" class="version-nav">
+                  <button
+                    class="icon-btn"
+                    :disabled="versionIndex(item.turn) === 0"
+                    :title="t('chat.versionPrev')"
+                    @click="prevVersion(item.turn)"
+                  >
+                    &lt;
+                  </button>
+                  <span class="version-label">
+                    {{ t('chat.versionLabel').replace('{0}', String(versionIndex(item.turn) + 1)).replace('{1}', String(item.turn.versions.length)) }}
+                  </span>
+                  <button
+                    class="icon-btn"
+                    :disabled="versionIndex(item.turn) === item.turn.versions.length - 1"
+                    :title="t('chat.versionNext')"
+                    @click="nextVersion(item.turn)"
+                  >
+                    &gt;
+                  </button>
+                </div>
+
+                <!-- 重新生成中提示 -->
+                <div v-if="chatStore.regeneratingParentId === item.turn.id" class="version-regenerating">
+                  {{ t('chat.regenerating') }}
+                </div>
+
+                <!-- 当前版本的执行过程（思维链 / 工具调用） -->
+                <div
+                  v-if="item.turn.versions[versionIndex(item.turn)]?.steps?.length"
+                  class="history-process-row"
+                >
+                  <ProcessTrace :steps="item.turn.versions[versionIndex(item.turn)].steps" />
+                </div>
+
+                <!-- 当前版本的回答 -->
+                <MessageItem
+                  :message="item.turn.versions[versionIndex(item.turn)].answer"
+                  @retry="handleRetry"
+                  @follow-up="handleFollowUp"
+                  @fork="handleForkAt"
+                />
+              </template>
+            </template>
+
+            <!-- 系统消息与停止生成占位提示（普通气泡，不属于任何提问轮次） -->
+            <MessageItem
+              v-else-if="item.kind === 'sys' || item.kind === 'stopped'"
+              :message="item.message"
+            />
+
+            <!-- 生成轮次：一次生成 = 一条提问气泡 + 该次产物/状态。
+                 此前提问是单值（每次覆盖）而产物是数组累积，导致第 2 次的提问
+                 顶着第 1 次的位置、两张图堆在同一提问下。 -->
+            <template v-else-if="item.kind === 'media'">
+              <MessageItem :message="mediaTurnMessage(item.turn)" />
+
+              <!-- 成功产物 -->
+              <div v-if="item.turn.status === 'SUCCESS' && item.turn.hasFile" class="media-card">
+                <div class="media-card-head">
+                  <span class="media-kind">{{ item.turn.kind === 'video' ? '视频' : '图片' }}</span>
+                  <span class="media-model">{{ item.turn.model }}</span>
+                  <span v-if="item.turn.waitedSec" class="media-wait">{{ fmtDuration(item.turn.waitedSec) }}</span>
+                  <a
+                    class="media-download"
+                    :href="mediaContentUrl(item.turn.taskId)"
+                    :download="mediaDownloadName(item.turn)"
+                    rel="noopener"
+                  >下载</a>
+                </div>
+                <video
+                  v-if="item.turn.kind === 'video'"
+                  :src="mediaContentUrl(item.turn.taskId)"
+                  class="media-body"
+                  controls
+                  loop
+                  muted
+                />
+                <img v-else :src="mediaContentUrl(item.turn.taskId)" class="media-body" alt="生成的图片" />
+              </div>
+
+              <!-- 推进中：正在提交智谱 / 已在智谱排队，秒数与剩余时间实时刷新 -->
+              <div v-else-if="turnIsActive(item.turn)" class="media-card media-task">
+                <div class="media-card-head">
+                  <span class="media-kind">{{ item.turn.kind === 'video' ? '视频' : '图片' }}</span>
+                  <span class="media-model">{{ item.turn.model }}</span>
+                  <span class="media-wait">
+                    已等待 {{ fmtDuration(item.turn.waitedSec ?? 0) }} ·
+                    {{ (item.turn.remainingSec ?? 0) < 0 ? '不限等待' : `剩余 ${fmtDuration(item.turn.remainingSec ?? 0)}` }}
+                  </span>
+                  <select
+                    class="media-wait-select"
+                    :value="mediaMaxWaitSec"
+                    title="最大等待时间设置（仅影响之后提交的任务；超时后停止向智谱查询并判失败）"
+                    @change="onMaxWaitChange"
+                  >
+                    <option v-for="o in MEDIA_MAX_WAIT_OPTIONS" :key="o.value" :value="o.value">
+                      最长 {{ o.label }}
+                    </option>
+                  </select>
+                </div>
+                <div class="media-status-line">
+                  <span class="media-spinner" aria-hidden="true"></span>
+                  <span>{{ mediaStatusLabel(item.turn.status) }}</span>
+                  <button class="media-stop-btn" @click="stopMediaTurn(item.turn)">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>
+                    </svg>
+                    停止生成
+                  </button>
+                </div>
+              </div>
+
+              <!-- 失败 / 已停止：明确原因（上游错误码 / 超时 / 用户手动停止） -->
+              <div
+                v-else
+                class="media-card"
+                :class="item.turn.status === 'CANCELLED' ? 'media-stopped' : 'media-failed'"
+              >
+                <div class="media-card-head">
+                  <span class="media-kind">{{ item.turn.kind === 'video' ? '视频' : '图片' }}</span>
+                  <span class="media-model">{{ item.turn.model }}</span>
+                  <span v-if="item.turn.waitedSec" class="media-wait">{{ fmtDuration(item.turn.waitedSec) }}</span>
+                </div>
+                <div :class="item.turn.status === 'CANCELLED' ? 'media-stopped-text' : 'media-fail-text'">
+                  <template v-if="item.turn.status === 'CANCELLED'">已停止生成</template>
+                  <template v-else-if="item.turn.status === 'SUCCESS'">产物缺失，请重试</template>
+                  <template v-else>生成失败：{{ mediaErrorText(item.turn.error || '') }}</template>
+                </div>
+              </div>
             </template>
           </template>
 
-          <!-- 系统消息单独渲染（不属于任何提问轮次） -->
-          <template v-for="sys in turns.standalone" :key="`sys-${sys.id}`">
-            <MessageItem :message="sys" />
-          </template>
+          <div v-if="mediaNotice" class="media-card media-notice">
+            <span>{{ mediaNotice }}</span>
+          </div>
 
-          <!-- 停止生成占位提示：真实模式下「仅思考、尚无正文」被中断时，
-               后端不落库 stopped 消息，用独立占位承载「用户已停止回答」，
-               与 reload 整表替换解耦（避免 400ms 后提示消失）。 -->
-          <MessageItem
-            v-if="chatStore.stoppedPlaceholder && chatStore.stoppedPlaceholder.session_id === chatStore.currentSessionId"
-            :message="chatStore.stoppedPlaceholder"
-          />
 
           <!-- 流式渲染中：思维链 + 工具调用统一进「执行过程」框实时展示；
                最终答案开始输出时过程框自动收缩（可点击展开回看） -->
@@ -2641,6 +3190,153 @@ onUnmounted(() => {
   .version-regenerating {
     margin-left: 38px;
     max-width: calc(100% - 38px);
+  }
+}
+
+/* ── 图像 / 视频生成产物卡片 ───────────────────────────────── */
+.media-card {
+  margin: var(--space-md) 0;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  max-width: 560px;
+}
+
+.media-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+
+.media-kind {
+  padding: 0 var(--space-xs);
+  border-radius: var(--radius-sm);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.media-download {
+  margin-left: auto;
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+.media-prompt {
+  margin: var(--space-xs) 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  word-break: break-word;
+}
+
+.media-body {
+  width: 100%;
+  max-height: 420px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  object-fit: contain;
+}
+
+.media-pending,
+.media-failed,
+.media-stopped {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.media-failed {
+  color: var(--color-danger, var(--color-text));
+}
+
+/* 附件消费提示：中性色，与失败（红）区分 */
+.media-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+/* 活跃任务：状态行（提交智谱 / 排队生成中） */
+.media-status-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+/* 失败原因：允许长错误串换行，不撑破卡片 */
+.media-fail-text {
+  font-size: var(--font-size-sm);
+  color: var(--color-danger, var(--color-text));
+  word-break: break-word;
+}
+
+/* 用户手动停止：中性色（与失败的红色区分） */
+.media-stopped-text {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  word-break: break-word;
+}
+
+/* 停止生成：活跃任务状态行右侧，小尺寸危险色描边（不抢 spinner 焦点） */
+.media-stop-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px var(--space-sm);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-sans);
+  color: var(--color-danger);
+  background: transparent;
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition-base), color var(--transition-base);
+}
+
+.media-stop-btn:hover {
+  background: var(--color-danger);
+  color: var(--color-text-inverse);
+}
+
+/* 最大等待时间设置（仅活跃任务可见，靠右对齐） */
+.media-wait-select {
+  margin-left: auto;
+  padding: 2px var(--space-sm);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.media-wait-select:hover {
+  border-color: var(--border-strong);
+}
+
+.media-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: media-spin 0.8s linear infinite;
+}
+
+@keyframes media-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 </style>

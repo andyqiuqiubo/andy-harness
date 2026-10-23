@@ -1,0 +1,17 @@
+{
+  "id": "provider_zhipu",
+  "name": "智谱 Provider",
+  "version": "0.1.0",
+  "type": "provider",
+  "entry": "plugins.provider_zhipu.main:ZhipuProviderPlugin",
+  "core_api": ">=0.1.0 <1.0.0",
+  "permissions": ["network", "secrets.read"],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "api_key": { "type": "string", "secret": true, "title": "API 密钥", "title_en": "API Key" },
+      "base_url": { "type": "string", "default": "https://open.bigmodel.cn/api/paas/v4", "title": "API 基础地址", "title_en": "API Base URL" }
+    }
+  },
+  "description": "智谱 BigModel 接入：GLM 对话 + CogView-3-Flash 文生图 + CogVideoX-Flash 文生/图生视频（后两者为官方免费模型）"
+}

@@ -36,6 +36,8 @@ from harness.api.rest.knowledge_base import (
 from harness.api.rest.knowledge_base import (
     router as knowledge_base_router,
 )
+from harness.api.rest.media import router as media_router
+from harness.api.rest.media import setup_media_routes
 from harness.api.rest.knowledge_base import (
     skill_router as kb_skill_router,
 )
@@ -377,6 +379,7 @@ setup_runs_routes(_services, _hooks, _tool_registry)
 setup_channel_routes(_services)
 setup_auth_routes(_services)
 setup_knowledge_base_routes(_services)
+setup_media_routes(_services)
 
 app.include_router(sessions_router)
 app.include_router(providers_router)
@@ -407,6 +410,7 @@ app.include_router(knowledge_base_router)
 app.include_router(reverse_engineering_router)
 app.include_router(desktop_repeat_router)
 app.include_router(retrieval_router)
+app.include_router(media_router)
 app.include_router(kb_skill_router)
 
 # 注册 WebSocket 路由

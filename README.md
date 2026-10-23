@@ -26,7 +26,7 @@
 ## 功能特性
 
 - **多模型接入**：DeepSeek（含思维链）、Qwen、Doubao，支持自定义 OpenAI 兼容模型
-- **andy-gateway LLM 网关中心**：把本机已登录的 Cline / WorkBuddy / OpenCode Zen Free / Qoder CN 等免费模型统一成 **OpenAI 兼容 `/v1`**，供自有 Agent 与任意 OpenAI 客户端调用（Qoder CN 为私有 COSY 协议，经 `qoder-cosy` 适配器归一：COSY 签名 + 私有 base64 body + 流式信封归一化；排队 10605 → 503 可重试、不冷却账号）。支持 `weighted`/`round_robin`/`least_inflight`/`least_latency`/`sticky` 路由、熔断与故障转移（`free/auto` 别名）、`agw-` API Key + 租户白名单 + RPM/TPM + 轮换吊销、主动健康探测、SSE 保活、请求总预算、用量/审计/Prometheus 指标、配置版本化 + 2 秒热更新 + 一键回滚；会话页工具箱进入「LLM 网关」管理台（通道/Key/租户/用量/审计/配置版本六个分区）。会话页可直接选这 **4 个免费厂商**（Cline / OpenCode / WorkBuddy / Qoder CN）及其具体模型：系统定期探测各模型可用性（真实流量冷却 + 免费目录核对，均不消耗额度），不可用的模型在下拉里实时标注并禁用选择，恢复后自动更新，检测/后端/界面三方状态一致。通道目录见 `backend/gateway.example.json`，方案与实测见 [docs/andy-gateway-设计方案.md](docs/andy-gateway-设计方案.md) 与 [docs/andy-gateway-本机免费模型接入-v1.1.md](docs/andy-gateway-本机免费模型接入-v1.1.md)
+- **andy-gateway LLM 网关中心**：把 **官方免费额度（Qwen 百炼 / 豆包方舟，一个 API Key 即用、不依赖任何客户端）** 与本机已登录的 Cline / WorkBuddy / OpenCode Zen Free / Qoder CN 等客户端免费模型（可选增强，默认关闭）统一成 **OpenAI 兼容 `/v1`**，供自有 Agent 与任意 OpenAI 客户端调用（Qoder CN 为私有 COSY 协议，经 `qoder-cosy` 适配器归一：COSY 签名 + 私有 base64 body + 流式信封归一化；排队 10605 → 503 可重试、不冷却账号）。支持 `weighted`/`round_robin`/`least_inflight`/`least_latency`/`sticky` 路由、熔断与故障转移（`free/auto` 别名）、`agw-` API Key + 租户白名单 + RPM/TPM + 轮换吊销、主动健康探测、SSE 保活、请求总预算、用量/审计/Prometheus 指标、配置版本化 + 2 秒热更新 + 一键回滚；会话页工具箱进入「LLM 网关」管理台（通道/Key/租户/用量/审计/配置版本六个分区）。会话页可直接选这 **4 个免费厂商**（Cline / OpenCode / WorkBuddy / Qoder CN）及其具体模型：系统定期探测各模型可用性（真实流量冷却 + 免费目录核对，均不消耗额度），不可用的模型在下拉里实时标注并禁用选择，恢复后自动更新，检测/后端/界面三方状态一致。通道目录见 `backend/gateway.example.json`，方案与实测见 [docs/andy-gateway-设计方案.md](docs/andy-gateway-设计方案.md) 与 [docs/andy-gateway-本机免费模型接入-v1.1.md](docs/andy-gateway-本机免费模型接入-v1.1.md)
 - **Jev 结构化决策**：集成 TypeSafe AI Jev 模型，支持 Choice（选择型）/ Score（评分型）/ Noul（是非型）三种原语，AI 可自动调用进行结构化判断（Jev 仅有插件 Key 配置入口，决策由模型自动触发，无独立调用界面）
 - **Skills 技能系统**：对齐 Agent Skills 开放标准（SKILL.md），三级渐进式披露——目录常驻、命中才加载正文、脚本/参考文档按需读取，装很多也不撑爆上下文；设置页可查看与启停
 - **技能市场**：内置技能市场，一键安装社区 / 官方 SKILL.md 技能包（含说明弹窗），卸载后可随时重装；与插件市场共用前端面板
@@ -86,6 +86,7 @@
 - **插件开发者工作台（DevKit）**：面向二次开发者的插件脚手架与开发辅助工具，入口 `/devkit`
 - **集成中心（Integration Hub）**：飞书三模式接入——`api`（app_id/app_secret 直调开放接口）/ `cli`（lark-cli 子进程）/ `channel`（WebSocket 长连，群里 @机器人即答，可选 `feishu` extra：`lark-oapi>=1.7.0`）；出网代理经 `backend/.env.local` 注入（已 git-ignore，启动脚本与后端统一读取）
 - **OortCloud 免费额度集成（智连器）**：智连器新增 **OortCloud** 接入——点击「免费领取」跳转统一登录页授权后，后端自动领取平台下发的 **10 元免费模型额度**（免费 NewAPI 令牌），并自动创建 `OortCloud` 模型 Provider，会话里即可直接选用免费模型，**无需自有 API Key、无需付费**。领取流程含 state 防重放、令牌密钥本地加密存储；`appid` / `secretkey` 为可选应用凭证（多租户部署仅靠用户登录令牌即可领取，已与对接方确认无需填写）。管理接口对齐 NewAPI 规范（`accesstoken` + `requesttype=app`），对话流为 OpenAI 兼容 `/v1/chat/completions` 并补 `X-Roo-App-Version` 头。REST `/api/integrations/oortcloud/*` + 前端领取入口（设置页「模型」标签 + 智连器面板）/ 回调页 `/oauth/oortcloud/callback`。
+- **AI 生图 / 生视频（智谱免费模型）**：会话页「模型类型」选 **智谱**，「具体模型」可选 **CogVideoX-Flash**（文生/图生视频）与 **CogView-3-Flash**（文生图），二者为智谱官方标注的**免费模型**。发送提示词即走生成流程（非对话），产物以内联卡片展示并可下载；生成中显示等待进度（免费档高峰期会排队）。后端新增 `media_gen` 模块 + `/api/media/*`（异步任务：提交 → 轮询 → 产物落盘，1302/1305 过载自动退避重试，产物 magic bytes 校验；**上游链接为临时链接，必须转存**，代码已内置下载落盘）+ `plugins/provider_zhipu` 插件（同一把 Key 覆盖 GLM 对话 / 生图 / 生视频；生成类模型走 media 接口，误当对话用会返回明确提示）。Key 来源：插件配置 > 环境变量 `ZHIPU_API_KEY` > 项目根 `key.txt` 兜底。联调自检：`python tools/e2e_media_check.py http://127.0.0.1:8020`；独立脚本：`python tools/media_gen.py image|video ...`。**生成中可随时停止**：提交 / 排队 / 生成任一阶段，产物卡片状态行右侧有「停止生成」按钮——点击即本地中止等待并通知后端把任务置 `CANCELLED`、停止轮询智谱（智谱异步任务无取消 API，上游任务可能仍在排队，但其产物不会被下载落盘；接口 `POST /api/media/tasks/{id}/stop`，幂等，刷新后仍保留真实终态）。视频时长：cogvideox-flash **实测仅 5 秒**（传 10/30 上游静默钳位，产物 mvhd 解析 5.11s，代码前置校验硬禁，勿回退；2026-10-23 21:49 二次复测仍为 5.11s）；10 秒为付费 cogvideox-2/3 能力。**混合会话时序**：同一会话里文字问答与生成轮次（图/视频）按 `created_at` 统一时间流从上到下交织渲染——消息时间戳为 SQLite UTC 无时区格式，前端排序必须走 `parseServerTime` 归一化（直接 `Date.parse` 会按本地时区解释、相差 8 小时把文字问答整体抬到生成轮次上方，勿回退）
 - **权限审计与审计日志**：管理员校验（`require_admin`）之上记录状态变更审计事件，设置页「审计 → 审计日志」子页签可查询操作流水
 - **知识库系统（Knowledge Base）**：私有知识的「上传 → 分段清洗 → 索引 → 检索 → 技能化」全链路（方案见项目根目录《知识库系统-完整解决方案.md》），**管理界面在 `/knowledge`（会话页工具箱可直达）**：知识库卡片、文档上传（分段策略可覆盖）、状态与分段预览、检索测试（含技能模式）、嵌入模型管理。P1 支持 txt/md/csv/json/log/docx/pdf/图片（图片抽取为资产、OCR/VLM 描述参与索引、缺描述不丢分段）；音频（mp3/wav/m4a 等）经内置 **AudioAdapter** 走 OpenAI 兼容 ASR 转写（配置 `HARNESS_KB_ASR_ENDPOINT` / `HARNESS_KB_ASR_API_KEY` / `HARNESS_KB_ASR_MODEL` 后启用，可写入 `backend/.env.local`；未配置时上传音频返回明确指引）；分段策略 S1 通用规则 / S2 结构感知 / S3 父子 / S4 问答对**按文档特征自动匹配**（可手动覆盖），7 条公共清洗规则；检索支持 keyword（FTS5+BM25，中文 bigram 分词）/ semantic（cosine）/ hybrid（RRF 融合）三模式 + 可选 Rerank + 阈值过滤，缺索引优雅降级、空库不报错；嵌入模型可自定义（OpenAI 兼容端点、保存前连通性探针、密钥加密存储、换模型自动标记全量重建）。**技能化**：`knowledge_base_search` 工具已注册，模型经 function calling 自主判定调用（系统提示内置决策引导），提问分析（语言/实体/子查询/KB 路由，子查询≤4）后返回带来源标注的分段；配套内置 **`knowledge-base` 技能**（`backend/skills/knowledge-base/SKILL.md`，设置页「技能」可查看/启停）：规定检索调用规范、来源标注与拒答规则、建库/上传/重建等维护流程，并附 `references/management-api.md` 端点参考（按需加载）。REST：`/api/kb/*`（管理面，写接口需管理员）、`/api/retrieval`、`/api/skills/knowledge_base_search`（55 项测试覆盖）
 
@@ -145,27 +146,68 @@ DEEPSEEK_API_KEY=sk-your-api-key-here
 
 > 也可以启动后在设置页面配置：http://localhost:5173/settings → 模型 → 编辑 DeepSeek → 填入 API Key
 
-### 使用 andy-gateway（可选，免费模型统一接入）
+### 使用 andy-gateway（官方免费额度为主线 + 客户端免费通道可选）
 
 后端起在 8000 时，网关数据面为 `http://127.0.0.1:8000/v1`：
 
 1. 首次启动会在 `backend/data/gateway.bootstrap-key` 生成引导 Key（也可 `set GATEWAY_BOOTSTRAP_KEY=agw-...` 自定）；
 2. 设置 → 模型 → 新建自定义 Provider：`base_url=http://127.0.0.1:8000/v1`，API Key 填引导 Key；
-3. 模型名形如 `cline/cline-free/minimax-m3.1-flash`、`workbuddy/hy3`、`zen/big-pickle`，或故障转移别名 `free/auto`；
-4. 通道与模型在 `backend/data/gateway.json`（模板 `backend/gateway.example.json`），保存后约 2 秒热更新；`/api/gateway/*` 提供 Key / 租户 / 用量 / 审计 / 指标管理面。
+3. 通道与模型在 `backend/data/gateway.json`（模板 `backend/gateway.example.json`，首次启动自动生成），保存后约 2 秒热更新；`/api/gateway/*` 提供 Key / 租户 / 用量 / 审计 / 指标管理面。
 
-> 免费额度与客户端身份门禁的合规边界见 [接入说明 §10](docs/andy-gateway-本机免费模型接入-v1.1.md)。
+**两类通道（默认配置）**
 
-> **⚠️ 免费通道的前置条件（重要）**：这四个通道复用**使用者本机已登录的客户端登录态**，仓库不携带任何凭据，也不能代替他人登录。每位使用者需在自己的机器上自行准备；缺失登录态的通道只会在调用时返回明确错误，不影响其它通道与整体运行。
->
-> | 通道 | 需要预先准备 | 登录态文件（运行时读取，位于仓库外） |
-> |---|---|---|
-> | Cline | 安装并登录 **Cline CLI** | `~/.cline/data/settings/providers.json` |
-> | OpenCode Zen Free | **无需登录**（公开匿名通道，`Bearer public`） | — |
-> | WorkBuddy | 通过 **Magpie** 登录 WorkBuddy 国内版 | `~/.config/magpie/plugin-auth.json` → `workbuddy` |
-> | Qoder CN | 通过 **Magpie** 登录 Qoder CN（需 device token + machineId） | `~/.config/magpie/plugin-auth.json` → `qoder-cn` |
->
-> 不想配置以上登录态时，可直接使用官方 API Key（DeepSeek / Qwen / Doubao）或本地 Ollama，功能不受影响。
+| 类型 | 通道 | 需要准备 | 默认 |
+|---|---|---|---|
+| 官方 API（**主线**） | **Qwen 百炼** / **豆包方舟** | 环境变量 `DASHSCOPE_API_KEY` / `ARK_API_KEY` | ✅ 启用，配好 Key 即出现在模型列表 |
+| 匿名免费 | OpenCode Zen Free | 无（`Bearer public`） | ⛔ 上游已收紧免费档，默认禁用（详见实测表） |
+| 客户端登录态（可选增强） | Cline / WorkBuddy / Qoder CN | 见下方前置条件表 | ⛔ 默认关闭，按需开启 |
+
+**主线：官方免费额度（推荐，一个 Key 即用）**
+
+- **Qwen 百炼**：`https://dashscope.aliyuncs.com/compatible-mode/v1`（OpenAI 兼容）。新用户每模型 100 万 tokens、70+ 模型共约 7000 万、有效期 90 天，仅华北2（北京）地域生效，建议在控制台开启「用完即停」；模型名以控制台为准（示例配置含 `qwen-plus` / `qwen-max` / `qwen-flash` / `qwen3-coder-plus`，百炼同样托管 DeepSeek / Kimi / GLM 等并各自享有免费额度）。
+- **豆包方舟**：`https://ark.cn-beijing.volces.com/api/v3`（OpenAI 兼容）。注意方舟多数模型需先在控制台创建**推理接入点**，把 `models` 换成你的 `ep-xxx` 接入点 ID（少数模型可直接用模型名）。
+- 用法：`set DASHSCOPE_API_KEY=sk-...`（或 `ARK_API_KEY=...`）→ 重启后端 → 会话页模型列表自动出现「Qwen 百炼 / 豆包方舟」及其模型。
+- 也可以不走网关：设置页直接新建自定义 Provider 填上面的 base_url + Key，效果相同（走网关则额外获得路由 / 熔断 / 故障转移 / 用量统计）。
+
+**可选增强：四个客户端免费通道（默认关闭）**
+
+> 这四个通道复用**使用者自己的账号授权**，仓库不携带任何凭据。要把某通道打开：把 `backend/data/gateway.json` 里对应通道的 `enabled` 改为 `true`，然后按下表完成登录。**缺登录态时该通道不会出现在模型列表**（不会出现"选得到、发出去、只收到报错"）。
+
+| 通道 | 怎么登录 | 现状 |
+|---|---|---|
+| **Qoder CN** | 网关管理台 → 通道 → 点「**登录**」→ 浏览器完成 Qoder 官方授权 → 自动轮询落库 | ✅ **完全不需要安装任何客户端**（token 由网关加密保管，Magpie 仅是可选兜底） |
+| **WorkBuddy** | 自建登录框架已就绪，流程移植中；过渡期可借本机 Magpie 登录态 | 🚧 需 Magpie 或等待移植 |
+| **Cline** | 安装并登录 **Cline CLI**（`~/.cline/data/settings/providers.json`）；OAuth 自建登录后续按同一框架扩展 | 🚧 需 Cline CLI |
+| **OpenCode Zen Free** | **无需登录**（公开匿名通道，`Bearer public`） | ⛔ 2026-10-23 起上游把免费档收归 OpenCode 客户端，第三方调用一律 403，默认禁用 |
+
+**自建登录怎么用（Qoder CN，已验证）**：
+
+1. 设置 → 模型 → 会话页工具箱 →「LLM 网关」→ 通道页，找到 **Qoder CN** 卡片；
+2. 点「**登录**」→ 弹出授权链接（`https://qoder.cn/device/selectAccounts?...`，PKCE 设备授权，与官方 CLI 同协议）；
+3. 点「打开授权页」在浏览器里用**你的 Qoder 账号**登录并授权该设备；
+4. 网关每 2 秒自动轮询，授权完成后 token 加密写入本地 `gw_credentials` 表，**会话页立刻出现 Qoder CN 模型**（无需重启）；
+5. 想更换账号：点「退出登录」删除自存凭据后重新登录。
+
+> 卡片上若显示"当前借用 Magpie 登录态"，说明该通道还在用 Magpie 缓存的文件——点一次「登录」即可转为网关自存，之后 Magpie 可以卸载。
+
+> 免费额度与客户端身份门禁的合规边界见 [接入说明 §10](docs/andy-gateway-本机免费模型接入-v1.1.md)。客户端通道属条款灰区、接口易变，建议仅作补充，主线仍用官方 API。
+
+#### 客户端免费通道实测可用性（2026-10-23 真机逐模型探测）
+
+> 用 `python tools/probe_gateway_models.py`（在 `backend` 目录下运行）对每个模型发一次最小请求实测，结果如下：
+
+| 通道 | 实测结果 | 响应速度 | 备注 |
+|---|---|---|---|
+| **Qoder CN** | ✅ **2/2 全部可用** | 1–2s | 最快最稳；偶发排队（10605），等 30s 重试即可 |
+| **WorkBuddy** | ✅ **2/2 全部可用** | 3–4s | 稳定 |
+| **Cline** | ✅ **4/4 全部可用** | 0.9–1.9s | 已移除已下架的 minimax-m3.1-flash 与流式不可达的 laguna |
+| **OpenCode Zen** | ⚠️ **上游已收紧，默认禁用** | — | 2026-10-23 起 OpenCode 把免费档收归自家客户端（第三方调用一律 403 `FreeTierError`，带完整客户端身份头也被拒）。已从默认配置禁用、界面不再显示；政策回摆时把 `zen.enabled` 改回 `true` 即可恢复 |
+
+已从示例配置中**移除**的模型（硬失败，复测确认）：`cline-free/minimax-m3.1-flash`（404 已下架）、`zen/minimax-m3.1-flash-free`（410 已废弃）、`zen/jev-1.13-free`（400 协议不支持）、`zen/beam-free`（403 区域封锁）、`zen/flint-40b-free`（持续 503 Endpoint unavailable）、`cline/poolside/laguna-s-2.1-free`（流式 Vercel 路由 100% 失败）。
+
+> 探测陷阱：并发探测时某个模型的 503/429 会触发**通道级 30s 冷却**，把同通道后续请求挡成 `GW_NO_CAPACITY`——这是探测副作用，不代表模型不可用；复测请用 `-c 1` 串行跑。
+
+**结论**：追求稳定快速 → 官方 API Key（主线）或 **Qoder CN / WorkBuddy / Cline**（三家真机全可用）；OpenCode Zen 已被上游关闭第三方访问。
 
 ### 启动开发服务器
 
@@ -473,6 +515,25 @@ cd backend && uv sync --extra dev --extra desktop
 
 - 数据目录是每用户目录（Windows `%APPDATA%/andy-harness`，含 `harness.db` 与 `attachments/`），与 `start-all.bat` 模式使用的 `backend/data/` **相互独立**：桌面壳里看不到浏览器模式下的历史会话属于正常现象。
 - 启动前自检：`backend\.venv\Scripts\python.exe desktop\launcher\launch-backend.py --check` 打印解析后的 host / port / python / data_dir / db_path 与 `problems` 列表（为空才可启动），是排查「窗口白屏 / 连不上后端」最快的入口。
+
+### 13. 用了 Cline 免费模型，提问后没有任何回复
+
+**先确认路线**：官方 API Key（`DASHSCOPE_API_KEY` / `ARK_API_KEY`）才是主线用法——设好环境变量重启后端，会话页就会出现「Qwen 百炼 / 豆包方舟」，不依赖任何客户端。下面的排查针对**可选增强**的四个客户端通道。
+
+先跑自检脚本（只读，**不打印任何 token / 邮箱 / 机器码**）：
+
+```bash
+python tools/check_gateway.py
+```
+
+重点看两处：
+
+1. **本机登录态**：Cline 需要先安装并登录 **Cline CLI**（登录态在 `~/.cline/data/settings/providers.json`）；WorkBuddy / Qoder CN 需要 **Magpie** 登录（`~/.config/magpie/plugin-auth.json`）；OpenCode Zen Free 无需登录。**仓库不携带任何凭据**，每台机器都要自己登录。
+2. **后端与 Provider**：`/api/providers` 应出现 `gw-cline` / `gw-opencode` / `gw-workbuddy` / `gw-qoder`；可用性快照里对应通道应为 `available=True`。
+
+登录态缺失时，后端返回 `CRED_INVALID: 登录态文件不存在 ...`，页面会显示错误横幅。若页面完全空白，请查看后端控制台日志——本项目已对「上游零内容」与「HTTP 200 非 SSE 错误体」显式报错，不再静默返回空回复。
+
+不想配置这些登录态时，直接在设置页填官方 API Key（DeepSeek / Qwen / Doubao）或接本地 Ollama，功能不受影响。
 
 ---
 

@@ -10,6 +10,7 @@ import logging
 import os
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -429,6 +430,34 @@ CREATE INDEX IF NOT EXISTS idx_kb_segments_parent ON kb_segments(parent_id);
 _CREATE_INDEX_MESSAGES_SESSION = """
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
 """
+
+# 图像/视频生成任务（智谱 CogView-3-Flash / CogVideoX-Flash 等异步生成）。
+# upstream_id 为上游异步任务号；status 为 SUBMITTING/PROCESSING/SUCCESS/FAIL/
+# CANCELLED（CANCELLED=用户手动停止，见 media_gen.service.stop_task）；
+# file_path 指向已落盘的产物（上游链接为临时链接，必须转存）。
+_CREATE_MEDIA_TASKS = """
+CREATE TABLE IF NOT EXISTS media_tasks (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL,                      -- image | video
+    model TEXT NOT NULL,
+    provider_id TEXT NOT NULL DEFAULT 'zhipu',
+    prompt TEXT NOT NULL DEFAULT '',
+    params_json TEXT NOT NULL DEFAULT '{}',
+    upstream_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'PROCESSING',
+    error TEXT NOT NULL DEFAULT '',
+    result_url TEXT NOT NULL DEFAULT '',
+    file_path TEXT NOT NULL DEFAULT '',
+    mime TEXT NOT NULL DEFAULT '',
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+_CREATE_INDEX_MEDIA_TASKS = """
+CREATE INDEX IF NOT EXISTS idx_media_tasks_session ON media_tasks(session_id, created_at);
+"""
 _CREATE_INDEX_SNAPSHOTS_SESSION = """
 CREATE INDEX IF NOT EXISTS idx_snapshots_session ON context_snapshots(session_id, created_at);
 """
@@ -493,7 +522,7 @@ class Database:
                     # WAL：读写分离，缓解并发写时的「database is locked」；
                     # busy_timeout：写冲突时等待而非立即报错。
                     self._conn.execute("PRAGMA journal_mode = WAL")
-                    self._conn.execute("PRAGMA busy_timeout = 5000")
+                    self._conn.execute("PRAGMA busy_timeout = 10000")
                     self.init_schema()
         return self._conn
 
@@ -530,6 +559,8 @@ class Database:
             + _CREATE_INDEX_AUDIT
             + _CREATE_INDEX_MESSAGES_SESSION
             + _CREATE_INDEX_SNAPSHOTS_SESSION
+            + _CREATE_MEDIA_TASKS
+            + _CREATE_INDEX_MEDIA_TASKS
             + "CREATE INDEX IF NOT EXISTS idx_todos_session ON todos(session_id, position);"
             + "CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id, created_at);"
             + "CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope, updated_at);"
@@ -574,11 +605,30 @@ class Database:
         logger.info("数据库 schema 已初始化: %s", self.db_path)
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
-        """执行 SQL（非查询）。"""
-        with self._lock:
-            cursor = self.conn.execute(sql, params)
-            self.conn.commit()
-            return cursor
+        """执行 SQL（非查询）。
+
+        `self._lock` 只保护进程内并发。多进程同时打开同一 SQLite 文件时
+        （例如 uvicorn 8000 + 8020 + pytest），写事务仍会偶发
+        `database is locked`。`PRAGMA busy_timeout` 只等一轮，长事务下不够，
+        故在此做有限重试：失败时事务未提交，重试安全（INSERT/UPDATE 幂等）。
+        """
+        delay = 0.2
+        last: sqlite3.OperationalError | None = None
+        for attempt in range(4):
+            with self._lock:
+                try:
+                    cursor = self.conn.execute(sql, params)
+                    self.conn.commit()
+                    return cursor
+                except sqlite3.OperationalError as e:
+                    msg = str(e).lower()
+                    if "locked" not in msg and "busy" not in msg:
+                        raise
+                    last = e
+            time.sleep(delay)
+            delay *= 2
+        assert last is not None
+        raise last
 
     def query(self, sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
         """查询并返回所有行。"""

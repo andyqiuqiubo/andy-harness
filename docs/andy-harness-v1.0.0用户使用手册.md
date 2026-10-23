@@ -508,36 +508,73 @@ start-all.bat
 
 **详细操作**（含全部热键、错误码速查、CLI 用法）见 [`docs/manual/andy-repeat-录屏回放用户操作手册.md`](manual/andy-repeat-录屏回放用户操作手册.md)。
 
-### 9.8 LLM 网关与四个免费模型通道
+### 9.8 LLM 网关：官方免费额度（主线）+ 客户端免费通道（可选）
 
-> 把本机已登录的 **Cline / OpenCode Zen Free / WorkBuddy / Qoder CN** 四个免费通道统一成 **OpenAI 兼容接口**：既可在会话页直接选用，也可作为 `/v1` 服务供任意 OpenAI 客户端调用。
+> 网关把多个模型来源统一成 **OpenAI 兼容接口**：会话页可直接选用，也可作为 `/v1` 服务供任意 OpenAI 客户端调用。
+
+**两类来源（默认配置）**
+
+| 类型 | 通道 | 需要准备 | 默认 |
+|---|---|---|---|
+| 官方 API（**主线**） | Qwen 百炼 / 豆包方舟 | 环境变量 `DASHSCOPE_API_KEY` / `ARK_API_KEY` | 启用，配好 Key 即出现在模型列表 |
+| 客户端登录态（可选增强） | Cline / WorkBuddy / Qoder CN | 见下方前置条件表 | 默认关闭 |
+| 匿名免费 | OpenCode Zen Free | 无（上游已收紧免费档） | 默认禁用 |
 
 **三条使用路径**
 
 | 路径 | 适合谁 | 怎么做 |
 |---|---|---|
-| 会话页直接选 | 只想用免费模型对话 | 会话页 Provider 选择「Cline（免费）/ OpenCode（免费）/ WorkBuddy（免费）/ Qoder CN（免费）」，再选具体模型 |
+| 会话页直接选 | 日常对话 | 会话页 Provider 选择「Qwen 百炼 / 豆包方舟 / OpenCode（免费）/ Cline（免费）/ WorkBuddy（免费）/ Qoder CN（免费）」，再选具体模型 |
 | 设置页自定义 Provider | 想接入任意 OpenAI 客户端 | 设置 → 模型 → 新增：`base_url=http://127.0.0.1:8000/v1`，API Key 填 `backend/data/gateway.bootstrap-key` |
 | 管理台 | 管通道 / Key / 租户 / 用量 / 审计 | 会话页工具箱 →「LLM 网关」（`/gateway`） |
 
-**免费通道的前置条件（重要）**
+**主线：官方免费额度（一个 Key 即用，不依赖任何客户端）**
 
-| 通道 | 需要预先准备 | 登录态文件（运行时读取，位于仓库外） |
+- **Qwen 百炼**：`set DASHSCOPE_API_KEY=sk-...` 后重启后端，模型列表即出现 `qwen-plus` / `qwen-max` / `qwen-flash` / `qwen3-coder-plus`（新用户每模型 100 万 tokens、共约 7000 万、90 天；模型名以百炼控制台为准）。
+- **豆包方舟**：`set ARK_API_KEY=...` 后重启后端。方舟多数模型需先在控制台创建**推理接入点**，把 `backend/data/gateway.json` 里 `doubao-ark` 的 `models` 换成你的 `ep-xxx` 接入点 ID。
+- 也可以完全不走网关：设置页新建自定义 Provider，填上面的 base_url + Key 即可。
+
+**可选增强：客户端免费通道的前置条件**
+
+| 通道 | 怎么登录 | 默认 |
 |---|---|---|
-| Cline | 安装并登录 **Cline CLI** | `~/.cline/data/settings/providers.json` |
-| OpenCode Zen Free | **无需登录**（公开匿名通道，`Bearer public`） | — |
-| WorkBuddy | 通过 **Magpie** 登录 WorkBuddy 国内版 | `~/.config/magpie/plugin-auth.json` → `workbuddy` |
-| Qoder CN | 通过 **Magpie** 登录 Qoder CN（device token + machineId） | 同一文件 → `qoder-cn` |
+| Qoder CN | 管理台「登录」→ 浏览器完成 Qoder 官方授权（PKCE 设备授权，**无需安装任何客户端**） | 关闭 |
+| WorkBuddy | 自建登录框架已就绪、流程移植中；过渡期可借 Magpie 登录态 | 关闭 |
+| Cline | 安装并登录 **Cline CLI**（OAuth 自建登录后续按同一框架扩展） | 关闭 |
+| OpenCode Zen Free | **无需登录**，但 2026-10-23 起上游把免费档收归 OpenCode 客户端（第三方调用一律 403），默认禁用 | 禁用 |
 
-> 凭据是**每位使用者自己的**，仓库不携带、也不能代替他人登录。缺失登录态的通道只影响自身（调用返回明确错误），不影响其它通道。不想配置时可直接用自有 API Key 或本地 Ollama。
+> 凭据是**每位使用者自己的**：Qoder CN 的 token 由网关用本机 machine key 派生密钥加密后存在本地 `gw_credentials` 表，明文不落日志、不出仓库；仓库也不携带任何凭据。启用某通道后若未登录，该通道**不会**出现在模型列表（避免"选得到却报错"）；登录/配好 Key 后无需重启即自动出现。
+
+**Qoder CN 自建登录步骤**：会话页工具箱 →「LLM 网关」→ 通道页 → Qoder CN 卡片点「登录」→「打开授权页」在浏览器用你的 Qoder 账号授权 → 网关每 2 秒轮询，成功后模型立即出现在会话页。卡片显示"当前借用 Magpie 登录态"时，点一次「登录」即可转为网关自存，随后 Magpie 可卸载。
 
 **可用性检测**：系统定期探测各模型（真实流量冷却 + 免费目录核对，均不消耗额度），不可用的模型在下拉中实时标注并禁用，恢复后自动更新；检测结果以后端为唯一事实源，前端只镜像，避免状态不一致。
 
 **常见提示**
 
 - `Qoder 模型排队中，约 30s 后可重试`：上游免费档排队（错误码 10605），等 30 秒重试即可，**不会**把账号标记为不可用；
+- `环境变量 DASHSCOPE_API_KEY / ARK_API_KEY 为空`：官方通道未配 Key，按上文设置后重启后端（该通道在配好 Key 前不会出现在模型列表）；
 - `未找到 XXX 登录态`：对应客户端未登录，按上表准备后重启后端；
 - `/v1` 返回 503：网关未启动或配置损坏，检查 `backend/data/gateway.json` 与后端日志。
+
+**一键自检**：在项目根目录运行 `python tools/check_gateway.py`，会打印官方 Key 与四个客户端通道的登录态、后端注册的 `gw-*` Provider 与模型可用数（只读，不输出任何密钥）。
+
+**真实可用性复测**（会真实发请求、消耗免费额度）：
+
+```bash
+cd backend && python ../tools/probe_gateway_models.py            # 全量
+cd backend && python ../tools/probe_gateway_models.py zen/big-pickle   # 单个
+```
+
+2026-10-23 实测结论：
+
+| 通道 | 可用率 | 速度 | 说明 |
+|---|---|---|---|
+| Qoder CN | 2/2 | 1–2s | 最快最稳，偶发排队（等 30s） |
+| WorkBuddy | 2/2 | 3–4s | 稳定 |
+| Cline | 4/4 | 0.9–1.9s | 稳定（已移除流式不可达的 laguna） |
+| OpenCode Zen | — | — | 2026-10-23 起上游把免费档收归 OpenCode 客户端（第三方 403），默认禁用 |
+
+> 上表是**时间点快照**：免费额度与上游目录随时会变，拿不准时用上面的复测命令现场验证。
 
 ---
 

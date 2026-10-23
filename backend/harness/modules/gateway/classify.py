@@ -124,6 +124,10 @@ _TEXT_RULES: tuple[tuple[str, str, str, bool, int, bool, str, int], ...] = (
     ("too many requests", KIND_RATE_LIMIT, SCOPE_ACCOUNT, True, 0, True, "CRED_RATE_LIMITED", 429),
     ("quota exceeded", KIND_RATE_LIMIT, SCOPE_ACCOUNT, True, 0, True, "CRED_RATE_LIMITED", 429),
     ("usage limit", KIND_RATE_LIMIT, SCOPE_ACCOUNT, True, 0, True, "CRED_RATE_LIMITED", 429),
+    # 上游把免费档收归自家客户端（OpenCode Zen 2026-10-23 收紧）：是公开凭据的
+    # 属性而非模型故障——给出专属错误码，让用户看到"上游已限制第三方调用"
+    # 而不是被连坐冷却后的"没有可用通道"。
+    ("free tier", KIND_PERMISSION, SCOPE_ACCOUNT, True, COOLDOWN_LONG_MS, False, "UPSTREAM_FREE_TIER_LOCKED", 403),
     # 容量措辞是全站压力而非凭据耗尽：冷却 provider 范围
     ("capacity", KIND_OVERLOADED, SCOPE_PROVIDER, True, 0, True, "UPSTREAM_5XX", 502),
     ("overloaded", KIND_OVERLOADED, SCOPE_PROVIDER, True, 0, True, "UPSTREAM_5XX", 502),

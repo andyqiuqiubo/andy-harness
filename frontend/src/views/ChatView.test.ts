@@ -12,8 +12,9 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Provider } from '../api/types'
+import type { Message, Provider } from '../api/types'
 import ChatView from './ChatView.vue'
+import { useChatStore } from '../stores/chat'
 import { CHAT_MODEL_KEY, CHAT_PROVIDER_KEY } from '../utils/chatSelection'
 
 const PROVIDERS: Provider[] = [
@@ -201,6 +202,111 @@ describe('ChatView：厂商/模型选择跨页面保留', () => {
 
     expect(w.find('.provider-select').exists()).toBe(false)
     expect(w.text()).toContain('模型全部已停用')
+    w.unmount()
+  })
+})
+
+/**
+ * 回归：混合会话（文字问答 + 生图/生视频）必须按真实时间先后从上到下排列。
+ *
+ * 缺陷形态：等待视频生成期间发起的文字问答，刷新后整体显示在生成问答对的
+ * 上方。根因：消息 created_at 是 SQLite UTC 无时区串（"2026-10-23 13:00:00"），
+ * Date.parse 按本地时区（UTC+8）解释，比媒体轮次的 UTC 时刻慢 8 小时——混合
+ * 会话里文字问答被整体抬到生成轮次上面。修复：chatStream 统一走
+ * parseServerTime 归一化（无时区按 UTC、带 Z/偏移原样）。
+ */
+
+/** 夹在两次文字问答之间的成功视频任务（created_at 与消息同为 UTC 无时区格式）。 */
+const MEDIA_TASK = {
+  id: 'task-v1',
+  session_id: 's1',
+  kind: 'video',
+  model: 'cogvideox-flash',
+  provider_id: 'zhipu',
+  prompt: '生成一只奔跑的小猫',
+  params: { size: '1920x1080', attachments: [] },
+  upstream_id: 'up-v1',
+  status: 'SUCCESS',
+  error: '',
+  has_file: true,
+  mime: 'video/mp4',
+  size_bytes: 2048,
+  waited_seconds: 62,
+  remaining_seconds: 0,
+  created_at: '2026-10-23 13:10:00',
+  updated_at: '2026-10-23 13:11:00',
+}
+
+describe('ChatView：混合会话按时间序交织', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    vi.stubGlobal('WebSocket', NoopWebSocket)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url)
+        let body: unknown = {}
+        if (u.includes('/media/tasks')) body = [MEDIA_TASK]
+        else if (u.includes('/providers')) body = currentProviders
+        else if (u.includes('/todos')) body = { todos: [] }
+        else if (u.includes('/sessions')) body = []
+        else if (u.includes('/models')) body = []
+        else if (u.includes('/settings')) body = {}
+        else if (u.includes('/auth/status')) body = { enabled: false }
+        return { ok: true, status: 200, json: async () => body } as Response
+      }),
+    )
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    localStorage.clear()
+  })
+
+  it('刷新后文字问答与生成轮次仍按真实先后排列（UTC 无时区时间戳）', async () => {
+    const pinia = createPinia()
+    const w = mount(ChatView, {
+      global: {
+        plugins: [pinia],
+        directives: { ripple: {} },
+        stubs: {
+          SessionSidebar: true,
+          AttachmentImage: true,
+          MarkdownRenderer: true,
+          ProcessTrace: true,
+          RouterLink: true,
+          // 渲染消息正文，便于按 DOM 顺序断言
+          MessageItem: {
+            props: ['message'],
+            template: '<div class="turn-stub">{{ message.content }}</div>',
+          },
+        },
+      },
+    })
+
+    const chat = useChatStore(pinia)
+    const msgs: Message[] = [
+      { id: 'u1', session_id: 's1', role: 'user', content: '文字问题一', tokens: 0, created_at: '2026-10-23 13:00:00' },
+      { id: 'a1', session_id: 's1', role: 'assistant', content: '文字回答一', tokens: 0, created_at: '2026-10-23 13:05:00' },
+      { id: 'u2', session_id: 's1', role: 'user', content: '文字问题二', tokens: 0, created_at: '2026-10-23 13:20:00' },
+      { id: 'a2', session_id: 's1', role: 'assistant', content: '文字回答二', tokens: 0, created_at: '2026-10-23 13:25:00' },
+    ]
+    chat.messages = msgs
+    // 设置当前会话 → 触发 loadSessionMedia（watcher）恢复该会话的生成轮次
+    chat.currentSessionId = 's1'
+    await flushPromises()
+
+    // 视频任务（13:10）必须插在两次文字问答之间，而不是整体压到下面。
+    // 媒体轮次的提问气泡与产物卡片都渲染在同一位置（prompt + 卡片）。
+    const seq = w.findAll('.turn-stub, .media-kind').map((el) => el.text())
+    expect(seq).toEqual([
+      '文字问题一',
+      '文字回答一',
+      '生成一只奔跑的小猫',
+      '视频',
+      '文字问题二',
+      '文字回答二',
+    ])
     w.unmount()
   })
 })

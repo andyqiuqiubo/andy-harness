@@ -11,6 +11,12 @@
 > **落地状态（2026-10-22）**：本说明中的三条通道已并入后端模块 `backend/harness/modules/gateway/`——后端启动即提供 `http://127.0.0.1:8000/v1`（Key/租户/用量/审计/指标/配置热更新齐备），`tools/andy_gateway_lite.py` 保留为脱离主程序的诊断与对照工具。
 >
 > **v1.2 修订（2026-10-22）**：Qoder CN 已通过 `qoder-cosy` 适配器接入（原"未接入"结论作废）；补充 COSY 签名 / 私有 base64、流式信封归一化、排队 10605 三层嵌套解包，以及"提问后没有任何反馈"的修复说明（§3.4）。文件名保留 v1.1 以维持既有链接稳定。
+>
+> **v1.3 修订（2026-10-23）**：接入重心调整为**官方免费额度通道**（Qwen 百炼 / 豆包方舟，`openai-like` + `env:DASHSCOPE_API_KEY` / `env:ARK_API_KEY`，一个 Key 即用、不依赖任何客户端）作为主线；本文的四个客户端通道在 `gateway.example.json` 中默认 `enabled: false`，降级为「可选增强」，且凭据未就绪时不会注册成会话 Provider（`CredentialResolver.present()` 门控），避免"选得到、发出去、只收到报错"。
+>
+> **v1.4 修订（2026-10-23）**：全模型真机探测（§7.1）确认 15/20 真实可用；从示例配置移除 4 个硬失败模型（`cline-free/minimax-m3.1-flash` 404、`zen/minimax-m3.1-flash-free` 410、`zen/jev-1.13-free` 400、`zen/beam-free` 403 区域封锁）；新增复测工具 `tools/probe_gateway_models.py`。
+>
+> **v1.5 修订（2026-10-23）**：落地**网关自建登录**（补齐 Magpie 三块能力中的"登录授权"）——新增 `credential_store.py`（`gw_credentials` 表 + `APIKeyEncryptor` 加密）与 `login.py`（PKCE 设备授权流，协议移植自 Magpie `opencode-qoder-auth`），管理台 `/api/gateway/channels/{id}/login` 返回授权 URL、`/api/gateway/logins/{sid}` 轮询状态、`DELETE /channels/{id}/credential` 退出登录。**Qoder CN 已可完全脱离 Magpie**；`local:qoder-cn`（读 Magpie 文件）降级为可选兜底，`store:qoder-cn` 成为默认凭据源。WorkBuddy / Cline 的自建登录可复用同一框架扩展。
 
 ---
 
@@ -357,6 +363,41 @@ curl http://127.0.0.1:8010/v1/chat/completions \
 |------|------|------|------|
 | Cline | `recommended-models` | 200（6 个免费） | 680ms |
 | WorkBuddy | `/v3/config` | 200（37 个模型；`hy3` 在列，`step-5-preview` 不在列但可调用） | 155ms |
+
+### 7.1 全模型真机探测（2026-10-23，`tools/probe_gateway_models.py`）
+
+对每个模型发一次最小请求（`只回复两个字：可用`）实测，并发 3、单请求上限 60s：
+
+| 通道 | 模型 | 判定 | 耗时 |
+|---|---|---|---|
+| cline | `reflection/beam-free` | OK | 0.9s |
+| cline | `cline-free/solar-mini4` | OK | 0.9s |
+| cline | `nvidia/nemotron-3.5-lightning-free` | OK | 1.5s |
+| cline | `cline-free/nemotron-3.5-super-vl` | OK | 1.7s |
+| cline | `poolside/laguna-s-2.1-free` | OK | 1.9s |
+| cline | ~~`cline-free/minimax-m3.1-flash`~~ | **404 已下架** | 0.5s |
+| workbuddy | `hy3` | OK | 2.9s |
+| workbuddy | `step-5-preview` | OK | 4.3s |
+| qoder-cn | `qfmodel` | OK | 1.2s |
+| qoder-cn | `dfmodel` | OK | 1.0s |
+| zen | `big-pickle` | OK | 2.1s（偶发挂起，重测 4.8s） |
+| zen | `deepseek-v4.1-flash-free` | OK | 36.8s |
+| zen | `nemotron-3.5-lightning-free` | OK | 37.1s |
+| zen | `nemotron-3.5-super-vl-free` | OK | 38.0s |
+| zen | `mimo-v2.6-flash-free` | OK | 53.7s |
+| zen | `glm-5.3-flash-free` | OK（首测 60s 超时，复测通过） | 52.1s |
+| zen | `flint-40b-free` | 持续上游 503（三次复测均失败） | 1.1s 即报错 |
+| zen | ~~`beam-free`~~ | **403 区域封锁** | 0.7s |
+| zen | ~~`jev-1.13-free`~~ | **400 协议不支持** | 0.8s |
+| zen | ~~`minimax-m3.1-flash-free`~~ | **410 已废弃** | 0.7s |
+
+**汇总**：20 个中 15 个真实可用；4 个硬失败（已从示例配置移除）、1 个持续 503。**速度排序：Qoder CN（1–2s）> WorkBuddy（3–4s）≈ Cline（1–2s）>> OpenCode Zen（1.7–54s，波动极大）**。
+
+**复测与陷阱（同日补充）**：
+
+1. 用 `-c 1` 串行复测 `deepseek-v4.1-flash-free` / `glm-5.3-flash-free` / `nemotron-3.5-lightning-free` / `nemotron-3.5-super-vl-free`：**4/4 全部 OK**（2.5s / 1.7s / 2.6s / 31.2s）——并发探测时 `flint-40b-free` 的 503 触发 zen **通道级 30s 冷却**，把同通道后续请求挡成 `GW_NO_CAPACITY`，属探测副作用而非模型不可用。
+2. `flint-40b-free` 单独复测两次仍为 503，判定上游侧持续故障（非下架），保留在配置中由健康度自动冷却，恢复后可重试。
+3. Zen 延迟在同一轮内从 1.7s 到 54s 不等，免费档排队特征明显。
 | Zen | `/models` | 200（86 个模型，10 个免费） | 1058ms |
 
 ---

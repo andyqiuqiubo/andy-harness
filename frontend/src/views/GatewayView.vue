@@ -9,7 +9,7 @@
  * 样式一律用 src/style.css 设计令牌；紧凑风格。
  */
 
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { apiClient } from '../api/client'
 import { useLanguage } from '../composables/useLanguage'
 
@@ -45,6 +45,22 @@ interface ModelRow {
   model: string
   available: boolean
   cooldown_remaining: number
+}
+/** 通道自建登录能力（/gateway/logins）——免装 Magpie 的关键入口。 */
+interface LoginRow {
+  channel_id: string
+  display_name: string
+  supports_login: boolean
+  has_stored_credential: boolean
+  account: string
+  fallback_available?: boolean
+}
+interface LoginPanel {
+  session_id: string
+  channel_id: string
+  login_url: string
+  state: string
+  message: string
 }
 interface KeyRow {
   id: string
@@ -106,6 +122,7 @@ const notice = ref('')
 
 const channels = ref<ChannelRow[]>([])
 const models = ref<ModelRow[]>([])
+const logins = ref<LoginRow[]>([])
 const keys = ref<KeyRow[]>([])
 const tenants = ref<TenantRow[]>([])
 const usage = ref<UsageRow[]>([])
@@ -119,6 +136,111 @@ const issuedName = ref('')
 
 // ── 创建租户表单 ──
 const tenantForm = ref({ id: '', name: '', allowed_models: '*', allowed_channels: '*' })
+
+// ── 自建登录（免装 Magpie） ──
+const loginPanel = ref<LoginPanel | null>(null)
+let loginTimer: number | null = null
+
+const loginsByChannel = computed(() => {
+  const map = new Map<string, LoginRow>()
+  for (const l of logins.value) map.set(l.channel_id, l)
+  return map
+})
+
+const loginStatusText = computed(() => {
+  const state = loginPanel.value?.state || ''
+  if (state === 'ok') return t.value('gateway.login.stateOk')
+  if (state === 'error') return t.value('gateway.login.stateError')
+  if (state === 'timeout') return t.value('gateway.login.stateTimeout')
+  return t.value('gateway.login.statePending')
+})
+
+function loginOf(channelId: string): LoginRow | undefined {
+  return loginsByChannel.value.get(channelId)
+}
+
+async function startLogin(channelId: string) {
+  notice.value = ''
+  try {
+    const res = await apiClient.post<{ session_id: string; login_url: string; expires_in: number }>(
+      `/gateway/channels/${encodeURIComponent(channelId)}/login`,
+    )
+    loginPanel.value = {
+      session_id: res.session_id,
+      channel_id: channelId,
+      login_url: res.login_url,
+      state: 'pending',
+      message: '',
+    }
+    stopLoginPolling()
+    loginTimer = window.setInterval(() => void pollLogin(), 2000)
+    void pollLogin()
+  } catch (e) {
+    notice.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function pollLogin() {
+  const panel = loginPanel.value
+  if (!panel) return
+  try {
+    const res = await apiClient.get<{ state: string; message: string }>(
+      `/gateway/logins/${encodeURIComponent(panel.session_id)}`,
+    )
+    panel.state = res.state
+    panel.message = res.message || ''
+    if (res.state !== 'pending') {
+      stopLoginPolling()
+      await load()
+      if (res.state === 'ok') {
+        notice.value = t.value('gateway.login.successHint')
+      }
+    }
+  } catch (e) {
+    stopLoginPolling()
+    notice.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+function stopLoginPolling() {
+  if (loginTimer !== null) {
+    window.clearInterval(loginTimer)
+    loginTimer = null
+  }
+}
+
+function cancelLogin() {
+  stopLoginPolling()
+  loginPanel.value = null
+}
+
+async function doLogout(channelId: string) {
+  if (!confirm(t.value('gateway.login.logoutConfirm'))) return
+  try {
+    await apiClient.delete(`/gateway/channels/${encodeURIComponent(channelId)}/credential`)
+    notice.value = t.value('gateway.login.loggedOut')
+    await load()
+  } catch (e) {
+    notice.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function copyLoginUrl() {
+  if (!loginPanel.value) return
+  try {
+    await navigator.clipboard.writeText(loginPanel.value.login_url)
+    notice.value = t.value('gateway.login.urlCopied')
+  } catch {
+    notice.value = t.value('gateway.login.urlCopyFailed')
+  }
+}
+
+function openLoginUrl() {
+  if (!loginPanel.value) return
+  window.open(loginPanel.value.login_url, '_blank', 'noopener')
+}
+
+onUnmounted(stopLoginPolling)
 
 const ALL_SCOPES = ['chat', 'models', 'admin']
 
@@ -137,12 +259,14 @@ async function load() {
   loadError.value = ''
   try {
     if (tab.value === 'channels') {
-      const [ch, mo] = await Promise.all([
+      const [ch, mo, lg] = await Promise.all([
         apiClient.get<ChannelRow[]>('/gateway/channels'),
         apiClient.get<ModelRow[]>('/gateway/models'),
+        apiClient.get<LoginRow[]>('/gateway/logins'),
       ])
       channels.value = ch || []
       models.value = mo || []
+      logins.value = lg || []
     } else if (tab.value === 'keys') {
       keys.value = (await apiClient.get<KeyRow[]>('/gateway/keys')) || []
     } else if (tab.value === 'tenants') {
@@ -304,6 +428,21 @@ onMounted(load)
 
     <!-- ── 通道 ── -->
     <template v-if="!loading && !loadError && tab === 'channels'">
+      <div v-if="loginPanel" class="gateway-login-panel">
+        <div class="gateway-login-title">
+          {{ t('gateway.login.panelTitle') }}（{{ loginPanel.channel_id }}）
+        </div>
+        <div class="gateway-login-url">
+          <code>{{ loginPanel.login_url }}</code>
+          <button class="gateway-btn small" @click="copyLoginUrl">{{ t('gateway.login.copyUrl') }}</button>
+          <button class="gateway-btn small primary" @click="openLoginUrl">{{ t('gateway.login.openUrl') }}</button>
+        </div>
+        <div class="gateway-login-status" :class="loginPanel.state">
+          <span>{{ loginStatusText }}</span>
+          <span v-if="loginPanel.message">（{{ loginPanel.message }}）</span>
+          <button class="gateway-btn small" @click="cancelLogin">{{ t('gateway.login.cancel') }}</button>
+        </div>
+      </div>
       <div v-if="channels.length === 0" class="gateway-hint">{{ t('gateway.channels.empty') }}</div>
       <div v-for="ch in channels" :key="ch.id" class="gateway-card">
         <div class="gateway-card-head">
@@ -328,6 +467,25 @@ onMounted(load)
           >
             {{ m.model }}
           </span>
+        </div>
+        <div v-if="loginOf(ch.id)?.supports_login" class="gateway-login-row">
+          <span v-if="loginOf(ch.id)!.has_stored_credential" class="gateway-login-account">
+            {{ t('gateway.login.loggedInAs') }} {{ loginOf(ch.id)!.account || '-' }}
+          </span>
+          <span v-else-if="loginOf(ch.id)!.fallback_available" class="gateway-login-hint">
+            {{ t('gateway.login.magpieFallback') }}
+          </span>
+          <span v-else class="gateway-login-hint">{{ t('gateway.login.required') }}</span>
+          <button
+            v-if="loginOf(ch.id)!.has_stored_credential"
+            class="gateway-btn small danger"
+            @click="doLogout(ch.id)"
+          >
+            {{ t('gateway.login.logout') }}
+          </button>
+          <button v-else class="gateway-btn small primary" @click="startLogin(ch.id)">
+            {{ t('gateway.login.start') }}
+          </button>
         </div>
       </div>
     </template>
@@ -666,6 +824,81 @@ onMounted(load)
   background: var(--bg-error);
   color: var(--color-danger);
   text-decoration: line-through;
+}
+
+/* ── 自建登录（免装 Magpie） ── */
+.gateway-login-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  background: var(--bg-snapshot);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.gateway-login-title {
+  font-size: var(--font-size-md);
+  color: var(--color-text);
+}
+
+.gateway-login-url {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.gateway-login-url code {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--bg-surface);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  word-break: break-all;
+}
+
+.gateway-login-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.gateway-login-status.ok {
+  color: var(--color-success, var(--color-text));
+}
+
+.gateway-login-status.error,
+.gateway-login-status.timeout {
+  color: var(--color-danger);
+}
+
+.gateway-login-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding-top: var(--space-xs);
+  border-top: 1px dashed var(--border-color);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.gateway-login-account {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gateway-login-hint {
+  flex: 1;
+  color: var(--color-text-tertiary);
 }
 
 .gateway-form {

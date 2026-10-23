@@ -13,6 +13,7 @@ from harness.api.deps import require_admin
 from harness.api.errors import APIError
 from harness.kernel.services import ServiceRegistry
 from harness.modules.gateway.config import ConfigError
+from harness.modules.gateway.login import LOGIN_TIMEOUT_SECONDS
 from harness.modules.gateway.service import GatewayService
 
 logger = logging.getLogger("harness.gateway.admin")
@@ -34,6 +35,23 @@ def _actor(admin: dict[str, Any] | None) -> str:
     if isinstance(admin, dict):
         return str(admin.get("username") or admin.get("id") or "admin")
     return "local"
+
+
+def _magpie_fallback_available(svc: GatewayService, channel_id: str) -> bool:
+    """该通道当前是否在"借用" Magpie 登录态（自存为空但文件里有）。"""
+    if svc.credential_store.load(channel_id):
+        return False
+    managers: dict[str, Any] = {
+        "qoder-cn": svc.credentials.qoder,
+        "workbuddy": svc.credentials.workbuddy,
+    }
+    manager = managers.get(channel_id)
+    if manager is None:
+        return False
+    try:
+        return bool(manager.present())
+    except Exception:  # noqa: BLE001 —— 探测失败按"无兜底"
+        return False
 
 
 def setup_gateway_routes(registry: ServiceRegistry) -> None:
@@ -71,6 +89,69 @@ def setup_gateway_routes(registry: ServiceRegistry) -> None:
         svc = _service(registry)
         await svc.probe_now(channels)
         return svc.availability_snapshot(channels)
+
+    # ---- 自建登录（免装 Magpie） -------------------------------------- #
+    @router.get("/logins", summary="各通道自建登录能力与已存凭据")
+    async def list_logins(
+        admin: dict[str, Any] | None = Depends(require_admin),
+    ) -> list[dict[str, Any]]:
+        svc = _service(registry)
+        rows = svc.login.channels()
+        for row in rows:
+            row["fallback_available"] = _magpie_fallback_available(svc, str(row["channel_id"]))
+        return rows
+
+    @router.post("/channels/{channel_id}/login", summary="发起通道自建登录（返回授权 URL）")
+    async def start_login(
+        channel_id: str,
+        admin: dict[str, Any] | None = Depends(require_admin),
+    ) -> dict[str, Any]:
+        svc = _service(registry)
+        try:
+            session = svc.login.start(channel_id)
+        except ValueError as e:
+            raise APIError("LOGIN_INVALID", str(e), 400) from e
+        svc.store.audit(
+            "channel.login.start",
+            actor=_actor(admin),
+            target_type="channel",
+            target_id=channel_id,
+            detail={"session_id": session.session_id},
+        )
+        return {
+            "session_id": session.session_id,
+            "channel_id": session.channel_id,
+            "login_url": session.login_url,
+            "expires_in": LOGIN_TIMEOUT_SECONDS,
+        }
+
+    @router.get("/logins/{session_id}", summary="查询登录会话状态")
+    async def login_status(
+        session_id: str,
+        admin: dict[str, Any] | None = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            return _service(registry).login.status(session_id)
+        except KeyError as e:
+            raise APIError("LOGIN_NOT_FOUND", "登录会话不存在或已过期", 404) from e
+
+    @router.delete(
+        "/channels/{channel_id}/credential", summary="删除通道自存凭据（退出登录）"
+    )
+    async def channel_logout(
+        channel_id: str,
+        admin: dict[str, Any] | None = Depends(require_admin),
+    ) -> dict[str, Any]:
+        svc = _service(registry)
+        svc.login.logout(channel_id)
+        svc.store.audit(
+            "channel.logout",
+            actor=_actor(admin),
+            target_type="channel",
+            target_id=channel_id,
+            detail={},
+        )
+        return {"channel_id": channel_id, "stored": False}
 
     @router.get("/config", summary="读取当前配置")
     async def get_config(admin: dict[str, Any] | None = Depends(require_admin)) -> dict[str, Any]:

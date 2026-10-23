@@ -6,6 +6,8 @@ export interface Session {
   updated_at: string
   archived: boolean
   message_count?: number
+  /** 媒体生成任务数（图/视频不写 messages，判定空会话时须一并考虑）。 */
+  media_count?: number
 }
 
 export interface Message {

@@ -2,6 +2,8 @@
 
 import threading
 
+import pytest
+
 from harness.infra.database import Database
 
 
@@ -11,7 +13,7 @@ def test_wal_and_busy_timeout(tmp_path) -> None:
     mode = db.query_one("PRAGMA journal_mode")
     assert mode["journal_mode"] == "wal"
     bt = db.query_one("PRAGMA busy_timeout")
-    assert bt["timeout"] == 5000
+    assert bt["timeout"] == 10000
     db.close()
 
 
@@ -89,3 +91,49 @@ def test_memory_database_is_independent() -> None:
     assert m1 is not m2
     m1.close()
     m2.close()
+
+
+def test_execute_retries_when_database_is_locked():
+    """多进程并发写偶发 database is locked：execute 应有限重试而非直接抛错。"""
+    import sqlite3 as _sqlite3
+
+    from harness.infra.database import Database
+
+    db = Database(":memory:")
+    saved = db._conn
+    calls = {"n": 0}
+
+    class _Cur:
+        rowcount = 1
+
+    class _FlakyConn:
+        def execute(self, sql, params=()):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise _sqlite3.OperationalError("database is locked")
+            return _Cur()
+
+        def commit(self):
+            return None
+
+    class _AlwaysLockedConn:
+        def execute(self, sql, params=()):
+            calls["n"] += 1
+            raise _sqlite3.OperationalError("database is locked")
+
+        def commit(self):
+            return None
+
+    try:
+        db._conn = _FlakyConn()
+        cur = db.execute("UPDATE t SET a = 1")
+        assert cur.rowcount == 1
+        assert calls["n"] == 3, "前两次锁冲突后应重试成功"
+
+        calls["n"] = 0
+        db._conn = _AlwaysLockedConn()
+        with pytest.raises(_sqlite3.OperationalError):
+            db.execute("UPDATE t SET a = 1")
+        assert calls["n"] == 4, "重试上限 4 次（含首次），耗尽后抛出"
+    finally:
+        db._conn = saved

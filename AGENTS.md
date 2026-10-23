@@ -170,7 +170,7 @@ H:/jsd-andyharness/
 | `evals_lab/` | 模型/提示词 A/B 评测 |
 | `insights/` | 会话/消息/Token/工具调用洞察看板 |
 | `reverse_engineering/` | 工程强逆向七阶段流水线 |
-| `gateway/` | LLM 网关中心：`/v1` OpenAI 兼容、通道路由/熔断/故障转移、`agw-` Key 与租户、用量/审计/指标；适配器含 `openai-like` 与 `qoder-cosy`（COSY 签名 + 私有 base64 + 流式信封归一化，排队 10605→503 可重试） |
+| `gateway/` | LLM 网关中心：`/v1` OpenAI 兼容、通道路由/熔断/故障转移、`agw-` Key 与租户、用量/审计/指标；适配器含 `openai-like`（官方 API：Qwen 百炼 / 豆包方舟，凭据走 `env:DASHSCOPE_API_KEY` / `env:ARK_API_KEY`）与 `qoder-cosy`（COSY 签名 + 私有 base64 + 流式信封归一化，排队 10605→503 可重试）。凭据未就绪的通道不注册 provider（`CredentialResolver.present()` 门控）；`credential_store.py`（`gw_credentials` 加密表）+ `login.py`（PKCE 设备授权）实现**自建登录**，Qoder CN 无需安装 Magpie |
 | `evidence_v2/` | 哈希链防篡改证据包 |
 | `templates_hub/` | 模板分享中心 |
 | `devkit/` | 插件开发者工作台 |

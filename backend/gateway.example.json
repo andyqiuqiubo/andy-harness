@@ -23,9 +23,78 @@
   ],
   "channels": [
     {
-      "id": "cline",
-      "name": "Cline (free)",
+      "id": "qwen-bailian",
+      "name": "Qwen 百炼（官方 API · 推荐主线）",
       "enabled": true,
+      "adapter": "openai-like",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "chat_path": "/chat/completions",
+      "auth": "bearer",
+      "stream_only": false,
+      "weight": 1,
+      "strategy": "weighted",
+      "models": [
+        "qwen-plus",
+        "qwen-max",
+        "qwen-flash",
+        "qwen3-coder-plus"
+      ],
+      "probe_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+      "credentials": [
+        {
+          "id": "bailian",
+          "source": "env:DASHSCOPE_API_KEY"
+        }
+      ]
+    },
+    {
+      "id": "doubao-ark",
+      "name": "豆包方舟（官方 API · 推荐主线）",
+      "enabled": true,
+      "adapter": "openai-like",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "chat_path": "/chat/completions",
+      "auth": "bearer",
+      "stream_only": false,
+      "weight": 1,
+      "strategy": "weighted",
+      "models": [
+        "doubao-seed-1.6",
+        "doubao-seed-1.6-thinking"
+      ],
+      "credentials": [
+        {
+          "id": "ark",
+          "source": "env:ARK_API_KEY"
+        }
+      ]
+    },
+    {
+      "id": "zen",
+      "name": "OpenCode Zen Free（上游已收紧：免费档仅限 OpenCode 客户端）",
+      "enabled": false,
+      "adapter": "openai-like",
+      "base_url": "https://opencode.ai/inference/v1",
+      "chat_path": "/chat/completions",
+      "auth": "public",
+      "stream_only": true,
+      "requires_tools": true,
+      "weight": 1,
+      "strategy": "weighted",
+      "models": [
+        "big-pickle",
+        "mimo-v2.6-flash-free",
+        "nemotron-3.5-super-vl-free",
+        "nemotron-3.5-lightning-free",
+        "deepseek-v4.1-flash-free",
+        "glm-5.3-flash-free"
+      ],
+      "probe_url": "https://opencode.ai/inference/v1/models"
+    },
+    {
+      "id": "cline",
+      "name": "Cline（可选增强 · 需 Cline CLI 登录）",
+      "enabled": false,
       "adapter": "openai-like",
       "base_url": "https://api.cline.bot/api/v1",
       "chat_path": "/chat/completions",
@@ -35,19 +104,17 @@
       "weight": 1,
       "strategy": "weighted",
       "models": [
-        "cline-free/minimax-m3.1-flash",
         "reflection/beam-free",
         "cline-free/nemotron-3.5-super-vl",
         "nvidia/nemotron-3.5-lightning-free",
-        "poolside/laguna-s-2.1-free",
         "cline-free/solar-mini4"
       ],
       "probe_url": "https://api.cline.bot/api/v1/ai/cline/recommended-models"
     },
     {
       "id": "workbuddy",
-      "name": "WorkBuddy (free)",
-      "enabled": true,
+      "name": "WorkBuddy（可选增强 · 管理台登录，免装 Magpie）",
+      "enabled": false,
       "adapter": "openai-like",
       "base_url": "https://copilot.tencent.com/v2",
       "chat_path": "/chat/completions",
@@ -59,38 +126,13 @@
         "hy3",
         "step-5-preview"
       ],
-      "probe_url": "https://copilot.tencent.com/v3/config"
-    },
-    {
-      "id": "zen",
-      "name": "OpenCode Zen Free",
-      "enabled": true,
-      "adapter": "openai-like",
-      "base_url": "https://opencode.ai/inference/v1",
-      "chat_path": "/chat/completions",
-      "auth": "public",
-      "stream_only": true,
-      "requires_tools": true,
-      "weight": 1,
-      "strategy": "weighted",
-      "models": [
-        "big-pickle",
-        "beam-free",
-        "flint-40b-free",
-        "mimo-v2.6-flash-free",
-        "nemotron-3.5-super-vl-free",
-        "nemotron-3.5-lightning-free",
-        "jev-1.13-free",
-        "deepseek-v4.1-flash-free",
-        "glm-5.3-flash-free",
-        "minimax-m3.1-flash-free"
-      ],
-      "probe_url": "https://opencode.ai/inference/v1/models"
+      "probe_url": "https://copilot.tencent.com/v3/config",
+      "catalog_probe": false
     },
     {
       "id": "qoder-cn",
-      "name": "Qoder CN (COSY)",
-      "enabled": true,
+      "name": "Qoder CN（可选增强 · 管理台登录，免装 Magpie）",
+      "enabled": false,
       "adapter": "qoder-cosy",
       "base_url": "https://gateway.qoder.com.cn",
       "auth": "qoder-device",
@@ -107,9 +149,8 @@
   ],
   "group_aliases": {
     "free/auto": [
-      "cline/cline-free/minimax-m3.1-flash",
-      "workbuddy/hy3",
-      "zen/big-pickle"
+      "qwen-bailian/qwen-plus",
+      "doubao-ark/doubao-seed-1.6"
     ]
   }
 }

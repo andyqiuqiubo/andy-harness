@@ -172,6 +172,15 @@ token*.txt
 *密码*
 *密钥*
 *口令*
+# 登录态与凭据数据文件（Cookie / 设备 token / 凭据导出）
+*cookie*.txt
+*cookie*.json
+*device_token*.txt
+*device_token*.json
+*device-token*.txt
+*device-token*.json
+*凭据*
+*登录*
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 7. 数据库与本地数据文件
@@ -310,6 +319,8 @@ workspace/
 # 本地下载缓存 / 旧工具配置
 .downloads/
 .zcodeignore
+# 媒体生成等运行时输出（测试产物，不入库）
+outputs/
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 14. MCP / 网关配置（可能含鉴权 header 或租户凭据，不入库；示例见 mcp.example.json、backend/gateway.example.json）
